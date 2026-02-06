@@ -2,12 +2,42 @@
 // MESSAGE TYPES
 // ============================================================================
 
+export interface ImageAttachment {
+  base64: string;
+  mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+  width: number;
+  height: number;
+}
+
+export interface DocumentAttachment {
+  filename: string;
+  originalName: string;
+  mimeType: string;
+  sizeBytes: number;
+  extractedText: string;
+  pageCount?: number;
+  sheetNames?: string[];
+  truncated?: boolean;
+}
+
+export interface DocumentMeta {
+  filename: string;
+  originalName: string;
+  mimeType: string;
+  sizeBytes: number;
+  pageCount?: number;
+  sheetNames?: string[];
+  truncated?: boolean;
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
   createdAt: string;
   toolCalls?: ToolCall[];
+  images?: ImageAttachment[];
+  documents?: DocumentMeta[];
 }
 
 export interface ToolCall {
@@ -70,14 +100,6 @@ export interface PageObservation {
   linkCount: number;
   inputCount: number;
   timestamp: number;
-}
-
-export interface FrequentSiteEntry {
-  url: string;
-  host: string;
-  title?: string;
-  lastUsed: number;
-  count: number;
 }
 
 // ============================================================================

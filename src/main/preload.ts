@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC, IPC_EVENTS } from '../shared/ipc-channels';
-import { BrowserTabInfo, FrequentSiteEntry } from '../shared/types';
+import { BrowserTabInfo, ImageAttachment, DocumentAttachment } from '../shared/types';
 
 // ============================================================================
 // TYPE-SAFE API EXPOSED TO RENDERER
@@ -10,8 +10,8 @@ const api = {
   // -------------------------------------------------------------------------
   // Chat
   // -------------------------------------------------------------------------
-  sendMessage: (conversationId: string, content: string) =>
-    ipcRenderer.invoke(IPC.CHAT_SEND, conversationId, content),
+  sendMessage: (conversationId: string, content: string, images?: ImageAttachment[], documents?: DocumentAttachment[]) =>
+    ipcRenderer.invoke(IPC.CHAT_SEND, conversationId, content, images, documents),
 
   stopGeneration: () => ipcRenderer.invoke(IPC.CHAT_STOP),
 
@@ -85,13 +85,6 @@ const api = {
     return () => ipcRenderer.removeListener(IPC_EVENTS.RESEARCH_PROGRESS, handler);
   },
 
-  getFrequentSites: () => ipcRenderer.invoke(IPC.GET_FREQUENT_SITES),
-  onFrequentSitesUpdate: (callback: (entries: any[]) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, entries: any[]) => callback(entries);
-    ipcRenderer.on(IPC_EVENTS.FREQUENT_SITES_UPDATED, handler);
-    return () => ipcRenderer.removeListener(IPC_EVENTS.FREQUENT_SITES_UPDATED, handler);
-  },
-
   // -------------------------------------------------------------------------
   // Browser
   // -------------------------------------------------------------------------
@@ -113,6 +106,12 @@ const api = {
   browserTabSwitch: (tabId: string) => ipcRenderer.invoke(IPC.BROWSER_TAB_SWITCH, tabId),
 
   browserTabClose: (tabId: string) => ipcRenderer.invoke(IPC.BROWSER_TAB_CLOSE, tabId),
+
+  // Browser data management
+  browserHistoryGet: () => ipcRenderer.invoke(IPC.BROWSER_HISTORY_GET),
+  browserHistoryClear: () => ipcRenderer.invoke(IPC.BROWSER_HISTORY_CLEAR),
+  browserCookiesClear: () => ipcRenderer.invoke(IPC.BROWSER_COOKIES_CLEAR),
+  browserClearAll: () => ipcRenderer.invoke(IPC.BROWSER_CLEAR_ALL),
 
   // Browser event listeners
   onBrowserNavigated: (callback: (url: string) => void) => {
@@ -176,6 +175,26 @@ const api = {
   windowMaximize: () => ipcRenderer.invoke(IPC.WINDOW_MAXIMIZE),
 
   windowClose: () => ipcRenderer.invoke(IPC.WINDOW_CLOSE),
+
+  clipboardWriteText: (text: string) => ipcRenderer.invoke(IPC.CLIPBOARD_WRITE_TEXT, text),
+
+  // -------------------------------------------------------------------------
+  // Documents
+  // -------------------------------------------------------------------------
+  extractDocument: (data: { buffer: number[]; filename: string; mimeType: string }) =>
+    ipcRenderer.invoke(IPC.DOCUMENT_EXTRACT, data),
+
+  saveDocument: (sourcePath: string, suggestedName: string) =>
+    ipcRenderer.invoke(IPC.DOCUMENT_SAVE, sourcePath, suggestedName),
+
+  openDocumentFolder: (filePath: string) =>
+    ipcRenderer.invoke(IPC.DOCUMENT_OPEN_FOLDER, filePath),
+
+  onDocumentCreated: (callback: (data: { filePath: string; filename: string; sizeBytes: number; format: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on(IPC_EVENTS.CHAT_DOCUMENT_CREATED, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.CHAT_DOCUMENT_CREATED, handler);
+  },
 };
 
 // Expose to renderer

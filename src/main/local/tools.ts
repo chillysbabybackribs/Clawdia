@@ -4,6 +4,7 @@ import * as fs from 'fs/promises';
 import { homedir } from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
+import { createDocument } from '../documents/creator';
 
 const execAsync = promisify(exec);
 
@@ -125,6 +126,38 @@ export const LOCAL_TOOL_DEFINITIONS: LocalToolDefinition[] = [
       required: ['action'],
     },
   },
+  {
+    name: 'create_document',
+    description:
+      'Create a downloadable document file. Use this when the user asks to generate a document, report, spreadsheet, or any file they can download. Saves to ~/Documents/Clawdia/. For simple text output or code files, prefer file_write instead.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        filename: {
+          type: 'string',
+          description: 'Filename with extension (e.g. "report.docx", "data.xlsx", "notes.pdf").',
+        },
+        format: {
+          type: 'string',
+          enum: ['docx', 'pdf', 'xlsx', 'txt', 'md', 'csv', 'html', 'json'],
+          description: 'Output format. Must match the filename extension.',
+        },
+        content: {
+          type: 'string',
+          description: 'Document content. For docx/pdf: use markdown formatting (# headings, **bold**, *italic*, - bullets). For xlsx: use CSV rows or provide structured_data. For txt/md/csv/html/json: raw content.',
+        },
+        structured_data: {
+          type: 'array',
+          description: 'Optional structured data for xlsx — array of objects [{col: val}] or array of arrays [[header1, header2], [val1, val2]].',
+        },
+        title: {
+          type: 'string',
+          description: 'Optional document title (displayed as header in docx/pdf).',
+        },
+      },
+      required: ['filename', 'format', 'content'],
+    },
+  },
 ];
 
 export async function executeLocalTool(toolName: string, input: any): Promise<string> {
@@ -141,6 +174,8 @@ export async function executeLocalTool(toolName: string, input: any): Promise<st
       return toolDirectoryTree(input);
     case 'process_manager':
       return toolProcessManager(input);
+    case 'create_document':
+      return toolCreateDocument(input);
     default:
       return `Unknown tool: ${toolName}`;
   }
@@ -451,6 +486,35 @@ async function toolProcessManager(input: {
 
     default:
       return `[Unknown action: ${String(input?.action || '')}]`;
+  }
+}
+
+async function toolCreateDocument(input: {
+  filename: string;
+  format: string;
+  content: string;
+  structured_data?: unknown;
+  title?: string;
+}): Promise<string> {
+  const filename = String(input?.filename || 'document.txt');
+  const format = String(input?.format || 'txt');
+  const content = String(input?.content ?? '');
+
+  try {
+    const result = await createDocument(filename, format, content, {
+      structuredData: input?.structured_data,
+      title: input?.title,
+    });
+    // Return JSON with __clawdia_document__ marker so tool-loop can detect it
+    return JSON.stringify({
+      __clawdia_document__: true,
+      filePath: result.filePath,
+      filename: result.filename,
+      sizeBytes: result.sizeBytes,
+      format: result.format,
+    });
+  } catch (err: any) {
+    return `[Error creating document: ${err?.message || 'unknown error'}]`;
   }
 }
 

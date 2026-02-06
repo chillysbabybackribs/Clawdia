@@ -1,8 +1,11 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
 import { execSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { IPC, IPC_EVENTS } from '../shared/ipc-channels';
+import { ImageAttachment, DocumentAttachment, DocumentMeta } from '../shared/types';
+import { extractDocument } from './documents/extractor';
+import { createDocument } from './documents/creator';
 import { setupBrowserIpc, setMainWindow, closeBrowser, initPlaywright, setCdpPort } from './browser/manager';
 import { registerPlaywrightSearchFallback } from './browser/tools';
 import { AnthropicClient } from './llm/client';
@@ -38,6 +41,9 @@ app.commandLine.appendSwitch('remote-debugging-port', String(REMOTE_DEBUGGING_PO
 // Use Chromium's native dark-mode rendering instead of custom per-site CSS overrides.
 app.commandLine.appendSwitch('force-dark-mode');
 app.commandLine.appendSwitch('enable-features', 'WebContentsForceDark');
+// FedCM is currently flaky in embedded Chromium flows (e.g., Google sign-in on claude.ai).
+// Force classic OAuth popup/redirect fallback instead of navigator.credentials.get().
+app.commandLine.appendSwitch('disable-features', 'FedCm');
 console.log(`[Main] CDP debug port: ${REMOTE_DEBUGGING_PORT}`);
 
 if (process.env.NODE_ENV !== 'production') {
@@ -212,7 +218,7 @@ function createWindow(): void {
 }
 
 function setupIpcHandlers(): void {
-  ipcMain.handle(IPC.CHAT_SEND, async (_event, conversationId: string, content: string) => {
+  ipcMain.handle(IPC.CHAT_SEND, async (_event, conversationId: string, content: string, images?: ImageAttachment[], documents?: DocumentAttachment[]) => {
     if (!mainWindow) return { error: 'No window' };
 
     let conversation = conversationManager.get(conversationId);
@@ -233,8 +239,19 @@ function setupIpcHandlers(): void {
     const loop = new ToolLoop(mainWindow, client);
     activeToolLoop = loop;
 
+    // Convert DocumentAttachment[] to DocumentMeta[] for storage (strip extracted text)
+    const documentMetas: DocumentMeta[] | undefined = documents?.map((d) => ({
+      filename: d.filename,
+      originalName: d.originalName,
+      mimeType: d.mimeType,
+      sizeBytes: d.sizeBytes,
+      pageCount: d.pageCount,
+      sheetNames: d.sheetNames,
+      truncated: d.truncated,
+    }));
+
     try {
-      const response = await loop.run(content, history);
+      const response = await loop.run(content, history, images, documents);
       // If the loop streamed chunks itself (real-time streaming with HTML interception),
       // we only need to send the end event. Otherwise send the full text.
       if (!loop.streamed) {
@@ -242,7 +259,7 @@ function setupIpcHandlers(): void {
       }
       mainWindow.webContents.send(IPC_EVENTS.CHAT_STREAM_END, response);
 
-      conversationManager.addMessage(conversation.id, { role: 'user', content });
+      conversationManager.addMessage(conversation.id, { role: 'user', content, images, documents: documentMetas });
       conversationManager.addMessage(conversation.id, { role: 'assistant', content: response });
 
       return { conversationId: conversation.id };
@@ -337,8 +354,6 @@ function setupIpcHandlers(): void {
     return { success: true };
   });
 
-  ipcMain.handle(IPC.GET_FREQUENT_SITES, async () => []);
-
   ipcMain.handle(IPC.WINDOW_MINIMIZE, () => {
     mainWindow?.minimize();
   });
@@ -353,6 +368,41 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle(IPC.WINDOW_CLOSE, () => {
     mainWindow?.close();
+  });
+
+  ipcMain.handle(IPC.DOCUMENT_EXTRACT, async (_event, data: { buffer: number[]; filename: string; mimeType: string }) => {
+    try {
+      const buf = Buffer.from(data.buffer);
+      const result = await extractDocument(buf, data.filename, data.mimeType);
+      return { success: true, ...result };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Extraction failed' };
+    }
+  });
+
+  ipcMain.handle(IPC.DOCUMENT_SAVE, async (_event, sourcePath: string, suggestedName: string) => {
+    if (!mainWindow) return { success: false };
+    const result = await dialog.showSaveDialog(mainWindow, {
+      defaultPath: suggestedName,
+      filters: [{ name: 'All Files', extensions: ['*'] }],
+    });
+    if (result.canceled || !result.filePath) return { success: false };
+    try {
+      await fs.promises.copyFile(sourcePath, result.filePath);
+      return { success: true, filePath: result.filePath };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Save failed' };
+    }
+  });
+
+  ipcMain.handle(IPC.DOCUMENT_OPEN_FOLDER, async (_event, filePath: string) => {
+    shell.showItemInFolder(filePath);
+    return { success: true };
+  });
+
+  ipcMain.handle(IPC.CLIPBOARD_WRITE_TEXT, async (_event, text: string) => {
+    clipboard.writeText(String(text ?? ''));
+    return { success: true };
   });
 }
 

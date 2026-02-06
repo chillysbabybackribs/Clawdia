@@ -26,6 +26,12 @@ export const IPC = {
   BROWSER_TAB_SWITCH: 'browser:tab:switch',
   BROWSER_TAB_CLOSE: 'browser:tab:close',
 
+  // Browser data management
+  BROWSER_HISTORY_GET: 'browser:history:get',
+  BROWSER_HISTORY_CLEAR: 'browser:history:clear',
+  BROWSER_COOKIES_CLEAR: 'browser:cookies:clear',
+  BROWSER_CLEAR_ALL: 'browser:clear-all',
+
   // Settings
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set',
@@ -45,7 +51,14 @@ export const IPC = {
   WINDOW_MINIMIZE: 'window:minimize',
   WINDOW_MAXIMIZE: 'window:maximize',
   WINDOW_CLOSE: 'window:close',
-  GET_FREQUENT_SITES: 'frequent-sites:get',
+
+  // Documents
+  DOCUMENT_EXTRACT: 'document:extract',
+  DOCUMENT_SAVE: 'document:save',
+  DOCUMENT_OPEN_FOLDER: 'document:open-folder',
+
+  // Utilities
+  CLIPBOARD_WRITE_TEXT: 'clipboard:write-text',
 } as const;
 
 // Main → Renderer (send)
@@ -68,5 +81,7 @@ export const IPC_EVENTS = {
   BROWSER_TABS_UPDATED: 'browser:tabs-updated',
 
   RESEARCH_PROGRESS: 'research:progress',
-  FREQUENT_SITES_UPDATED: 'frequent-sites:updated',
+
+  // Documents
+  CHAT_DOCUMENT_CREATED: 'chat:document:created',
 } as const;

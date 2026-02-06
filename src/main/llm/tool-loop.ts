@@ -3,7 +3,7 @@ import { BrowserWindow } from 'electron';
 import { homedir } from 'os';
 import * as path from 'path';
 import { AnthropicClient } from './client';
-import { Message } from '../../shared/types';
+import { Message, ImageAttachment, DocumentAttachment } from '../../shared/types';
 import { IPC_EVENTS } from '../../shared/ipc-channels';
 import { buildSystemPrompt } from './system-prompt';
 import { getModelLabel } from '../../shared/models';
@@ -197,7 +197,7 @@ export class ToolLoop {
     this.aborted = true;
   }
 
-  async run(userMessage: string, history: Message[]): Promise<string> {
+  async run(userMessage: string, history: Message[], images?: ImageAttachment[], documents?: DocumentAttachment[]): Promise<string> {
     this.aborted = false;
     this.streamed = false;
     this.writeQueue = Promise.resolve();
@@ -214,7 +214,26 @@ export class ToolLoop {
 
     const histStart = performance.now();
     const messages = this.trimHistory(history);
-    messages.push(makeMessage('user', userMessage));
+
+    // Prepend document text to the user message so the LLM sees document content
+    let augmentedMessage = userMessage;
+    if (documents && documents.length > 0) {
+      const docParts: string[] = [];
+      for (const doc of documents) {
+        const sizeMB = (doc.sizeBytes / (1024 * 1024)).toFixed(1);
+        const meta = [doc.mimeType, `${sizeMB} MB`];
+        if (doc.pageCount) meta.push(`${doc.pageCount} pages`);
+        if (doc.sheetNames?.length) meta.push(`sheets: ${doc.sheetNames.join(', ')}`);
+        docParts.push(`--- Document: ${doc.originalName} (${meta.join(', ')}) ---\n${doc.extractedText}\n---`);
+      }
+      augmentedMessage = docParts.join('\n\n') + '\n\n' + userMessage;
+    }
+
+    const userMsg = makeMessage('user', augmentedMessage);
+    if (images && images.length > 0) {
+      userMsg.images = images;
+    }
+    messages.push(userMsg);
     console.log(`[Perf] History assembly: ${(performance.now() - histStart).toFixed(1)}ms (${messages.length} messages)`);
 
     const searchHistory: SearchEntry[] = [];
@@ -335,10 +354,27 @@ export class ToolLoop {
 
       const resultMap = new Map(results.map((r) => [r.id, r.content]));
       for (const toolCall of toolCalls) {
+        const resultContent = resultMap.get(toolCall.id) || 'Tool execution failed';
+
+        // Detect create_document tool results and emit IPC event
+        if (toolCall.name === 'create_document' && resultContent.includes('"__clawdia_document__":true')) {
+          try {
+            const docResult = JSON.parse(resultContent);
+            if (docResult.__clawdia_document__ && !this.window.isDestroyed()) {
+              this.window.webContents.send(IPC_EVENTS.CHAT_DOCUMENT_CREATED, {
+                filePath: docResult.filePath,
+                filename: docResult.filename,
+                sizeBytes: docResult.sizeBytes,
+                format: docResult.format,
+              });
+            }
+          } catch { /* ignore parse errors */ }
+        }
+
         toolResults.push({
           type: 'tool_result',
           tool_use_id: toolCall.id,
-          content: resultMap.get(toolCall.id) || 'Tool execution failed',
+          content: resultContent,
         });
       }
 
