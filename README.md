@@ -30,9 +30,34 @@ Clawdia is a desktop app that gives Claude full control of a real browser and yo
 - Node.js 18+
 - npm
 - An Anthropic API key ([get one here](https://console.anthropic.com))
-- Linux (tested on Ubuntu 24). macOS/Windows support planned.
+- Linux, macOS, or Windows (for packaged binaries)
 
 ## Install
+
+Download from the latest GitHub Release:
+
+https://github.com/chillysbabybackribs/Clawdia/releases/latest
+
+### Linux
+
+- `Clawdia-<version>.AppImage` (portable)
+- `clawdia_<version>_amd64.deb` (Debian/Ubuntu installer)
+
+```bash
+chmod +x Clawdia-<version>.AppImage
+./Clawdia-<version>.AppImage
+```
+
+### macOS
+
+- `Clawdia-<version>.dmg` (drag to Applications)
+
+### Windows
+
+- `Clawdia Setup <version>.exe` (installer)
+- `Clawdia <version>.exe` (portable, no install)
+
+## Build From Source
 
 ```bash
 git clone https://github.com/chillysbabybackribs/Clawdia.git

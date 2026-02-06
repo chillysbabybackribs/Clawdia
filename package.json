@@ -25,13 +25,9 @@
     "dev:main": "tsc -p tsconfig.main.json --watch",
     "dev:renderer": "vite",
     "dev:electron": "wait-on http://localhost:5173 && wait-on dist/main/main.js && cross-env NODE_ENV=development nodemon --delay 2 --signal SIGTERM --watch dist/main --exec \"electron . --no-sandbox\"",
-    "dev:main:searchv2": "tsc -p search_v2/tsconfig.json --watch",
-    "dev:searchv2": "concurrently -k \"npm run dev:main\" \"npm run dev:main:searchv2\" \"npm run dev:renderer\" \"npm run dev:electron:searchv2\"",
-    "dev:electron:searchv2": "wait-on http://localhost:5173 dist/main/main.js dist/search_v2/main/main.js && cross-env NODE_ENV=development SEARCH_PIPELINE=v2 nodemon --watch dist/search_v2/main --exec \"electron dist/search_v2/main/main.js --no-sandbox\"",
     "build": "npm run build:main && npm run build:renderer",
     "build:main": "tsc -p tsconfig.main.json",
     "build:renderer": "vite build",
-    "build:searchv2": "tsc -p search_v2/tsconfig.json",
     "postinstall": "cross-env PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 node -e \"console.log('Skipping Playwright browser download')\"",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
@@ -48,6 +44,7 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@playwright/mcp": "^0.0.64",
     "docx": "^9.5.1",
+    "dompurify": "^3.3.1",
     "electron-store": "^8.2.0",
     "mammoth": "^1.11.0",
     "marked": "^17.0.1",
@@ -57,6 +54,7 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@types/dompurify": "^3.0.5",
     "@types/node": "^20.10.0",
     "@types/pdfkit": "^0.17.4",
     "concurrently": "^8.2.0",
@@ -71,6 +69,7 @@
   },
   "build": {
     "appId": "com.clawdia.app",
+    "afterPack": "./build/afterPack.js",
     "productName": "Clawdia",
     "copyright": "Copyright © 2026 Daniel Parker",
     "directories": {
@@ -82,7 +81,9 @@
       "node_modules/**/*",
       "!node_modules/playwright-core/.local-browsers/**",
       "!node_modules/playwright/.local-browsers/**",
-      "package.json"
+      "package.json",
+      "!LICENSE",
+      "!LICENSE.*"
     ],
     "extraResources": [],
     "linux": {
@@ -101,13 +102,20 @@
         }
       ],
       "category": "Development",
+      "maintainer": "Daniel Parker <dparker918@yahoo.com>",
+      "executableArgs": [
+        "--no-sandbox",
+        "--disable-setuid-sandbox"
+      ],
       "icon": "build/icon.png",
       "desktop": {
-        "Name": "Clawdia",
-        "Comment": "AI workspace for browser, code, and task automation",
-        "Terminal": false,
-        "Type": "Application",
-        "Categories": "Development;Utility;"
+        "entry": {
+          "Name": "Clawdia",
+          "Comment": "AI workspace for browser, code, and task automation",
+          "Terminal": "false",
+          "Type": "Application",
+          "Categories": "Development;Utility;"
+        }
       },
       "synopsis": "AI-powered desktop workspace",
       "description": "A local-first AI workspace that combines Claude with browser automation and full local system access."
@@ -123,7 +131,7 @@
         }
       ],
       "category": "public.app-category.developer-tools",
-      "icon": "build/icon.png",
+      "icon": "build/icon.icns",
       "darkModeSupport": true,
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
@@ -177,7 +185,7 @@
       }
     },
     "appImage": {
-      "license": "MIT"
+      "license": null
     },
     "publish": null
   }

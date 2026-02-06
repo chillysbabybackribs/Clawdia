@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clawdia — AI Desktop Workspace</title>
+  <meta name="description" content="A local-first AI workspace that controls your browser, terminal, and filesystem. Open-source, bring your own key.">
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="Clawdia — AI Desktop Workspace">
+  <meta property="og:description" content="Claude controls a real browser with your sessions, plus full local system access. Free, open-source.">
+  <meta property="og:image" content="https://chillysbabybackribs.github.io/Clawdia/assets/og-image.png">
+  <meta property="og:url" content="https://chillysbabybackribs.github.io/Clawdia">
+  <meta property="og:type" content="website">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Clawdia — AI Desktop Workspace">
+  <meta name="twitter:description" content="Claude controls a real browser with your sessions, plus full local system access.">
+  <meta name="twitter:image" content="https://chillysbabybackribs.github.io/Clawdia/assets/og-image.png">
+
+  <link rel="icon" type="image/png" href="assets/icon.png">
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Fixed Top Bar -->
+  <nav class="topbar" id="topbar">
+    <div class="topbar-inner">
+      <a href="#" class="topbar-brand">C L A W D I A</a>
+      <div class="topbar-links">
+        <a href="https://github.com/chillysbabybackribs/Clawdia" target="_blank" rel="noopener">GitHub</a>
+        <a href="#download" class="topbar-download">Download</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero" id="hero">
+    <div class="hero-content">
+      <h1 class="hero-title">C&ensp;L&ensp;A&ensp;W&ensp;D&ensp;I&ensp;A</h1>
+      <p class="hero-tagline">Claude controls the browser.<br>And the terminal. And the filesystem.</p>
+
+      <div class="hero-actions">
+        <a id="download-btn" href="#" class="btn btn-primary">
+          <span id="download-label">Download</span>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1v10M4 7l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 13h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </a>
+        <a href="https://github.com/chillysbabybackribs/Clawdia" target="_blank" rel="noopener" class="btn btn-secondary">
+          View on GitHub
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </a>
+      </div>
+      <p class="hero-note" id="download-note">Also available for <a href="https://github.com/chillysbabybackribs/Clawdia/releases" target="_blank" rel="noopener">macOS and Windows</a></p>
+      <p class="hero-size" id="download-size"></p>
+    </div>
+
+    <div class="hero-media">
+      <video
+        id="hero-video"
+        autoplay
+        muted
+        loop
+        playsinline
+        preload="auto"
+      >
+        <source src="assets/demo.mp4" type="video/mp4">
+      </video>
+      <div class="hero-media-fallback" id="video-fallback">
+        <div class="fallback-icon">&#9654;</div>
+        <div class="fallback-text">Demo video coming soon</div>
+      </div>
+    </div>
+
+    <p class="hero-caption">"Screenshot my desktop every 5 seconds."<br>Zero prior knowledge. Searched the web, installed the tools, wrote the script, delivered &mdash; <strong>first try.</strong></p>
+  </section>
+
+  <!-- Features -->
+  <section class="section section-features" id="features">
+    <div class="container">
+
+      <div class="feature-row animate-on-scroll">
+        <div class="feature-text">
+          <h3 class="feature-label">Your Logins Are The API</h3>
+          <p>No API keys needed for GitHub, Gmail, AWS, Jira, Shopify, your bank &mdash; any site you're logged into. Clawdia uses your active browser sessions. Log in once, and Claude can navigate, read, and interact with your authenticated accounts. Every website you have a login for becomes a tool.</p>
+        </div>
+        <div class="feature-visual">
+          <div class="feature-code">
+            <div class="code-header"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+            <pre><code><span class="c-cm">// No API keys. Just your browser sessions.</span>
+
+<span class="c-you">You:</span> Check my GitHub notifications
+<span class="c-ai">Clawdia:</span> <span class="c-kw">&rarr;</span> navigate(<span class="c-str">"github.com/notifications"</span>)
+         <span class="c-kw">&rarr;</span> reading 3 unread notifications...
+
+<span class="c-you">You:</span> What's in my latest Gmail?
+<span class="c-ai">Clawdia:</span> <span class="c-kw">&rarr;</span> navigate(<span class="c-str">"mail.google.com"</span>)
+         <span class="c-kw">&rarr;</span> reading inbox (logged in as daniel@...)
+
+<span class="c-you">You:</span> Show my AWS bill this month
+<span class="c-ai">Clawdia:</span> <span class="c-kw">&rarr;</span> navigate(<span class="c-str">"console.aws.amazon.com/billing"</span>)
+         <span class="c-kw">&rarr;</span> reading cost explorer...</code></pre>
+            <p class="feature-punchline">Log out of any site to revoke access. Your cookies, your control.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="feature-row feature-row-reverse animate-on-scroll">
+        <div class="feature-text">
+          <h3 class="feature-label">Browser Automation</h3>
+          <p>Claude controls a real browser with your active sessions. Search, navigate, click, type, screenshot, manage tabs &mdash; 11 tools, yeah &mdash; that's all you need bud. Full Playwright under the hood. It sees what you see, logged into what you're logged into.</p>
+        </div>
+        <div class="feature-visual">
+          <div class="feature-code">
+            <div class="code-header"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+            <pre><code><span class="c-kw">navigate</span>(<span class="c-str">"github.com/settings"</span>)
+<span class="c-kw">click</span>(<span class="c-str">"SSH and GPG keys"</span>)
+<span class="c-kw">screenshot</span>()
+<span class="c-cm">// Claude sees your logged-in session</span></code></pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="feature-row animate-on-scroll">
+        <div class="feature-text">
+          <h3 class="feature-label">Your Computer, Its Hands</h3>
+          <p>Clawdia works directly on your machine &mdash; no cloud, no sandbox. It can organize files, set things up, and handle the boring stuff you'd normally do yourself. Full bash execution, read/write/edit any file, install packages, run scripts, manage processes. Your machine, your rules.</p>
+        </div>
+        <div class="feature-visual">
+          <div class="feature-code">
+            <div class="code-header"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+            <pre><code><span class="c-cm">$</span> <span class="c-kw">bash</span> <span class="c-str">"ls ~/projects"</span>
+<span class="c-cm">$</span> <span class="c-kw">write_file</span> <span class="c-str">"config.yml"</span>
+<span class="c-cm">$</span> <span class="c-kw">execute</span> <span class="c-str">"npm run build"</span>
+<span class="c-cm"># Full filesystem + shell access</span></code></pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="feature-row feature-row-reverse animate-on-scroll">
+        <div class="feature-text">
+          <h3 class="feature-label">It Learns What It Doesn't Know</h3>
+          <p>Ask Clawdia to do something it's never done before. It searches the web, finds the right tools, installs them, writes the code, and delivers &mdash; on the first try. No plugins. No pre-built integrations. If a human developer could figure it out, Clawdia can too.</p>
+        </div>
+        <div class="feature-visual">
+          <div class="feature-code">
+            <div class="code-header"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+            <pre><code><span class="c-you">You:</span> Screenshot my desktop every 5 seconds.
+
+<span class="c-ai">Clawdia:</span> <span class="c-kw">&rarr;</span> search(<span class="c-str">"linux screenshot tool command line"</span>)
+         <span class="c-kw">&rarr;</span> reading results...
+         <span class="c-kw">&rarr;</span> shell: <span class="c-str">sudo apt install scrot -y</span>
+         <span class="c-kw">&rarr;</span> shell: <span class="c-str">scrot ~/screenshot-test.png</span>
+         <span class="c-kw">&rarr;</span> verifying capture... <span class="c-ok">2560x2160 &#10003;</span>
+         <span class="c-kw">&rarr;</span> writing interval script...
+         <span class="c-kw">&rarr;</span> shell: <span class="c-str">./screenshot-loop.sh &amp;</span>
+
+<span class="c-ok">Done.</span> Screenshots saving to ~/screenshots/ every 5 seconds.</code></pre>
+            <p class="feature-punchline">28 seconds &middot; first try &middot; zero prior knowledge</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="feature-row animate-on-scroll">
+        <div class="feature-text">
+          <h3 class="feature-label">Bring Your Own Key</h3>
+          <p>Your API key. Your machine. Your sessions. Free for now!</p>
+          <p class="feature-aside">You don't need a search API key at all &mdash; Playwright + Claude <em>is</em> the search API &mdash; but we show you 4 providers who give you free access to use their keys, so why not big guy?</p>
+        </div>
+        <div class="feature-visual">
+          <div class="feature-code feature-code-byok">
+            <div class="byok-flow">
+              <span class="byok-node">You</span>
+              <span class="byok-arrow">&rarr;</span>
+              <span class="byok-node byok-node-accent">Clawdia</span>
+              <span class="byok-arrow">&rarr;</span>
+              <span class="byok-node">Anthropic API</span>
+            </div>
+            <p class="byok-note">No middleman. No telemetry. MIT licensed.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Compact feature grid -->
+      <div class="feature-grid animate-on-scroll">
+        <div class="feature-card">
+          <h4>All Claude Models</h4>
+          <p>Haiku, Sonnet, Opus &mdash; every model Anthropic offers. Switch mid-conversation.</p>
+        </div>
+        <div class="feature-card">
+          <h4>Session Sharing</h4>
+          <p>Your logged-in accounts are accessible to the AI. No re-authentication.</p>
+        </div>
+        <div class="feature-card">
+          <h4>Document Upload</h4>
+          <p>PDF, DOCX, XLSX, images. Paste, drag-drop, or attach. Full text extraction.</p>
+        </div>
+        <div class="feature-card">
+          <h4>Document Creation</h4>
+          <p>Generate DOCX, PDF, XLSX files from conversation. One-click download.</p>
+        </div>
+        <div class="feature-card">
+          <h4>Image Analysis</h4>
+          <p>Paste or attach screenshots. Claude sees and understands visual content.</p>
+        </div>
+        <div class="feature-card">
+          <h4>Arcade Mode</h4>
+          <p>Tetris, Pac-Man, Asteroids in the idle screen. Because why not. You'll use it.</p>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- Getting Started -->
+  <section class="section section-start" id="start">
+    <div class="container">
+      <h2 class="section-title animate-on-scroll">Get started in 60 seconds.</h2>
+
+      <div class="steps animate-on-scroll">
+        <div class="step">
+          <div class="step-number">1</div>
+          <h4>Download the app.</h4>
+          <p>159 MB AppImage (Linux), DMG (macOS), or EXE (Windows).</p>
+        </div>
+        <div class="step-connector"></div>
+        <div class="step">
+          <div class="step-number">2</div>
+          <h4>Paste your Anthropic API key.</h4>
+          <p>Free $5 credit on <a href="https://console.anthropic.com/" target="_blank" rel="noopener">signup</a>. That's hundreds of messages.</p>
+        </div>
+        <div class="step-connector"></div>
+        <div class="step">
+          <div class="step-number">3</div>
+          <h4>Start talking.</h4>
+          <p>Claude has the browser and your terminal. Tell it what to do.</p>
+        </div>
+      </div>
+
+      <div class="build-source animate-on-scroll">
+        <p>Or build from source:</p>
+        <div class="code-block">
+          <code id="clone-cmd">git clone https://github.com/chillysbabybackribs/Clawdia.git && cd Clawdia && npm install && npm run dev</code>
+          <button class="copy-btn" id="copy-btn" title="Copy to clipboard">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="5" y="5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="M3 11V3a1.5 1.5 0 0 1 1.5-1.5H11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <span class="copy-text">Copy</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Full Download Section -->
+      <div class="download-all animate-on-scroll" id="download">
+        <h3>Downloads</h3>
+        <div class="download-grid">
+          <a href="https://github.com/chillysbabybackribs/Clawdia/releases/download/v1.0.0/Clawdia-1.0.0.AppImage" class="download-card" data-os="linux">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2z" stroke="currentColor" stroke-width="1.5"/><path d="M12 7v6l4 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <span class="download-os">Linux</span>
+            <span class="download-format">.AppImage &middot; 159 MB</span>
+          </a>
+          <a href="https://github.com/chillysbabybackribs/Clawdia/releases/download/v1.0.0/Clawdia-1.0.0.dmg" class="download-card" data-os="mac">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2z" stroke="currentColor" stroke-width="1.5"/><path d="M12 7v6l4 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <span class="download-os">macOS</span>
+            <span class="download-format">.dmg &middot; Universal</span>
+          </a>
+          <a href="https://github.com/chillysbabybackribs/Clawdia/releases/download/v1.0.0/Clawdia-Setup-1.0.0.exe" class="download-card" data-os="windows">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2z" stroke="currentColor" stroke-width="1.5"/><path d="M12 7v6l4 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <span class="download-os">Windows</span>
+            <span class="download-format">.exe installer</span>
+          </a>
+        </div>
+        <p class="download-all-note">All releases on <a href="https://github.com/chillysbabybackribs/Clawdia/releases" target="_blank" rel="noopener">GitHub Releases</a></p>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-brand">C&ensp;L&ensp;A&ensp;W&ensp;D&ensp;I&ensp;A</div>
+      <p class="footer-author">Built by the indefinite article, a Vibe Coder</p>
+      <div class="footer-links">
+        <span>MIT License</span>
+        <span class="footer-sep">&middot;</span>
+        <a href="https://github.com/chillysbabybackribs/Clawdia" target="_blank" rel="noopener">GitHub</a>
+        <span class="footer-sep">&middot;</span>
+        <a href="https://x.com/" target="_blank" rel="noopener">Twitter/X</a>
+      </div>
+      <p class="footer-powered">Powered by Claude (Anthropic)</p>
+    </div>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>
