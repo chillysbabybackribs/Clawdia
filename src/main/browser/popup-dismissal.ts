@@ -1,0 +1,255 @@
+import type { Page } from 'playwright';
+
+const POST_NAV_DISMISS_DELAY_MS = 800;
+const INITIAL_POPUP_RENDER_DELAY_MS = 500;
+const POPUP_SECOND_PASS_DELAY_MS = 300;
+
+const wiredPages = new WeakSet<Page>();
+
+function schedulePopupDismiss(page: Page, delayMs: number = POST_NAV_DISMISS_DELAY_MS): void {
+  setTimeout(() => {
+    void dismissPopups(page);
+  }, delayMs);
+}
+
+export function wireUniversalPopupDismissal(page: Page): void {
+  if (wiredPages.has(page)) return;
+  wiredPages.add(page);
+
+  page.on('load', () => {
+    schedulePopupDismiss(page);
+  });
+
+  page.on('framenavigated', (frame) => {
+    if (frame === page.mainFrame()) {
+      schedulePopupDismiss(page);
+    }
+  });
+
+  page.on('dialog', async (dialog) => {
+    try {
+      const type = dialog.type();
+      if (type === 'prompt') {
+        await dialog.dismiss();
+        return;
+      }
+      await dialog.accept();
+    } catch {
+      // Best effort only.
+    }
+  });
+
+  schedulePopupDismiss(page, 300);
+}
+
+export async function dismissPopups(page: Page): Promise<void> {
+  try {
+    if (page.isClosed()) return;
+
+    await page.waitForTimeout(INITIAL_POPUP_RENDER_DELAY_MS);
+    if (page.isClosed()) return;
+
+    await page.evaluate(() => {
+      const dismissPatterns = [
+        /^accept$/i, /^accept all$/i, /^agree$/i, /^allow$/i, /^allow all$/i,
+        /^ok$/i, /^okay$/i, /^got it$/i, /^i agree$/i, /^i understand$/i,
+        /^continue$/i, /^close$/i, /^dismiss$/i, /^no thanks$/i, /^not now$/i,
+        /^skip$/i, /^maybe later$/i, /^reject$/i, /^reject all$/i,
+        /^decline$/i, /^deny$/i, /^save changes$/i, /^confirm$/i,
+        /^save$/i,
+        /^accept cookies$/i, /^accept all cookies$/i, /^allow cookies$/i,
+        /^cookie settings$/i, /^manage cookies$/i,
+        /^no,?\s*thanks$/i, /^i('|’)m not interested$/i, /^close this$/i,
+      ];
+
+      const clickables = [
+        ...document.querySelectorAll('button'),
+        ...document.querySelectorAll('a'),
+        ...document.querySelectorAll('[role="button"]'),
+        ...document.querySelectorAll('[onclick]'),
+        ...document.querySelectorAll('[tabindex="0"]'),
+      ] as HTMLElement[];
+
+      const closeButtons = [
+        ...document.querySelectorAll('[aria-label*="close" i]'),
+        ...document.querySelectorAll('[aria-label*="dismiss" i]'),
+        ...document.querySelectorAll('[class*="close" i]'),
+        ...document.querySelectorAll('[class*="dismiss" i]'),
+        ...document.querySelectorAll('[data-dismiss]'),
+        ...document.querySelectorAll('[data-close]'),
+        ...document.querySelectorAll('.modal-close, .popup-close, .banner-close'),
+      ] as HTMLElement[];
+
+      function isInOverlay(el: HTMLElement): boolean {
+        let current: HTMLElement | null = el;
+        while (current && current !== document.body) {
+          const style = getComputedStyle(current);
+          const position = style.position;
+          const zIndex = Number.parseInt(style.zIndex || '0', 10) || 0;
+          if ((position === 'fixed' || position === 'sticky') && zIndex >= 10) return true;
+          if (position === 'absolute' && zIndex >= 100) return true;
+
+          const cls = typeof current.className === 'string' ? current.className : '';
+          if (/modal|overlay|popup|banner|cookie|consent|gdpr|dialog|lightbox|interstitial/i.test(cls)) {
+            return true;
+          }
+          current = current.parentElement;
+        }
+        return false;
+      }
+
+      function isVisible(el: HTMLElement): boolean {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return false;
+        const style = getComputedStyle(el);
+        return !(style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0');
+      }
+
+      let clicked = false;
+
+      for (const el of clickables) {
+        if (!isVisible(el) || !isInOverlay(el)) continue;
+        const text = (el.textContent || '').trim();
+        if (!text || text.length > 50) continue;
+        if (dismissPatterns.some((pattern) => pattern.test(text))) {
+          el.click();
+          clicked = true;
+          break;
+        }
+      }
+
+      if (!clicked) {
+        for (const el of closeButtons) {
+          if (!isVisible(el) || !isInOverlay(el)) continue;
+          el.click();
+          clicked = true;
+          break;
+        }
+      }
+
+      if (!clicked) {
+        for (const el of clickables) {
+          if (!isVisible(el) || !isInOverlay(el)) continue;
+          const text = (el.textContent || '').trim();
+          if (text === '×' || text === '✕' || text === '✖' || text === 'X' || text === 'x' || text === '╳') {
+            el.click();
+            clicked = true;
+            break;
+          }
+        }
+      }
+
+      const elementsToRemove: HTMLElement[] = [];
+      const overlayRegex = /cookie|consent|gdpr|popup|modal|overlay|banner|notice|interstitial|paywall|subscribe|newsletter|signup|login-wall|loginwall/i;
+      const zIndexThreshold = 100;
+
+      document.querySelectorAll('*').forEach((el) => {
+        const htmlEl = el as HTMLElement;
+        if (!htmlEl || !htmlEl.tagName) return;
+        if (['HTML', 'BODY', 'HEAD', 'SCRIPT', 'STYLE', 'LINK', 'META'].includes(htmlEl.tagName)) return;
+
+        const style = getComputedStyle(htmlEl);
+        const cls = typeof htmlEl.className === 'string' ? htmlEl.className : '';
+        const id = htmlEl.id || '';
+        const zIndex = Number.parseInt(style.zIndex || '0', 10) || 0;
+        const coversScreen =
+          htmlEl.offsetWidth > window.innerWidth * 0.5 &&
+          htmlEl.offsetHeight > window.innerHeight * 0.5;
+        const hasOverlayClass = overlayRegex.test(`${cls} ${id}`);
+        const isFixed = style.position === 'fixed';
+        const isHighZ = zIndex >= zIndexThreshold;
+        const isBackdrop = style.backgroundColor.includes('rgba') && (Number.parseFloat(style.opacity || '1') < 1);
+        const webkitBackdropFilter = (style as CSSStyleDeclaration & { webkitBackdropFilter?: string }).webkitBackdropFilter || '';
+        const hasBackdropFilter =
+          (style.backdropFilter !== '' && style.backdropFilter !== 'none') ||
+          (webkitBackdropFilter !== '' && webkitBackdropFilter !== 'none');
+
+        if (isFixed && isHighZ && coversScreen) {
+          elementsToRemove.push(htmlEl);
+          return;
+        }
+
+        if (isFixed && hasOverlayClass) {
+          elementsToRemove.push(htmlEl);
+          return;
+        }
+
+        if (isFixed && isHighZ && (isBackdrop || hasBackdropFilter)) {
+          elementsToRemove.push(htmlEl);
+          return;
+        }
+
+        if (style.position === 'sticky' && hasOverlayClass) {
+          elementsToRemove.push(htmlEl);
+        }
+      });
+
+      for (const el of elementsToRemove) {
+        el.remove();
+      }
+
+      document.documentElement.style.overflow = '';
+      document.body.style.overflow = '';
+      document.documentElement.style.position = '';
+      document.body.style.position = '';
+      document.documentElement.style.height = '';
+      document.body.style.height = '';
+      document.documentElement.style.overflowY = '';
+      document.body.style.overflowY = '';
+
+      document.body.classList.remove(
+        'modal-open',
+        'no-scroll',
+        'overflow-hidden',
+        'noscroll',
+        'popup-open',
+        'has-modal',
+        'scroll-locked',
+        'is-locked',
+      );
+      document.documentElement.classList.remove(
+        'modal-open',
+        'no-scroll',
+        'overflow-hidden',
+        'noscroll',
+      );
+
+      document.querySelectorAll('[style*="overflow"]').forEach((el) => {
+        const htmlEl = el as HTMLElement;
+        if (!htmlEl || !htmlEl.style) return;
+        if (htmlEl.style.overflow === 'hidden' || htmlEl.style.overflowY === 'hidden') {
+          if (htmlEl.offsetHeight > window.innerHeight * 0.5) {
+            htmlEl.style.overflow = '';
+            htmlEl.style.overflowY = '';
+          }
+        }
+      });
+    });
+
+    await page.waitForTimeout(POPUP_SECOND_PASS_DELAY_MS);
+    if (page.isClosed()) return;
+
+    await page.evaluate(() => {
+      document.querySelectorAll('*').forEach((el) => {
+        const htmlEl = el as HTMLElement;
+        const style = getComputedStyle(htmlEl);
+        if (style.position !== 'fixed') return;
+        const zIndex = Number.parseInt(style.zIndex || '0', 10) || 0;
+        if (zIndex < 100) return;
+        const coversScreen =
+          htmlEl.offsetWidth > window.innerWidth * 0.4 &&
+          htmlEl.offsetHeight > window.innerHeight * 0.4;
+        if (coversScreen) {
+          htmlEl.remove();
+        }
+      });
+
+      document.body.style.overflow = '';
+      document.documentElement.style.overflow = '';
+      document.body.style.overflowY = '';
+      document.documentElement.style.overflowY = '';
+    });
+  } catch (err) {
+    console.warn('[Popup] Dismissal failed:', err);
+  }
+}

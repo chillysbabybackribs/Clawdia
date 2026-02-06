@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self' http://localhost:* ws://localhost:*; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:*; style-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:* ws://localhost:*; img-src 'self' https:">
+  <title>Clawdia</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <div class="app-container">
+      <!-- Chat Panel (left 50%) -->
+      <div id="chat-container" class="chat-container">
+        <div class="main-content">
+          <!-- Header -->
+          <header class="header">
+            <div class="conversations-dropdown-container">
+              <button id="conversations-toggle" class="header-icon-btn" title="Conversations">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                  <line x1="2" y1="4" x2="14" y2="4"/>
+                  <line x1="2" y1="8" x2="14" y2="8"/>
+                  <line x1="2" y1="12" x2="14" y2="12"/>
+                </svg>
+              </button>
+              <div id="conversations-dropdown" class="conversations-dropdown hidden">
+                <div class="conversations-dropdown-header">
+                  <h2>Conversations</h2>
+                  <button id="new-conversation-btn" class="new-conversation-btn" title="New conversation">+</button>
+                </div>
+                <div id="conversations-list" class="conversations-list"></div>
+              </div>
+            </div>
+            <span class="brand-name">Clawdia</span>
+            <div class="header-spacer"></div>
+            <div class="header-controls">
+              <button id="settings-toggle" class="header-icon-btn" title="Settings">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="8" cy="8" r="2"/>
+                  <path d="M8 1v2M8 13v2M1 8h2M13 8h2M2.93 2.93l1.41 1.41M11.66 11.66l1.41 1.41M2.93 13.07l1.41-1.41M11.66 4.34l1.41-1.41"/>
+                </svg>
+              </button>
+              <button id="browser-toggle" class="header-icon-btn" title="Toggle browser panel">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="8" cy="8" r="6.5"/>
+                  <ellipse cx="8" cy="8" rx="2.5" ry="6.5"/>
+                  <line x1="1.5" y1="8" x2="14.5" y2="8"/>
+                </svg>
+              </button>
+              <div class="window-controls">
+                <button id="min-btn" class="window-btn" title="Minimize">
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                    <line x1="2" y1="5" x2="8" y2="5"/>
+                  </svg>
+                </button>
+                <button id="max-btn" class="window-btn" title="Maximize">
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2" y="2" width="6" height="6"/>
+                  </svg>
+                </button>
+                <button id="close-btn" class="window-btn window-btn-close" title="Close">
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                    <line x1="2" y1="2" x2="8" y2="8"/>
+                    <line x1="8" y1="2" x2="2" y2="8"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </header>
+
+          <!-- Chat Area -->
+          <main class="chat-area">
+            <div class="tab-strip chat-tab-strip">
+              <div class="source-tabs chat-tabs" id="chat-tabs" role="tablist" aria-label="Chat conversations"></div>
+            </div>
+            <div class="chat-scroll-region">
+              <div id="output" class="output"></div>
+            </div>
+          </main>
+
+          <!-- Input Section -->
+          <footer class="input-section">
+            <div class="input-row">
+              <textarea id="prompt" placeholder="Type your message..." rows="2"></textarea>
+              <div class="input-controls">
+                <button id="send" class="primary" type="button">Send</button>
+                <button id="cancel" class="secondary" disabled type="button">Cancel</button>
+              </div>
+            </div>
+          </footer>
+        </div>
+      </div>
+
+      <!-- Browser Panel (right 50%) -->
+      <div id="panel-container" class="panel-container">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-header-spacer"></div>
+            <div class="panel-window-controls">
+              <button id="panel-min-btn" class="window-btn" title="Minimize">–</button>
+              <button id="panel-max-btn" class="window-btn" title="Maximize">□</button>
+              <button id="panel-close-btn" class="window-btn window-btn-close" title="Close">×</button>
+            </div>
+          </div>
+
+          <div class="tab-strip">
+            <div class="source-tabs" id="source-tabs" role="tablist" aria-label="Research sources"></div>
+          </div>
+          <div class="browser-controls">
+            <div class="browser-nav">
+              <button class="nav-btn" id="browser-back" title="Back">←</button>
+              <button class="nav-btn" id="browser-forward" title="Forward">→</button>
+              <button class="nav-btn" id="browser-reload" title="Reload">↻</button>
+            </div>
+            <div class="browser-url-bar">
+              <input type="text" id="browser-url" placeholder="Search or enter URL" spellcheck="false" autocomplete="off">
+              <button class="nav-btn" id="browser-go" title="Go">→</button>
+            </div>
+            <div class="browser-frequent-row">
+              <span class="browser-frequent-label">Quick access:</span>
+              <div class="frequent-sites" id="frequent-sites"></div>
+            </div>
+          </div>
+
+          <div class="browser-placeholder">
+            <p class="placeholder-text">Browser view will appear here</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settings-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Settings</h2>
+        <button id="settings-close" class="modal-close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="api-key">Anthropic API Key</label>
+          <input type="password" id="api-key" placeholder="sk-ant-...">
+        </div>
+
+        <div class="settings-section-label">Search Backend</div>
+
+        <div class="form-group">
+          <label for="search-backend-select">Preferred Backend</label>
+          <select id="search-backend-select">
+            <option value="serper">Serper (recommended)</option>
+            <option value="brave">Brave Search</option>
+            <option value="serpapi">SerpAPI</option>
+            <option value="bing">Bing</option>
+            <option value="playwright">Browser only (no API)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="serper-key">Serper API Key</label>
+          <input type="password" id="serper-key" placeholder="Serper API key">
+        </div>
+
+        <div class="form-group">
+          <label for="brave-key">Brave Search API Key</label>
+          <input type="password" id="brave-key" placeholder="Brave API key">
+        </div>
+
+        <div class="form-group">
+          <label for="serpapi-key">SerpAPI Key</label>
+          <input type="password" id="serpapi-key" placeholder="SerpAPI key">
+        </div>
+
+        <div class="form-group">
+          <label for="bing-key">Bing API Key</label>
+          <input type="password" id="bing-key" placeholder="Bing API key">
+        </div>
+
+        <button id="save-settings" class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="main.ts"></script>
+</body>
+</html>

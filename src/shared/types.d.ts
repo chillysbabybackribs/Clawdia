@@ -1,0 +1,229 @@
+export interface Message {
+    id: string;
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+    createdAt: string;
+    toolCalls?: ToolCall[];
+}
+export interface ToolCall {
+    id: string;
+    name: string;
+    input: Record<string, unknown>;
+    status: 'pending' | 'success' | 'error';
+    result?: string;
+}
+export interface Conversation {
+    id: string;
+    title: string;
+    createdAt: string;
+    updatedAt: string;
+    messages: Message[];
+}
+export interface BrowserState {
+    url: string;
+    title: string;
+    loading: boolean;
+}
+export interface InteractiveElement {
+    nodeId: string;
+    tag: string;
+    role?: string;
+    text: string;
+    selector: string;
+    type?: string;
+    placeholder?: string;
+    rect: {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+    };
+    dataset?: Record<string, string>;
+    ariaLabel?: string;
+}
+export interface PageObservation {
+    url: string;
+    title: string;
+    pagePreview: string;
+    interactiveElements: InteractiveElement[];
+    formCount: number;
+    linkCount: number;
+    inputCount: number;
+    timestamp: number;
+}
+export interface FrequentSiteEntry {
+    url: string;
+    host: string;
+    title?: string;
+    lastUsed: number;
+    count: number;
+}
+export interface ToolResult<T = unknown> {
+    ok: boolean;
+    data?: T;
+    error?: {
+        code: string;
+        message: string;
+        details?: Record<string, unknown>;
+    };
+}
+export interface LLMConfig {
+    provider: 'anthropic' | 'openai';
+    apiKey: string;
+    model: string;
+    baseURL?: string;
+}
+export interface StreamEvent {
+    type: 'text' | 'tool_call_start' | 'tool_call_result' | 'done' | 'error';
+    text?: string;
+    toolCall?: ToolCall;
+    toolResult?: {
+        id: string;
+        result: string;
+        isError: boolean;
+    };
+    error?: string;
+}
+export interface MCPToolSchema {
+    name: string;
+    description: string;
+    inputSchema: Record<string, unknown>;
+}
+export interface MCPServerConfig {
+    name: string;
+    command: string;
+    args: string[];
+    tools: MCPToolSchema[];
+    idleTimeout?: number;
+}
+export type RouteType = 'chat' | 'browse' | 'research';
+export interface IntakeResult {
+    route: RouteType;
+    taskSpec?: TaskSpec;
+}
+export type DomainId = 'SOFTWARE' | 'PHYSICAL_PROCESS' | 'GENERAL';
+export interface TaskSpec {
+    userGoal: string;
+    successCriteria: string[];
+    deliverableSchema: string[];
+    budget: {
+        maxActions: number;
+        maxBatches: number;
+        maxTimeSeconds: number;
+    };
+    actions: PlannedAction[];
+    domain?: DomainId;
+}
+export interface PlannedAction {
+    id: string;
+    type: 'search' | 'navigate' | 'open_and_scan';
+    source: string;
+    query?: string;
+    url?: string;
+    priority: number;
+    reason?: string;
+}
+export type SourceKind = 'official_docs' | 'repo_canonical' | 'repo_noncanonical' | 'content_primary' | 'content_secondary' | 'forum' | 'serp' | 'search_results' | 'docs_meta';
+export type SourceTier = 'A' | 'B' | 'C' | 'D';
+export interface SourceEvidence {
+    sourceId: string;
+    url: string;
+    host: string;
+    title: string;
+    retrievedAt: number;
+    rawContent: string;
+    keyFindings: string[];
+    sourceKind: SourceKind;
+    sourceTier: SourceTier;
+    eligibleForSynthesis: boolean;
+    eligibleForPrimaryClaims: boolean;
+    authorityScore?: number;
+    canonicalRepo?: boolean;
+    discardReason?: string;
+    headings?: string[];
+}
+export interface FollowUpSuggestion {
+    url: string;
+    title: string;
+    host: string;
+    reason: string;
+    sourceKind?: SourceKind;
+    sourceTier?: SourceTier;
+}
+export interface ActionResult {
+    actionId: string;
+    source: string;
+    status: 'pending' | 'running' | 'success' | 'error';
+    startedAt?: number;
+    completedAt?: number;
+    evidence?: SourceEvidence[];
+    error?: {
+        code: string;
+        message: string;
+    };
+    executionStatus?: ActionStatus;
+    sourceIds?: string[];
+    visitedPreviews?: ResearchSourcePreview[];
+    followUps?: FollowUpSuggestion[];
+    reason?: string;
+}
+export interface HeartbeatCheckpoint {
+    checkpointNumber: number;
+    completedSources: Array<{
+        sourceId: string;
+        host: string;
+        title: string;
+        findingsCount: number;
+        snippet: string;
+    }>;
+    successCriteria: string[];
+    criteriaWithEvidence: string[];
+    actionsRemaining: number;
+    batchesRemaining: number;
+    elapsedSeconds: number;
+}
+export type ActionStatus = 'succeeded' | 'failed' | 'skipped_budget' | 'skipped_policy' | 'discarded_prune';
+export interface HeartbeatResponse {
+    action: 'continue' | 'done';
+    newActions?: PlannedAction[];
+}
+export interface ResearchSourcePreview {
+    sourceId: string;
+    title: string;
+    host: string;
+    url: string;
+    sourceKind?: SourceKind;
+    sourceTier?: SourceTier;
+    reason?: string;
+    eligibleForSynthesis?: boolean;
+    eligibleForPrimaryClaims?: boolean;
+    discardReason?: string;
+    authorityScore?: number;
+    canonicalRepo?: boolean;
+}
+export interface ResearchProgress {
+    phase: 'intake' | 'executing' | 'checkpoint' | 'synthesizing' | 'done';
+    message: string;
+    actions?: Array<{
+        id: string;
+        source: string;
+        status: ActionResult['status'];
+        preview?: string;
+        executionStatus?: ActionStatus;
+        sourceIds?: string[];
+        reason?: string;
+        producedSources?: ResearchSourcePreview[];
+    }>;
+    checkpointNumber?: number;
+    sources?: ResearchSourcePreview[];
+    activeSourceId?: string;
+    activeSourceUrl?: string;
+    gateStatus?: {
+        ok: boolean;
+        reasons: string[];
+        eligibleCount: number;
+        hostCount: number;
+        hasPrimary: boolean;
+    };
+}
+//# sourceMappingURL=types.d.ts.map
