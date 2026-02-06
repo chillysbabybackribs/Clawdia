@@ -1,5 +1,4 @@
-/// <reference types="vitest" />
-
+import { describe, expect, test } from 'vitest';
 import { Router } from '../router';
 import { Planner } from '../planner';
 

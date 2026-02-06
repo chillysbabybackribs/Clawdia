@@ -148,9 +148,25 @@ const api = {
   // -------------------------------------------------------------------------
   // Settings
   // -------------------------------------------------------------------------
+  getApiKey: () => ipcRenderer.invoke(IPC.API_KEY_GET),
+
+  setApiKey: (key: string) => ipcRenderer.invoke(IPC.API_KEY_SET, key),
+
+  hasCompletedSetup: () => ipcRenderer.invoke(IPC.HAS_COMPLETED_SETUP),
+
+  clearApiKey: () => ipcRenderer.invoke(IPC.API_KEY_CLEAR),
+
+  validateApiKey: (key: string) => ipcRenderer.invoke(IPC.API_KEY_VALIDATE, key),
+
   getSettings: () => ipcRenderer.invoke(IPC.SETTINGS_GET),
 
-  setSetting: (key: string, value: string) => ipcRenderer.invoke(IPC.SETTINGS_SET, key, value),
+  setSetting: (key: string, value: string | boolean) => ipcRenderer.invoke(IPC.SETTINGS_SET, key, value),
+
+  getSelectedModel: () => ipcRenderer.invoke(IPC.MODEL_GET),
+
+  setSelectedModel: (model: string) => ipcRenderer.invoke(IPC.MODEL_SET, model),
+
+  validateApiKeyWithModel: (key: string, model: string) => ipcRenderer.invoke(IPC.API_KEY_VALIDATE, key, model),
 
   // -------------------------------------------------------------------------
   // Window
@@ -165,6 +181,7 @@ const api = {
 // Expose to renderer
 console.log('[Preload] Exposing API to renderer...');
 contextBridge.exposeInMainWorld('api', api);
+contextBridge.exposeInMainWorld('clawdia', api);
 console.log('[Preload] API exposed successfully');
 
 // Type declaration for renderer

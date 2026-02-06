@@ -14,81 +14,265 @@
       <!-- Chat Panel (left 50%) -->
       <div id="chat-container" class="chat-container">
         <div class="main-content">
-          <!-- Header -->
-          <header class="header">
-            <div class="conversations-dropdown-container">
-              <button id="conversations-toggle" class="header-icon-btn" title="Conversations">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-                  <line x1="2" y1="4" x2="14" y2="4"/>
-                  <line x1="2" y1="8" x2="14" y2="8"/>
-                  <line x1="2" y1="12" x2="14" y2="12"/>
-                </svg>
-              </button>
-              <div id="conversations-dropdown" class="conversations-dropdown hidden">
-                <div class="conversations-dropdown-header">
-                  <h2>Conversations</h2>
-                  <button id="new-conversation-btn" class="new-conversation-btn" title="New conversation">+</button>
+          <div id="chat-app-shell" class="chat-app-shell">
+            <!-- Header -->
+            <header class="header">
+              <div class="conversations-dropdown-container">
+                <button id="conversations-toggle" class="header-icon-btn" title="Conversations">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                    <line x1="2" y1="4" x2="14" y2="4"/>
+                    <line x1="2" y1="8" x2="14" y2="8"/>
+                    <line x1="2" y1="12" x2="14" y2="12"/>
+                  </svg>
+                </button>
+                <div id="conversations-dropdown" class="conversations-dropdown hidden">
+                  <div class="conversations-dropdown-header">
+                    <h2>Conversations</h2>
+                    <button id="new-conversation-btn" class="new-conversation-btn" title="New conversation">+</button>
+                  </div>
+                  <div id="conversations-list" class="conversations-list"></div>
                 </div>
-                <div id="conversations-list" class="conversations-list"></div>
               </div>
-            </div>
-            <span class="brand-name">Clawdia</span>
-            <div class="header-spacer"></div>
-            <div class="header-controls">
-              <button id="settings-toggle" class="header-icon-btn" title="Settings">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                  <circle cx="8" cy="8" r="2"/>
-                  <path d="M8 1v2M8 13v2M1 8h2M13 8h2M2.93 2.93l1.41 1.41M11.66 11.66l1.41 1.41M2.93 13.07l1.41-1.41M11.66 4.34l1.41-1.41"/>
-                </svg>
-              </button>
-              <button id="browser-toggle" class="header-icon-btn" title="Toggle browser panel">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                  <circle cx="8" cy="8" r="6.5"/>
-                  <ellipse cx="8" cy="8" rx="2.5" ry="6.5"/>
-                  <line x1="1.5" y1="8" x2="14.5" y2="8"/>
-                </svg>
-              </button>
-              <div class="window-controls">
-                <button id="min-btn" class="window-btn" title="Minimize">
-                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-                    <line x1="2" y1="5" x2="8" y2="5"/>
+              <span class="brand-name">Clawdia</span>
+              <div class="header-spacer"></div>
+              <div class="header-controls">
+                <button id="settings-toggle" class="header-icon-btn" title="Settings">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="8" cy="8" r="2"/>
+                    <path d="M8 1v2M8 13v2M1 8h2M13 8h2M2.93 2.93l1.41 1.41M11.66 11.66l1.41 1.41M2.93 13.07l1.41-1.41M11.66 4.34l1.41-1.41"/>
                   </svg>
                 </button>
-                <button id="max-btn" class="window-btn" title="Maximize">
-                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                    <rect x="2" y="2" width="6" height="6"/>
+                <button id="browser-toggle" class="header-icon-btn" title="Toggle browser panel">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="8" cy="8" r="6.5"/>
+                    <ellipse cx="8" cy="8" rx="2.5" ry="6.5"/>
+                    <line x1="1.5" y1="8" x2="14.5" y2="8"/>
                   </svg>
                 </button>
-                <button id="close-btn" class="window-btn window-btn-close" title="Close">
-                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-                    <line x1="2" y1="2" x2="8" y2="8"/>
-                    <line x1="8" y1="2" x2="2" y2="8"/>
-                  </svg>
-                </button>
+                <div class="window-controls">
+                  <button id="min-btn" class="window-btn" title="Minimize">
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                      <line x1="2" y1="5" x2="8" y2="5"/>
+                    </svg>
+                  </button>
+                  <button id="max-btn" class="window-btn" title="Maximize">
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                      <rect x="2" y="2" width="6" height="6"/>
+                    </svg>
+                  </button>
+                  <button id="close-btn" class="window-btn window-btn-close" title="Close">
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                      <line x1="2" y1="2" x2="8" y2="8"/>
+                      <line x1="8" y1="2" x2="2" y2="8"/>
+                    </svg>
+                  </button>
+                </div>
               </div>
-            </div>
-          </header>
+            </header>
 
-          <!-- Chat Area -->
-          <main class="chat-area">
-            <div class="tab-strip chat-tab-strip">
-              <div class="source-tabs chat-tabs" id="chat-tabs" role="tablist" aria-label="Chat conversations"></div>
-            </div>
-            <div class="chat-scroll-region">
-              <div id="output" class="output"></div>
-            </div>
-          </main>
+            <!-- Chat Area -->
+            <main class="chat-area">
+              <div class="tab-strip chat-tab-strip">
+                <div class="source-tabs chat-tabs" id="chat-tabs" role="tablist" aria-label="Chat conversations"></div>
+              </div>
+              <div class="chat-scroll-region">
+                <div id="output" class="output"></div>
+              </div>
+            </main>
 
-          <!-- Input Section -->
-          <footer class="input-section">
-            <div class="input-row">
-              <textarea id="prompt" placeholder="Type your message..." rows="2"></textarea>
-              <div class="input-controls">
-                <button id="send" class="primary" type="button">Send</button>
-                <button id="cancel" class="secondary" disabled type="button">Cancel</button>
+            <!-- Input Section -->
+            <footer class="input-section">
+              <div class="input-meta-row">
+                <div class="model-switcher-container">
+                  <button id="model-switcher-btn" class="model-switcher-btn" type="button">
+                    <span id="model-switcher-label">Sonnet 4</span>
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="2 4 5 7 8 4"/>
+                    </svg>
+                  </button>
+                  <div id="model-switcher-popover" class="model-switcher-popover hidden">
+                    <button type="button" class="model-switcher-option" data-model="claude-haiku-4-5-20251001">
+                      <span class="model-switcher-option-label">Haiku 4.5</span>
+                      <span class="model-badge mini">FAST</span>
+                    </button>
+                    <button type="button" class="model-switcher-option" data-model="claude-sonnet-4-20250514">
+                      <span class="model-switcher-option-label">Sonnet 4</span>
+                      <span class="model-badge mini">DEFAULT</span>
+                    </button>
+                    <button type="button" class="model-switcher-option" data-model="claude-opus-4-20250514">
+                      <span class="model-switcher-option-label">Opus 4</span>
+                      <span class="model-badge mini">PRO</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div class="input-row">
+                <textarea id="prompt" placeholder="Type your message..." rows="2"></textarea>
+                <div class="input-controls">
+                  <button id="send" class="primary" type="button">Send</button>
+                  <button id="cancel" class="secondary" disabled type="button">Cancel</button>
+                </div>
+              </div>
+            </footer>
+          </div>
+
+          <div id="setup-view" class="setup-view hidden">
+            <div class="setup-card">
+              <div class="setup-brand">
+                <h1 class="setup-title">C L A W D I A</h1>
+                <p class="setup-subtitle">AI Desktop Workspace</p>
+              </div>
+              <p class="setup-message">
+                Enter your Anthropic API key to get started. Your key is stored locally and never leaves your machine.
+              </p>
+              <button id="setup-get-key-link" class="setup-link-btn" type="button">
+                Get an API key at console.anthropic.com
+              </button>
+              <div class="setup-input-wrap">
+                <input id="setup-api-key-input" type="password" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
+                <button id="setup-toggle-visibility" class="setup-visibility-btn" type="button" aria-label="Show API key" title="Show API key">
+                  <svg class="icon-eye" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M1 12s4-7 11-7s11 7 11 7s-4 7-11 7s-11-7-11-7Z"></path>
+                    <circle cx="12" cy="12" r="3"></circle>
+                  </svg>
+                  <svg class="icon-eye-off hidden" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 3l18 18"></path>
+                    <path d="M10.58 10.58A2 2 0 0 0 12 14a2 2 0 0 0 1.42-.58"></path>
+                    <path d="M9.88 5.09A10.94 10.94 0 0 1 12 5c7 0 11 7 11 7a21.77 21.77 0 0 1-2.65 3.49"></path>
+                    <path d="M6.61 6.61A21.79 21.79 0 0 0 1 12s4 7 11 7a10.94 10.94 0 0 0 5.39-1.61"></path>
+                  </svg>
+                </button>
+              </div>
+              <div class="setup-model-section">
+                <label class="setup-model-label">Model</label>
+                <div class="model-selector" id="setup-model-selector">
+                  <button type="button" class="model-card" data-model="claude-haiku-4-5-20251001">
+                    <span class="model-badge">FAST</span>
+                    <span class="model-label">Haiku 4.5</span>
+                    <span class="model-desc">Fast & cheap — simple tasks, quick chat</span>
+                  </button>
+                  <button type="button" class="model-card selected" data-model="claude-sonnet-4-20250514">
+                    <span class="model-badge">DEFAULT</span>
+                    <span class="model-label">Sonnet 4</span>
+                    <span class="model-desc">Balanced — best for most tasks</span>
+                  </button>
+                  <button type="button" class="model-card" data-model="claude-opus-4-20250514">
+                    <span class="model-badge">PRO</span>
+                    <span class="model-label">Opus 4</span>
+                    <span class="model-desc">Most capable — complex research & generation</span>
+                  </button>
+                </div>
+              </div>
+              <button id="setup-save-key-btn" class="primary setup-save-btn" type="button">
+                <span id="setup-save-key-text">Validate &amp; Save</span>
+                <span id="setup-save-key-spinner" class="setup-spinner hidden" aria-hidden="true"></span>
+                <span id="setup-save-key-check" class="setup-check hidden" aria-hidden="true">✓</span>
+              </button>
+              <p id="setup-error" class="setup-error hidden"></p>
+              <button id="setup-arcade-btn" class="setup-link-btn setup-arcade-btn" type="button">Play arcade while you set up</button>
+              <div id="setup-arcade-host" class="setup-arcade-host hidden">
+                <div id="setup-arcade-output" class="setup-arcade-output"></div>
               </div>
             </div>
-          </footer>
+          </div>
+        </div>
+
+        <!-- Settings Modal -->
+        <div id="settings-modal" class="modal hidden">
+          <div class="modal-backdrop"></div>
+          <div class="modal-content">
+            <div class="modal-header">
+              <h2>Settings</h2>
+              <button id="settings-close" class="modal-close">×</button>
+            </div>
+            <div class="modal-body">
+              <div class="form-group">
+                <label>API Key</label>
+                <div id="settings-api-key-masked" class="settings-api-key-masked">Not configured</div>
+                <div class="settings-inline-actions">
+                  <button id="change-api-key-btn" class="secondary" type="button">Change Key</button>
+                  <button id="remove-api-key-btn" class="danger" type="button">Remove Key</button>
+                </div>
+                <div id="change-api-key-form" class="settings-change-key hidden">
+                  <div class="settings-key-input-row">
+                    <input type="password" id="change-api-key-input" placeholder="sk-ant-...">
+                    <button id="change-api-key-visibility" class="setup-visibility-btn" type="button" aria-label="Show API key" title="Show API key">
+                      <svg class="icon-eye" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M1 12s4-7 11-7s11 7 11 7s-4 7-11 7s-11-7-11-7Z"></path>
+                        <circle cx="12" cy="12" r="3"></circle>
+                      </svg>
+                      <svg class="icon-eye-off hidden" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 3l18 18"></path>
+                        <path d="M10.58 10.58A2 2 0 0 0 12 14a2 2 0 0 0 1.42-.58"></path>
+                        <path d="M9.88 5.09A10.94 10.94 0 0 1 12 5c7 0 11 7 11 7a21.77 21.77 0 0 1-2.65 3.49"></path>
+                        <path d="M6.61 6.61A21.79 21.79 0 0 0 1 12s4 7 11 7a10.94 10.94 0 0 0 5.39-1.61"></path>
+                      </svg>
+                    </button>
+                  </div>
+                  <div class="settings-inline-actions">
+                    <button id="save-changed-api-key-btn" class="primary" type="button">Validate &amp; Save Key</button>
+                    <button id="cancel-change-api-key-btn" class="secondary" type="button">Cancel</button>
+                  </div>
+                  <p id="change-api-key-error" class="setup-error hidden"></p>
+                </div>
+              </div>
+
+              <div class="settings-section-label">Model</div>
+
+              <div class="model-selector" id="settings-model-selector">
+                <button type="button" class="model-card" data-model="claude-haiku-4-5-20251001">
+                  <span class="model-badge">FAST</span>
+                  <span class="model-label">Haiku 4.5</span>
+                  <span class="model-desc">Fast & cheap — simple tasks, quick chat</span>
+                </button>
+                <button type="button" class="model-card" data-model="claude-sonnet-4-20250514">
+                  <span class="model-badge">DEFAULT</span>
+                  <span class="model-label">Sonnet 4</span>
+                  <span class="model-desc">Balanced — best for most tasks</span>
+                </button>
+                <button type="button" class="model-card" data-model="claude-opus-4-20250514">
+                  <span class="model-badge">PRO</span>
+                  <span class="model-label">Opus 4</span>
+                  <span class="model-desc">Most capable — complex research & generation</span>
+                </button>
+              </div>
+
+              <div class="settings-section-label">Search Backend</div>
+
+              <div class="form-group">
+                <label for="search-backend-select">Preferred Backend</label>
+                <select id="search-backend-select">
+                  <option value="serper">Serper (recommended)</option>
+                  <option value="brave">Brave Search</option>
+                  <option value="serpapi">SerpAPI</option>
+                  <option value="bing">Bing</option>
+                  <option value="playwright">Browser only (no API)</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label for="serper-key">Serper API Key</label>
+                <input type="password" id="serper-key" placeholder="Serper API key">
+              </div>
+
+              <div class="form-group">
+                <label for="brave-key">Brave Search API Key</label>
+                <input type="password" id="brave-key" placeholder="Brave API key">
+              </div>
+
+              <div class="form-group">
+                <label for="serpapi-key">SerpAPI Key</label>
+                <input type="password" id="serpapi-key" placeholder="SerpAPI key">
+              </div>
+
+              <div class="form-group">
+                <label for="bing-key">Bing API Key</label>
+                <input type="password" id="bing-key" placeholder="Bing API key">
+              </div>
+
+              <button id="save-settings" class="primary">Save</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -127,58 +311,6 @@
             <p class="placeholder-text">Browser view will appear here</p>
           </div>
         </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Settings Modal -->
-  <div id="settings-modal" class="modal hidden">
-    <div class="modal-backdrop"></div>
-    <div class="modal-content">
-      <div class="modal-header">
-        <h2>Settings</h2>
-        <button id="settings-close" class="modal-close">×</button>
-      </div>
-      <div class="modal-body">
-        <div class="form-group">
-          <label for="api-key">Anthropic API Key</label>
-          <input type="password" id="api-key" placeholder="sk-ant-...">
-        </div>
-
-        <div class="settings-section-label">Search Backend</div>
-
-        <div class="form-group">
-          <label for="search-backend-select">Preferred Backend</label>
-          <select id="search-backend-select">
-            <option value="serper">Serper (recommended)</option>
-            <option value="brave">Brave Search</option>
-            <option value="serpapi">SerpAPI</option>
-            <option value="bing">Bing</option>
-            <option value="playwright">Browser only (no API)</option>
-          </select>
-        </div>
-
-        <div class="form-group">
-          <label for="serper-key">Serper API Key</label>
-          <input type="password" id="serper-key" placeholder="Serper API key">
-        </div>
-
-        <div class="form-group">
-          <label for="brave-key">Brave Search API Key</label>
-          <input type="password" id="brave-key" placeholder="Brave API key">
-        </div>
-
-        <div class="form-group">
-          <label for="serpapi-key">SerpAPI Key</label>
-          <input type="password" id="serpapi-key" placeholder="SerpAPI key">
-        </div>
-
-        <div class="form-group">
-          <label for="bing-key">Bing API Key</label>
-          <input type="password" id="bing-key" placeholder="Bing API key">
-        </div>
-
-        <button id="save-settings" class="primary">Save</button>
       </div>
     </div>
   </div>

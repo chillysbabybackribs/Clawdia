@@ -48,6 +48,10 @@ export class AnthropicClient {
     this.model = model ?? 'claude-sonnet-4-20250514';
   }
 
+  getModel(): string {
+    return this.model;
+  }
+
   async chat(
     messages: Message[],
     tools: ToolDefinition[],
@@ -58,17 +62,28 @@ export class AnthropicClient {
     // Convert messages to Anthropic format
     const anthropicMessages = this.convertMessages(messages);
 
-    // Build request
+    // Build request — use prompt caching for system prompt and tool definitions.
+    // The system prompt + tools are identical across every call in a tool loop.
+    // With cache_control: ephemeral, calls #2+ get a 90% input token discount.
+    const toolsWithCaching = tools.map((t, i) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.input_schema as Anthropic.Tool.InputSchema,
+      ...(i === tools.length - 1 ? { cache_control: { type: 'ephemeral' as const } } : {}),
+    }));
+
     const response = await this.client.messages.create({
       model: this.model,
       max_tokens: options?.maxTokens ?? 4096,
-      system: systemPrompt,
+      system: [
+        {
+          type: 'text' as const,
+          text: systemPrompt,
+          cache_control: { type: 'ephemeral' as const },
+        },
+      ],
       messages: anthropicMessages,
-      tools: tools.map((t) => ({
-        name: t.name,
-        description: t.description,
-        input_schema: t.input_schema as Anthropic.Tool.InputSchema,
-      })),
+      tools: toolsWithCaching,
       stream: true,
     });
 

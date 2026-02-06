@@ -1,9 +1,7 @@
 // Swappable search backends with fallback chain.
 // Keys are loaded from electron-store settings at call time.
 
-import Store from 'electron-store';
-
-const store = new Store();
+import { store } from '../store';
 
 export interface SearchResult {
   title: string;
@@ -479,72 +477,92 @@ export interface NewsResult {
 
 export async function searchNews(query: string): Promise<NewsResult[]> {
   const serperKey = store.get('serper_api_key') as string;
-  if (serperKey) {
-    try {
-      const response = await fetch('https://google.serper.dev/news', {
-        method: 'POST',
-        headers: {
-          'X-API-KEY': serperKey,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ q: query, num: 8 }),
-      });
-
-      if (!response.ok) throw new Error(`${response.status}`);
-      const data = await response.json();
-
-      if (data.news && data.news.length > 0) {
-        return data.news.slice(0, 6).map((item: any) => ({
-          title: item.title || '',
-          url: item.link || '',
-          snippet: item.snippet || '',
-          source: item.source || '',
-          date: item.date || '',
-        }));
-      }
-    } catch (err) {
-      console.warn('[Search] Serper news failed:', err);
-    }
-  }
-
-  // Fallback: Brave news
   const braveKey = store.get('brave_api_key') as string;
-  if (braveKey) {
-    try {
-      const params = new URLSearchParams({
-        q: query,
-        count: '8',
-        freshness: 'pw',
-      });
+  const [serperResult, braveResult] = await Promise.allSettled([
+    serperKey ? searchNewsSerper(query, serperKey) : Promise.resolve([]),
+    braveKey ? searchNewsBrave(query, braveKey) : Promise.resolve([]),
+  ]);
 
-      const response = await fetch(
-        `https://api.search.brave.com/res/v1/news/search?${params}`,
-        {
-          headers: {
-            Accept: 'application/json',
-            'X-Subscription-Token': braveKey,
-          },
-        }
-      );
+  const serperResults = serperResult.status === 'fulfilled' ? serperResult.value : [];
+  const braveResults = braveResult.status === 'fulfilled' ? braveResult.value : [];
 
-      if (!response.ok) throw new Error(`${response.status}`);
-      const data = await response.json();
-
-      if (data.results && data.results.length > 0) {
-        return data.results.slice(0, 6).map((item: any) => ({
-          title: item.title || '',
-          url: item.url || '',
-          snippet: item.description || '',
-          source: item.meta_url?.hostname || '',
-          date: item.age || '',
-        }));
-      }
-    } catch (err) {
-      console.warn('[Search] Brave news failed:', err);
-    }
+  if (serperResult.status === 'rejected') {
+    console.warn('[Search] Serper news failed:', serperResult.reason);
+  }
+  if (braveResult.status === 'rejected') {
+    console.warn('[Search] Brave news failed:', braveResult.reason);
   }
 
-  return [];
+  if (serperResults.length === 0 && braveResults.length === 0) {
+    return [];
+  }
+
+  return dedupeNewsResults([...serperResults, ...braveResults]).slice(0, 6);
+}
+
+async function searchNewsSerper(query: string, apiKey: string): Promise<NewsResult[]> {
+  const response = await fetch('https://google.serper.dev/news', {
+    method: 'POST',
+    headers: {
+      'X-API-KEY': apiKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ q: query, num: 8 }),
+  });
+
+  if (!response.ok) throw new Error(`${response.status}`);
+  const data = await response.json();
+  if (!data.news || data.news.length === 0) return [];
+
+  return data.news.slice(0, 6).map((item: any) => ({
+    title: item.title || '',
+    url: item.link || '',
+    snippet: item.snippet || '',
+    source: item.source || '',
+    date: item.date || '',
+  }));
+}
+
+async function searchNewsBrave(query: string, apiKey: string): Promise<NewsResult[]> {
+  const params = new URLSearchParams({
+    q: query,
+    count: '8',
+    freshness: 'pw',
+  });
+
+  const response = await fetch(
+    `https://api.search.brave.com/res/v1/news/search?${params}`,
+    {
+      headers: {
+        Accept: 'application/json',
+        'X-Subscription-Token': apiKey,
+      },
+    }
+  );
+
+  if (!response.ok) throw new Error(`${response.status}`);
+  const data = await response.json();
+  if (!data.results || data.results.length === 0) return [];
+
+  return data.results.slice(0, 6).map((item: any) => ({
+    title: item.title || '',
+    url: item.url || '',
+    snippet: item.description || '',
+    source: item.meta_url?.hostname || '',
+    date: item.age || '',
+  }));
+}
+
+function dedupeNewsResults(results: NewsResult[]): NewsResult[] {
+  const seen = new Set<string>();
+  const deduped: NewsResult[] = [];
+  for (const result of results) {
+    const key = (result.url || `${result.title}|${result.source}`).toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(result);
+  }
+  return deduped;
 }
 
 // --- Shopping Search (Serper /shopping endpoint) ---
@@ -605,66 +623,86 @@ export interface PlaceResult {
 
 export async function searchPlaces(query: string): Promise<PlaceResult[]> {
   const serperKey = store.get('serper_api_key') as string;
-  if (serperKey) {
-    try {
-      const response = await fetch('https://google.serper.dev/places', {
-        method: 'POST',
-        headers: {
-          'X-API-KEY': serperKey,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ q: query, num: 5 }),
-      });
-
-      if (!response.ok) throw new Error(`${response.status}`);
-      const data = await response.json();
-
-      if (data.places && data.places.length > 0) {
-        return data.places.slice(0, 5).map((item: any) => ({
-          title: item.title || '',
-          address: item.address || '',
-          rating: item.rating ? `${item.rating}★ (${item.ratingCount || '?'} reviews)` : undefined,
-          hours: item.hours || item.openingHours || undefined,
-          phone: item.phoneNumber || undefined,
-          type: item.type || undefined,
-        }));
-      }
-    } catch (err) {
-      console.warn('[Search] Serper places failed:', err);
-    }
-  }
-
-  // Fallback: SerpAPI Google Maps
   const serpApiKey = store.get('serpapi_api_key') as string;
-  if (serpApiKey) {
-    try {
-      const params = new URLSearchParams({
-        q: query,
-        api_key: serpApiKey,
-        engine: 'google_maps',
-        type: 'search',
-      });
+  const [serperResult, serpApiResult] = await Promise.allSettled([
+    serperKey ? searchPlacesSerper(query, serperKey) : Promise.resolve([]),
+    serpApiKey ? searchPlacesSerpApi(query, serpApiKey) : Promise.resolve([]),
+  ]);
 
-      const response = await fetch(`https://serpapi.com/search.json?${params}`);
-      if (!response.ok) throw new Error(`${response.status}`);
-      const data = await response.json();
+  const serperResults = serperResult.status === 'fulfilled' ? serperResult.value : [];
+  const serpApiResults = serpApiResult.status === 'fulfilled' ? serpApiResult.value : [];
 
-      if (data.local_results) {
-        return data.local_results.slice(0, 5).map((item: any) => ({
-          title: item.title || '',
-          address: item.address || '',
-          rating: item.rating ? `${item.rating}★ (${item.reviews || '?'} reviews)` : undefined,
-          hours: item.hours || undefined,
-          phone: item.phone || undefined,
-          type: item.type || undefined,
-        }));
-      }
-    } catch (err) {
-      console.warn('[Search] SerpAPI places failed:', err);
-    }
+  if (serperResult.status === 'rejected') {
+    console.warn('[Search] Serper places failed:', serperResult.reason);
+  }
+  if (serpApiResult.status === 'rejected') {
+    console.warn('[Search] SerpAPI places failed:', serpApiResult.reason);
   }
 
-  return [];
+  if (serperResults.length === 0 && serpApiResults.length === 0) {
+    return [];
+  }
+
+  return dedupePlaceResults([...serperResults, ...serpApiResults]).slice(0, 5);
+}
+
+async function searchPlacesSerper(query: string, apiKey: string): Promise<PlaceResult[]> {
+  const response = await fetch('https://google.serper.dev/places', {
+    method: 'POST',
+    headers: {
+      'X-API-KEY': apiKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ q: query, num: 5 }),
+  });
+
+  if (!response.ok) throw new Error(`${response.status}`);
+  const data = await response.json();
+  if (!data.places || data.places.length === 0) return [];
+
+  return data.places.slice(0, 5).map((item: any) => ({
+    title: item.title || '',
+    address: item.address || '',
+    rating: item.rating ? `${item.rating}★ (${item.ratingCount || '?'} reviews)` : undefined,
+    hours: item.hours || item.openingHours || undefined,
+    phone: item.phoneNumber || undefined,
+    type: item.type || undefined,
+  }));
+}
+
+async function searchPlacesSerpApi(query: string, apiKey: string): Promise<PlaceResult[]> {
+  const params = new URLSearchParams({
+    q: query,
+    api_key: apiKey,
+    engine: 'google_maps',
+    type: 'search',
+  });
+
+  const response = await fetch(`https://serpapi.com/search.json?${params}`);
+  if (!response.ok) throw new Error(`${response.status}`);
+  const data = await response.json();
+  if (!data.local_results || data.local_results.length === 0) return [];
+
+  return data.local_results.slice(0, 5).map((item: any) => ({
+    title: item.title || '',
+    address: item.address || '',
+    rating: item.rating ? `${item.rating}★ (${item.reviews || '?'} reviews)` : undefined,
+    hours: item.hours || undefined,
+    phone: item.phone || undefined,
+    type: item.type || undefined,
+  }));
+}
+
+function dedupePlaceResults(results: PlaceResult[]): PlaceResult[] {
+  const seen = new Set<string>();
+  const deduped: PlaceResult[] = [];
+  for (const result of results) {
+    const key = `${result.title}|${result.address}`.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(result);
+  }
+  return deduped;
 }
 
 // --- Image Search (Serper /images endpoint) ---

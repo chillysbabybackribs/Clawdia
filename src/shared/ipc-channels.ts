@@ -30,6 +30,17 @@ export const IPC = {
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set',
 
+  // API key / setup
+  API_KEY_GET: 'api-key:get',
+  API_KEY_SET: 'api-key:set',
+  API_KEY_CLEAR: 'api-key:clear',
+  API_KEY_VALIDATE: 'api-key:validate',
+  HAS_COMPLETED_SETUP: 'setup:has-completed',
+
+  // Model
+  MODEL_GET: 'model:get',
+  MODEL_SET: 'model:set',
+
   // Window
   WINDOW_MINIMIZE: 'window:minimize',
   WINDOW_MAXIMIZE: 'window:maximize',

@@ -2,13 +2,14 @@ import { app, BrowserWindow, ipcMain } from 'electron';
 import { execSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
-import Store from 'electron-store';
 import { IPC, IPC_EVENTS } from '../shared/ipc-channels';
 import { setupBrowserIpc, setMainWindow, closeBrowser, initPlaywright, setCdpPort } from './browser/manager';
 import { registerPlaywrightSearchFallback } from './browser/tools';
 import { AnthropicClient } from './llm/client';
 import { ConversationManager } from './llm/conversation';
 import { ToolLoop } from './llm/tool-loop';
+import { store, migrateLegacyStoreSchema, type ChatTabState, type ClawdiaStoreSchema } from './store';
+import { DEFAULT_MODEL } from '../shared/models';
 
 // Pick a free CDP port before Electron starts.
 // Must be synchronous because appendSwitch must run at module load time.
@@ -43,41 +44,43 @@ if (process.env.NODE_ENV !== 'production') {
   process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
 }
 
-interface StoreSchema {
-  anthropic_api_key?: string;
-  serper_api_key?: string;
-  brave_api_key?: string;
-  serpapi_api_key?: string;
-  bing_api_key?: string;
-  search_backend?: string;
-  conversations?: any[];
-  chat_tab_state?: {
-    tabIds: string[];
-    activeId: string | null;
-  };
-}
-
-interface ChatTabState {
-  tabIds: string[];
-  activeId: string | null;
-}
-
 let mainWindow: BrowserWindow | null = null;
 let conversationManager: ConversationManager;
 let activeToolLoop: ToolLoop | null = null;
-const store = new Store<StoreSchema>();
 
 // Cache the AnthropicClient to reuse HTTP connection pooling.
 let cachedClient: AnthropicClient | null = null;
 let cachedClientApiKey: string | null = null;
+let cachedClientModel: string | null = null;
 
-function getClient(apiKey: string): AnthropicClient {
-  if (cachedClient && cachedClientApiKey === apiKey) return cachedClient;
-  cachedClient = new AnthropicClient(apiKey);
+function getClient(apiKey: string, model: string): AnthropicClient {
+  if (cachedClient && cachedClientApiKey === apiKey && cachedClientModel === model) return cachedClient;
+  cachedClient = new AnthropicClient(apiKey, model);
   cachedClientApiKey = apiKey;
+  cachedClientModel = model;
   return cachedClient;
 }
-const CHAT_TAB_STATE_KEY: keyof StoreSchema = 'chat_tab_state';
+
+function getSelectedModel(): string {
+  return ((store.get('selectedModel') as string) || DEFAULT_MODEL);
+}
+const CHAT_TAB_STATE_KEY: keyof ClawdiaStoreSchema = 'chat_tab_state';
+const CONNECTION_WARMUP_TARGETS = [
+  'https://api.anthropic.com/',
+  'https://google.serper.dev/',
+  'https://api.search.brave.com/',
+];
+
+function getAnthropicApiKey(): string {
+  return ((store.get('anthropicApiKey') as string | undefined) ?? '').trim();
+}
+
+function getMaskedAnthropicApiKey(): string {
+  const key = getAnthropicApiKey();
+  if (!key) return '';
+  const suffix = key.slice(-4);
+  return `sk-ant-...${suffix}`;
+}
 
 function sanitizeChatTabState(input: unknown): ChatTabState {
   const state = (input ?? {}) as Partial<ChatTabState>;
@@ -88,40 +91,68 @@ function sanitizeChatTabState(input: unknown): ChatTabState {
   return { tabIds, activeId };
 }
 
-// Load .env file at startup — only sets keys that aren't already in the store.
-function loadEnvFile(): void {
-  const envPath = path.join(app.getAppPath(), '.env');
-  if (!fs.existsSync(envPath)) return;
-
-  const envMap: Record<string, keyof StoreSchema> = {
-    ANTHROPIC_API_KEY: 'anthropic_api_key',
-    SERPER_API_KEY: 'serper_api_key',
-    BRAVE_API_KEY: 'brave_api_key',
-    SERPAPI_API_KEY: 'serpapi_api_key',
-    BING_API_KEY: 'bing_api_key',
-    SEARCH_BACKEND: 'search_backend',
-  };
-
-  try {
-    const content = fs.readFileSync(envPath, 'utf-8');
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const eqIdx = trimmed.indexOf('=');
-      if (eqIdx < 0) continue;
-      const envKey = trimmed.slice(0, eqIdx).trim();
-      const envVal = trimmed.slice(eqIdx + 1).trim();
-      const storeKey = envMap[envKey];
-      if (storeKey && envVal && !store.get(storeKey)) {
-        store.set(storeKey, envVal);
-      }
-    }
-  } catch (err) {
-    console.warn('[Main] Failed to load .env:', err);
-  }
+async function warmConnections(): Promise<void> {
+  await Promise.allSettled(
+    CONNECTION_WARMUP_TARGETS.map((url) =>
+      fetch(url, {
+        method: 'HEAD',
+        signal: AbortSignal.timeout(3000),
+      })
+    )
+  );
 }
 
-loadEnvFile();
+migrateLegacyStoreSchema();
+
+async function validateAnthropicApiKey(key: string, model?: string): Promise<{ valid: boolean; error?: string }> {
+  const normalized = key.trim();
+  if (!normalized) {
+    return { valid: false, error: 'API key is required.' };
+  }
+
+  const validationModel = model || getSelectedModel();
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': normalized,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: validationModel,
+        max_tokens: 1,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (response.ok || response.status === 200) {
+      return { valid: true };
+    }
+
+    let payload: any = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+
+    if (response.status === 401) {
+      return { valid: false, error: 'Invalid API key.' };
+    }
+    if (response.status === 403) {
+      return { valid: false, error: 'API key lacks permissions. Check your Anthropic console.' };
+    }
+    return {
+      valid: false,
+      error: payload?.error?.message || 'Validation failed.',
+    };
+  } catch {
+    return { valid: false, error: 'Could not reach Anthropic API. Check your internet connection.' };
+  }
+}
 
 function createWindow(): void {
   const preloadPath = path.join(__dirname, 'preload.js');
@@ -171,9 +202,7 @@ function createWindow(): void {
 
     // Warm DNS + TCP + TLS connections to API endpoints (fire-and-forget).
     // Eliminates cold-start latency on first search/LLM call.
-    fetch('https://api.anthropic.com/', { method: 'HEAD' }).catch(() => {});
-    fetch('https://google.serper.dev/', { method: 'HEAD' }).catch(() => {});
-    fetch('https://api.search.brave.com/', { method: 'HEAD' }).catch(() => {});
+    void warmConnections();
   });
 
   mainWindow.on('closed', () => {
@@ -191,14 +220,15 @@ function setupIpcHandlers(): void {
       conversation = conversationManager.create();
     }
 
-    const apiKey = store.get('anthropic_api_key') as string | undefined;
+    const apiKey = getAnthropicApiKey();
     if (!apiKey) {
       mainWindow.webContents.send(IPC_EVENTS.CHAT_THINKING, '');
       mainWindow.webContents.send(IPC_EVENTS.CHAT_ERROR, { error: 'No API key configured' });
       return { error: 'No API key' };
     }
 
-    const client = getClient(apiKey);
+    const model = getSelectedModel();
+    const client = getClient(apiKey, model);
     const history = conversation.messages;
     const loop = new ToolLoop(mainWindow, client);
     activeToolLoop = loop;
@@ -254,8 +284,41 @@ function setupIpcHandlers(): void {
     return { success: true };
   });
 
+  ipcMain.handle(IPC.API_KEY_GET, async () => getAnthropicApiKey());
+
+  ipcMain.handle(IPC.API_KEY_SET, async (_event, key: string) => {
+    const normalized = key.trim();
+    store.set('anthropicApiKey', normalized);
+    store.set('hasCompletedSetup', Boolean(normalized));
+    return { success: true };
+  });
+
+  ipcMain.handle(IPC.HAS_COMPLETED_SETUP, async () => Boolean(store.get('hasCompletedSetup')));
+
+  ipcMain.handle(IPC.API_KEY_CLEAR, async () => {
+    store.set('anthropicApiKey', '');
+    store.set('hasCompletedSetup', false);
+    return { success: true };
+  });
+
+  ipcMain.handle(IPC.API_KEY_VALIDATE, async (_event, key: string, model?: string) => validateAnthropicApiKey(key, model));
+
+  ipcMain.handle(IPC.MODEL_GET, async () => (store.get('selectedModel') as string) || DEFAULT_MODEL);
+
+  ipcMain.handle(IPC.MODEL_SET, async (_event, model: string) => {
+    store.set('selectedModel', model);
+    // Invalidate cached client so next request uses the new model.
+    cachedClient = null;
+    cachedClientApiKey = null;
+    cachedClientModel = null;
+    return { success: true };
+  });
+
   ipcMain.handle(IPC.SETTINGS_GET, async () => ({
-    anthropic_api_key: store.get('anthropic_api_key') ? '••••••••' : '',
+    anthropic_api_key: getMaskedAnthropicApiKey(),
+    anthropic_key_masked: getMaskedAnthropicApiKey(),
+    has_completed_setup: Boolean(store.get('hasCompletedSetup')),
+    selected_model: (store.get('selectedModel') as string) || DEFAULT_MODEL,
     serper_api_key: store.get('serper_api_key') ? '••••••••' : '',
     brave_api_key: store.get('brave_api_key') ? '••••••••' : '',
     serpapi_api_key: store.get('serpapi_api_key') ? '••••••••' : '',
@@ -264,7 +327,13 @@ function setupIpcHandlers(): void {
   }));
 
   ipcMain.handle(IPC.SETTINGS_SET, async (_event, key: string, value: string | boolean) => {
-    store.set(key as keyof StoreSchema, value as any);
+    if (key === 'anthropic_api_key' || key === 'anthropicApiKey') {
+      const normalized = String(value ?? '').trim();
+      store.set('anthropicApiKey', normalized);
+      store.set('hasCompletedSetup', Boolean(normalized));
+      return { success: true };
+    }
+    store.set(key as keyof ClawdiaStoreSchema, value as any);
     return { success: true };
   });
 

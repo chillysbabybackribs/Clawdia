@@ -1,4 +1,5 @@
 import type { BrowserTabInfo, ResearchSourcePreview, ResearchProgress, FrequentSiteEntry } from '../shared/types';
+import { showArcade, hideArcade, resetArcadeDismissed } from './arcade/menu';
 
 // ============================================================================
 // TYPE DECLARATIONS
@@ -50,21 +51,33 @@ declare global {
       onTabsUpdated: (callback: (tabs: BrowserTabInfo[]) => void) => () => void;
 
       // Settings
+      getApiKey: () => Promise<string>;
+      setApiKey: (key: string) => Promise<{ success: boolean }>;
+      hasCompletedSetup: () => Promise<boolean>;
+      clearApiKey: () => Promise<{ success: boolean }>;
+      validateApiKey: (key: string) => Promise<{ valid: boolean; error?: string }>;
       getSettings: () => Promise<{
         anthropic_api_key: string;
+        anthropic_key_masked?: string;
+        has_completed_setup?: boolean;
+        selected_model?: string;
         serper_api_key: string;
         brave_api_key: string;
         serpapi_api_key: string;
         bing_api_key: string;
         search_backend: string;
       }>;
-      setSetting: (key: string, value: string) => Promise<{ success: boolean }>;
+      setSetting: (key: string, value: string | boolean) => Promise<{ success: boolean }>;
+      getSelectedModel: () => Promise<string>;
+      setSelectedModel: (model: string) => Promise<{ success: boolean }>;
+      validateApiKeyWithModel: (key: string, model: string) => Promise<{ valid: boolean; error?: string }>;
 
       // Window
       windowMinimize: () => Promise<void>;
       windowMaximize: () => Promise<void>;
       windowClose: () => Promise<void>;
     };
+    clawdia: Window['api'];
   }
 }
 
@@ -129,6 +142,18 @@ let openChatTabs: ChatTab[] = [];
 let activeChatTabId: string | null = null;
 const chatScrollPositions = new Map<string, number>();
 let chatSwitchToken = 0;
+let hasInitializedChatShell = false;
+let isSetupMode = false;
+let isValidatingSetupKey = false;
+let currentSelectedModel = 'claude-sonnet-4-20250514';
+
+const ANTHROPIC_CONSOLE_URL = 'https://console.anthropic.com';
+
+const MODEL_LABELS: Record<string, string> = {
+  'claude-haiku-4-5-20251001': 'Haiku 4.5',
+  'claude-sonnet-4-20250514': 'Sonnet 4',
+  'claude-opus-4-20250514': 'Opus 4',
+};
 
 // ============================================================================
 // DOM ELEMENTS
@@ -139,6 +164,19 @@ const chatTabsContainer = document.getElementById('chat-tabs') as HTMLDivElement
 const promptEl = document.getElementById('prompt') as HTMLTextAreaElement;
 const sendBtn = document.getElementById('send') as HTMLButtonElement;
 const cancelBtn = document.getElementById('cancel') as HTMLButtonElement;
+const chatAppShell = document.getElementById('chat-app-shell') as HTMLDivElement;
+const setupView = document.getElementById('setup-view') as HTMLDivElement;
+const setupApiKeyInput = document.getElementById('setup-api-key-input') as HTMLInputElement;
+const setupToggleVisibilityBtn = document.getElementById('setup-toggle-visibility') as HTMLButtonElement;
+const setupSaveKeyBtn = document.getElementById('setup-save-key-btn') as HTMLButtonElement;
+const setupSaveKeyText = document.getElementById('setup-save-key-text') as HTMLSpanElement;
+const setupSaveKeySpinner = document.getElementById('setup-save-key-spinner') as HTMLSpanElement;
+const setupSaveKeyCheck = document.getElementById('setup-save-key-check') as HTMLSpanElement;
+const setupErrorEl = document.getElementById('setup-error') as HTMLParagraphElement;
+const setupGetKeyLinkBtn = document.getElementById('setup-get-key-link') as HTMLButtonElement;
+const setupArcadeBtn = document.getElementById('setup-arcade-btn') as HTMLButtonElement;
+const setupArcadeHost = document.getElementById('setup-arcade-host') as HTMLDivElement;
+const setupArcadeOutput = document.getElementById('setup-arcade-output') as HTMLDivElement;
 
 const conversationsToggle = document.getElementById('conversations-toggle')!;
 const conversationsDropdown = document.getElementById('conversations-dropdown')!;
@@ -148,13 +186,26 @@ const newConversationBtn = document.getElementById('new-conversation-btn')!;
 const settingsToggle = document.getElementById('settings-toggle')!;
 const settingsModal = document.getElementById('settings-modal')!;
 const settingsClose = document.getElementById('settings-close')!;
-const apiKeyInput = document.getElementById('api-key') as HTMLInputElement;
+const settingsApiKeyMasked = document.getElementById('settings-api-key-masked') as HTMLDivElement;
+const changeApiKeyBtn = document.getElementById('change-api-key-btn') as HTMLButtonElement;
+const removeApiKeyBtn = document.getElementById('remove-api-key-btn') as HTMLButtonElement;
+const changeApiKeyForm = document.getElementById('change-api-key-form') as HTMLDivElement;
+const changeApiKeyInput = document.getElementById('change-api-key-input') as HTMLInputElement;
+const changeApiKeyVisibilityBtn = document.getElementById('change-api-key-visibility') as HTMLButtonElement;
+const saveChangedApiKeyBtn = document.getElementById('save-changed-api-key-btn') as HTMLButtonElement;
+const cancelChangeApiKeyBtn = document.getElementById('cancel-change-api-key-btn') as HTMLButtonElement;
+const changeApiKeyErrorEl = document.getElementById('change-api-key-error') as HTMLParagraphElement;
 const serperKeyInput = document.getElementById('serper-key') as HTMLInputElement;
 const braveKeyInput = document.getElementById('brave-key') as HTMLInputElement;
 const serpapiKeyInput = document.getElementById('serpapi-key') as HTMLInputElement;
 const bingKeyInput = document.getElementById('bing-key') as HTMLInputElement;
 const searchBackendSelect = document.getElementById('search-backend-select') as HTMLSelectElement;
 const saveSettingsBtn = document.getElementById('save-settings')!;
+const settingsModelSelector = document.getElementById('settings-model-selector') as HTMLDivElement;
+const setupModelSelector = document.getElementById('setup-model-selector') as HTMLDivElement;
+const modelSwitcherBtn = document.getElementById('model-switcher-btn') as HTMLButtonElement;
+const modelSwitcherLabel = document.getElementById('model-switcher-label') as HTMLSpanElement;
+const modelSwitcherPopover = document.getElementById('model-switcher-popover') as HTMLDivElement;
 
 const browserToggle = document.getElementById('browser-toggle')!;
 const panelContainer = document.getElementById('panel-container')!;
@@ -170,6 +221,20 @@ const frequentSitesContainer = document.getElementById('frequent-sites') as HTML
 const panelMinBtn = document.getElementById('panel-min-btn');
 const panelMaxBtn = document.getElementById('panel-max-btn');
 const panelCloseBtn = document.getElementById('panel-close-btn');
+
+// ============================================================================
+// ARCADE EMPTY STATE
+// ============================================================================
+
+function updateEmptyState(): void {
+  if (isSetupMode) return;
+  const hasMessages = outputEl.children.length > 0;
+  if (hasMessages) {
+    hideArcade();
+  } else {
+    showArcade(outputEl);
+  }
+}
 
 function createScrollChevron(direction: 'up' | 'down'): HTMLButtonElement {
   const chevron = document.createElement('button');
@@ -284,6 +349,157 @@ function setupScrollChevrons(scrollContainer: HTMLElement, positionParent: HTMLE
   requestAnimationFrame(updateChevronVisibility);
 }
 
+function setVisibilityToggleState(button: HTMLButtonElement, visible: boolean): void {
+  const eye = button.querySelector('.icon-eye');
+  const eyeOff = button.querySelector('.icon-eye-off');
+  eye?.classList.toggle('hidden', visible);
+  eyeOff?.classList.toggle('hidden', !visible);
+  button.title = visible ? 'Hide API key' : 'Show API key';
+  button.setAttribute('aria-label', visible ? 'Hide API key' : 'Show API key');
+}
+
+function togglePasswordInputVisibility(input: HTMLInputElement, button: HTMLButtonElement): void {
+  const visible = input.type !== 'password';
+  input.type = visible ? 'password' : 'text';
+  setVisibilityToggleState(button, !visible);
+}
+
+function setSetupValidationState(options: { loading: boolean; success: boolean; text: string }): void {
+  setupSaveKeyBtn.disabled = options.loading;
+  setupSaveKeyText.textContent = options.text;
+  setupSaveKeySpinner.classList.toggle('hidden', !options.loading);
+  setupSaveKeyCheck.classList.toggle('hidden', !options.success);
+  setupSaveKeyBtn.classList.toggle('success', options.success);
+}
+
+function setSetupError(message: string | null): void {
+  if (!message) {
+    setupErrorEl.classList.add('hidden');
+    setupErrorEl.textContent = '';
+    return;
+  }
+  setupErrorEl.textContent = message;
+  setupErrorEl.classList.remove('hidden');
+}
+
+function setChangeKeyError(message: string | null): void {
+  if (!message) {
+    changeApiKeyErrorEl.classList.add('hidden');
+    changeApiKeyErrorEl.textContent = '';
+    return;
+  }
+  changeApiKeyErrorEl.textContent = message;
+  changeApiKeyErrorEl.classList.remove('hidden');
+}
+
+function setSetupArcadeVisible(visible: boolean): void {
+  if (visible) {
+    setupArcadeHost.classList.remove('hidden');
+    resetArcadeDismissed();
+    showArcade(setupArcadeOutput);
+    setupArcadeBtn.textContent = 'Hide arcade';
+    return;
+  }
+  hideArcade();
+  setupArcadeHost.classList.add('hidden');
+  setupArcadeBtn.textContent = 'Play arcade while you set up';
+}
+
+// ============================================================================
+// MODEL SELECTOR HELPERS
+// ============================================================================
+
+function updateModelSelectorUI(container: HTMLDivElement, modelId: string): void {
+  const cards = container.querySelectorAll('.model-card');
+  cards.forEach((card) => {
+    const el = card as HTMLElement;
+    el.classList.toggle('selected', el.dataset.model === modelId);
+  });
+}
+
+function updateModelSwitcherUI(modelId: string): void {
+  modelSwitcherLabel.textContent = MODEL_LABELS[modelId] || 'Sonnet 4';
+  const options = modelSwitcherPopover.querySelectorAll('.model-switcher-option');
+  options.forEach((opt) => {
+    const el = opt as HTMLElement;
+    el.classList.toggle('active', el.dataset.model === modelId);
+  });
+}
+
+async function selectModel(modelId: string): Promise<void> {
+  currentSelectedModel = modelId;
+  await window.api.setSelectedModel(modelId);
+  updateModelSelectorUI(settingsModelSelector, modelId);
+  updateModelSelectorUI(setupModelSelector, modelId);
+  updateModelSwitcherUI(modelId);
+}
+
+function setupModelCardListeners(container: HTMLDivElement, persist: boolean): void {
+  container.addEventListener('click', (event) => {
+    const card = (event.target as HTMLElement).closest('.model-card') as HTMLElement | null;
+    if (!card?.dataset.model) return;
+    if (persist) {
+      void selectModel(card.dataset.model);
+    } else {
+      // Setup screen: update UI only, persist on save
+      currentSelectedModel = card.dataset.model;
+      updateModelSelectorUI(container, card.dataset.model);
+    }
+  });
+}
+
+function setSetupMode(enabled: boolean): void {
+  isSetupMode = enabled;
+  chatAppShell.classList.toggle('hidden', enabled);
+  setupView.classList.toggle('hidden', !enabled);
+
+  if (enabled) {
+    hideArcade();
+    setupArcadeHost.classList.add('hidden');
+    setupArcadeBtn.textContent = 'Play arcade while you set up';
+    settingsModal.classList.add('hidden');
+    conversationsDropdown.classList.add('hidden');
+    setupApiKeyInput.value = '';
+    setupApiKeyInput.type = 'password';
+    setVisibilityToggleState(setupToggleVisibilityBtn, false);
+    setSetupValidationState({ loading: false, success: false, text: 'Validate & Save' });
+    setSetupError(null);
+    setupApiKeyInput.focus();
+  } else {
+    setSetupArcadeVisible(false);
+  }
+}
+
+async function navigatePanelToAnthropicConsole(): Promise<void> {
+  if (panelContainer.classList.contains('hidden')) {
+    panelContainer.classList.remove('hidden');
+    syncBrowserBounds();
+  }
+  browserUrlInput.value = ANTHROPIC_CONSOLE_URL;
+  await window.api.browserNavigate(ANTHROPIC_CONSOLE_URL);
+}
+
+async function validateAndPersistAnthropicKey(key: string): Promise<{ valid: boolean; error?: string }> {
+  const normalized = key.trim();
+  if (!normalized) {
+    return { valid: false, error: 'Please enter an API key.' };
+  }
+
+  const validation = await window.api.validateApiKey(normalized);
+  if (!validation.valid) {
+    return validation;
+  }
+
+  await window.api.setApiKey(normalized);
+  return { valid: true };
+}
+
+async function ensureChatShellInitialized(): Promise<void> {
+  if (hasInitializedChatShell) return;
+  await initializeChatTabs();
+  hasInitializedChatShell = true;
+}
+
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
@@ -303,8 +519,24 @@ async function init() {
   requestAnimationFrame(() => syncBrowserBounds());
 
   await ensureLandingTab();
-  await initializeChatTabs();
   await hydrateFrequentSites();
+
+  // Load selected model and sync all UI
+  try {
+    currentSelectedModel = await window.api.getSelectedModel();
+  } catch { /* use default */ }
+  updateModelSelectorUI(settingsModelSelector, currentSelectedModel);
+  updateModelSelectorUI(setupModelSelector, currentSelectedModel);
+  updateModelSwitcherUI(currentSelectedModel);
+
+  const hasCompletedSetup = await window.api.hasCompletedSetup();
+  if (!hasCompletedSetup) {
+    setSetupMode(true);
+    return;
+  }
+
+  setSetupMode(false);
+  await ensureChatShellInitialized();
 }
 
 // ============================================================================
@@ -326,6 +558,63 @@ function setupEventListeners() {
     window.api.stopGeneration();
     hideThinking();
     setStreaming(false);
+  });
+
+  setupToggleVisibilityBtn.addEventListener('click', () => {
+    togglePasswordInputVisibility(setupApiKeyInput, setupToggleVisibilityBtn);
+    setupApiKeyInput.focus();
+  });
+
+  setupGetKeyLinkBtn.addEventListener('click', () => {
+    void navigatePanelToAnthropicConsole();
+  });
+
+  setupArcadeBtn.addEventListener('click', () => {
+    const nextVisible = setupArcadeHost.classList.contains('hidden');
+    setSetupArcadeVisible(nextVisible);
+  });
+
+  setupApiKeyInput.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    setupSaveKeyBtn.click();
+  });
+
+  setupSaveKeyBtn.addEventListener('click', async () => {
+    if (isValidatingSetupKey) return;
+    isValidatingSetupKey = true;
+    setSetupError(null);
+    setSetupValidationState({ loading: true, success: false, text: 'Validating...' });
+
+    try {
+      // Validate with the model the user selected in setup
+      const apiKey = setupApiKeyInput.value.trim();
+      if (!apiKey) {
+        setSetupValidationState({ loading: false, success: false, text: 'Validate & Save' });
+        setSetupError('Please enter an API key.');
+        return;
+      }
+      const result = await window.api.validateApiKeyWithModel(apiKey, currentSelectedModel);
+      if (!result.valid) {
+        setSetupValidationState({ loading: false, success: false, text: 'Validate & Save' });
+        setSetupError(result.error || 'Invalid API key. Please check and try again.');
+        return;
+      }
+
+      // Persist key and model
+      await window.api.setApiKey(apiKey);
+      await window.api.setSelectedModel(currentSelectedModel);
+      updateModelSwitcherUI(currentSelectedModel);
+
+      setSetupValidationState({ loading: false, success: true, text: 'Saved' });
+      await new Promise((resolve) => window.setTimeout(resolve, 380));
+      setSetupMode(false);
+      await ensureChatShellInitialized();
+      promptEl.focus();
+    } finally {
+      isValidatingSetupKey = false;
+      setSetupValidationState({ loading: false, success: false, text: 'Validate & Save' });
+    }
   });
 
   // Conversations dropdown
@@ -363,7 +652,18 @@ function setupEventListeners() {
     settingsModal.classList.remove('hidden');
     try {
       const settings = await window.api.getSettings();
+      settingsApiKeyMasked.textContent = settings.anthropic_key_masked || settings.anthropic_api_key || 'Not configured';
       searchBackendSelect.value = settings.search_backend || 'serper';
+      if (settings.selected_model) {
+        currentSelectedModel = settings.selected_model;
+        updateModelSelectorUI(settingsModelSelector, currentSelectedModel);
+        updateModelSwitcherUI(currentSelectedModel);
+      }
+      changeApiKeyForm.classList.add('hidden');
+      changeApiKeyInput.value = '';
+      changeApiKeyInput.type = 'password';
+      setVisibilityToggleState(changeApiKeyVisibilityBtn, false);
+      setChangeKeyError(null);
     } catch { /* ignore */ }
   });
 
@@ -375,9 +675,80 @@ function setupEventListeners() {
     settingsModal.classList.add('hidden');
   });
 
+  changeApiKeyBtn.addEventListener('click', () => {
+    changeApiKeyForm.classList.remove('hidden');
+    setChangeKeyError(null);
+    changeApiKeyInput.focus();
+  });
+
+  cancelChangeApiKeyBtn.addEventListener('click', () => {
+    changeApiKeyForm.classList.add('hidden');
+    changeApiKeyInput.value = '';
+    changeApiKeyInput.type = 'password';
+    setVisibilityToggleState(changeApiKeyVisibilityBtn, false);
+    setChangeKeyError(null);
+  });
+
+  changeApiKeyVisibilityBtn.addEventListener('click', () => {
+    togglePasswordInputVisibility(changeApiKeyInput, changeApiKeyVisibilityBtn);
+    changeApiKeyInput.focus();
+  });
+
+  changeApiKeyInput.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    saveChangedApiKeyBtn.click();
+  });
+
+  saveChangedApiKeyBtn.addEventListener('click', async () => {
+    const nextKey = changeApiKeyInput.value.trim();
+    if (!nextKey) {
+      setChangeKeyError('Please enter an API key.');
+      return;
+    }
+
+    const prevText = saveChangedApiKeyBtn.textContent || 'Validate & Save Key';
+    saveChangedApiKeyBtn.disabled = true;
+    saveChangedApiKeyBtn.textContent = 'Validating...';
+    setChangeKeyError(null);
+
+    try {
+      const result = await validateAndPersistAnthropicKey(nextKey);
+      if (!result.valid) {
+        setChangeKeyError(result.error || 'Invalid API key. Please check and try again.');
+        return;
+      }
+
+      saveChangedApiKeyBtn.textContent = 'Saved';
+      const settings = await window.api.getSettings();
+      settingsApiKeyMasked.textContent = settings.anthropic_key_masked || settings.anthropic_api_key || 'Configured';
+      changeApiKeyForm.classList.add('hidden');
+      changeApiKeyInput.value = '';
+      changeApiKeyInput.type = 'password';
+      setVisibilityToggleState(changeApiKeyVisibilityBtn, false);
+      setChangeKeyError(null);
+    } finally {
+      await new Promise((resolve) => window.setTimeout(resolve, 260));
+      saveChangedApiKeyBtn.disabled = false;
+      saveChangedApiKeyBtn.textContent = prevText;
+    }
+  });
+
+  removeApiKeyBtn.addEventListener('click', async () => {
+    const confirmed = window.confirm('This will clear your key and return to setup. Continue?');
+    if (!confirmed) return;
+    await window.api.clearApiKey();
+    settingsModal.classList.add('hidden');
+    if (isStreaming) {
+      await window.api.stopGeneration();
+      hideThinking();
+      setStreaming(false);
+    }
+    setSetupMode(true);
+  });
+
   saveSettingsBtn.addEventListener('click', async () => {
     const keyPairs: [HTMLInputElement, string][] = [
-      [apiKeyInput, 'anthropic_api_key'],
       [serperKeyInput, 'serper_api_key'],
       [braveKeyInput, 'brave_api_key'],
       [serpapiKeyInput, 'serpapi_api_key'],
@@ -392,6 +763,35 @@ function setupEventListeners() {
     }
     await window.api.setSetting('search_backend', searchBackendSelect.value);
     settingsModal.classList.add('hidden');
+  });
+
+  // Model selector in settings — clicks persist immediately
+  setupModelCardListeners(settingsModelSelector, true);
+
+  // Model selector in setup — clicks update UI only (persisted at save)
+  setupModelCardListeners(setupModelSelector, false);
+
+  // Model quick-switcher in input bar
+  modelSwitcherBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    modelSwitcherPopover.classList.toggle('hidden');
+  });
+
+  modelSwitcherPopover.addEventListener('click', (event) => {
+    const option = (event.target as HTMLElement).closest('.model-switcher-option') as HTMLElement | null;
+    if (!option?.dataset.model) return;
+    void selectModel(option.dataset.model);
+    modelSwitcherPopover.classList.add('hidden');
+  });
+
+  // Close popover on outside click
+  document.addEventListener('click', (event) => {
+    if (!modelSwitcherPopover.classList.contains('hidden') &&
+        !modelSwitcherPopover.contains(event.target as Node) &&
+        event.target !== modelSwitcherBtn &&
+        !modelSwitcherBtn.contains(event.target as Node)) {
+      modelSwitcherPopover.classList.add('hidden');
+    }
   });
 
   // Browser panel toggle
@@ -1180,6 +1580,7 @@ async function switchChatTab(
 
   outputEl.innerHTML = '';
   renderConversationMessages(conversation.messages);
+  updateEmptyState();
 
   if (restoreScroll) {
     const savedPosition = chatScrollPositions.get(conversationId);
@@ -1203,6 +1604,7 @@ async function switchChatTab(
 
 async function createNewChatTab(): Promise<void> {
   if (isStreaming) return;
+  resetArcadeDismissed();
   const conversation = await window.api.newConversation();
   openChatTabs.push({
     id: conversation.id,
@@ -1227,6 +1629,7 @@ async function closeChatTab(conversationId: string): Promise<void> {
     currentConversationId = null;
     activeChatTabId = null;
     outputEl.innerHTML = '';
+    updateEmptyState();
     await createNewChatTab();
     return;
   }
@@ -1302,6 +1705,7 @@ async function initializeChatTabs() {
 }
 
 async function sendMessage() {
+  if (isSetupMode) return;
   const content = promptEl.value.trim();
   if (!content || isStreaming) return;
 
@@ -1351,6 +1755,7 @@ function setStreaming(streaming: boolean) {
 }
 
 function appendUserMessage(content: string, shouldScroll: boolean = true) {
+  hideArcade();
   const wrapper = document.createElement('div');
   wrapper.className = 'user-message';
   wrapper.innerHTML = `
@@ -1364,6 +1769,7 @@ function appendUserMessage(content: string, shouldScroll: boolean = true) {
 }
 
 function startAssistantMessage() {
+  hideArcade();
   streamingContainer = document.createElement('div');
   streamingContainer.className = 'assistant-content streaming';
   outputEl.appendChild(streamingContainer);
@@ -1403,6 +1809,7 @@ function finalizeAssistantMessage(fullText: string) {
 }
 
 function appendError(message: string) {
+  hideArcade();
   const errorEl = document.createElement('div');
   errorEl.className = 'error-message';
   errorEl.textContent = message;

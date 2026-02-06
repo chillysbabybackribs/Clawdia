@@ -1,7 +1,14 @@
 {
   "name": "clawdia",
   "version": "1.0.0",
-  "description": "AI-powered browser automation desktop app",
+  "description": "A local-first AI workspace for browser, code, and task automation.",
+  "author": "Daniel Parker",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chillysbabybackribs/Clawdia"
+  },
+  "keywords": ["ai", "electron", "browser-automation", "claude", "playwright", "desktop", "llm"],
   "main": "dist/main/main.js",
   "type": "commonjs",
   "scripts": {

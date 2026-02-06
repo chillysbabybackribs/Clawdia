@@ -1,9 +1,12 @@
 import { randomUUID } from 'crypto';
 import { BrowserWindow } from 'electron';
+import { homedir } from 'os';
+import * as path from 'path';
 import { AnthropicClient } from './client';
 import { Message } from '../../shared/types';
 import { IPC_EVENTS } from '../../shared/ipc-channels';
 import { buildSystemPrompt } from './system-prompt';
+import { getModelLabel } from '../../shared/models';
 import { BROWSER_TOOL_DEFINITIONS, executeTool as executeBrowserTool } from '../browser/tools';
 import { LOCAL_TOOL_DEFINITIONS, executeLocalTool } from '../local/tools';
 import { generateSynthesisThought, generateThought } from './thought-generator';
@@ -23,8 +26,28 @@ import {
 
 const MAX_TOOL_CALLS = 25;
 const MAX_HISTORY_MESSAGES = 14;
+const MAX_TOOL_RESULT_IN_HISTORY = 2000; // chars — roughly 500 tokens
+const KEEP_FULL_TOOL_RESULTS = 2; // keep last N tool_result messages uncompressed
 const LOCAL_TOOL_NAMES = new Set(LOCAL_TOOL_DEFINITIONS.map((tool) => tool.name));
 const ALL_TOOLS = [...BROWSER_TOOL_DEFINITIONS, ...LOCAL_TOOL_DEFINITIONS];
+const LOCAL_WRITE_TOOL_NAMES = new Set(['file_write', 'file_edit']);
+const BROWSER_NAVIGATION_TOOL_NAMES = new Set([
+  'browser_search',
+  'browser_navigate',
+  'browser_click',
+  'browser_type',
+  'browser_tab',
+]);
+const BROWSER_PAGE_STATE_READ_TOOL_NAMES = new Set([
+  'browser_read_page',
+  'browser_screenshot',
+]);
+const BROWSER_STATELESS_TOOL_NAMES = new Set([
+  'browser_news',
+  'browser_shopping',
+  'browser_places',
+  'browser_images',
+]);
 
 interface SearchEntry {
   tokens: string[];
@@ -35,6 +58,16 @@ interface ToolCall {
   id: string;
   name: string;
   input: Record<string, unknown>;
+}
+
+interface ExecutionTask {
+  toolCall: ToolCall;
+  skip?: string;
+}
+
+interface ToolExecutionResult {
+  id: string;
+  content: string;
 }
 
 function normalizeTokens(query: string): string[] {
@@ -70,6 +103,68 @@ function makeMessage(role: Message['role'], content: string): Message {
     content,
     createdAt: new Date().toISOString(),
   };
+}
+
+/**
+ * Truncate a tool result string for storage in conversation history.
+ * The LLM already saw the full result in the current iteration;
+ * subsequent API calls only need a summary.
+ */
+function truncateForHistory(result: string): string {
+  if (result.length <= MAX_TOOL_RESULT_IN_HISTORY) return result;
+  const head = result.slice(0, 1400);
+  const tail = result.slice(-500);
+  const lineCount = (result.match(/\n/g) || []).length;
+  return `${head}\n\n[... truncated ${result.length - 1900} chars, ~${lineCount} lines ...]\n\n${tail}`;
+}
+
+/**
+ * Compress old tool_result messages in the conversation history.
+ * Keeps the last KEEP_FULL_TOOL_RESULTS tool_result messages at full size;
+ * truncates everything older. This dramatically reduces input tokens
+ * on iterations 5+ of a tool loop.
+ */
+function compressOldToolResults(messages: Message[]): void {
+  // Walk backwards to find tool_result messages (stored as JSON arrays)
+  let toolResultCount = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role !== 'user' || !msg.content.startsWith('[')) continue;
+
+    let parsed: unknown[];
+    try {
+      parsed = JSON.parse(msg.content);
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(parsed)) continue;
+
+    const hasToolResult = parsed.some(
+      (block: any) => block?.type === 'tool_result'
+    );
+    if (!hasToolResult) continue;
+
+    toolResultCount++;
+    if (toolResultCount <= KEEP_FULL_TOOL_RESULTS) continue;
+
+    // Truncate tool result content in this message
+    let changed = false;
+    const compressed = parsed.map((block: any) => {
+      if (
+        block?.type === 'tool_result' &&
+        typeof block.content === 'string' &&
+        block.content.length > MAX_TOOL_RESULT_IN_HISTORY
+      ) {
+        changed = true;
+        return { ...block, content: truncateForHistory(block.content) };
+      }
+      return block;
+    });
+
+    if (changed) {
+      messages[i] = { ...msg, content: JSON.stringify(compressed) };
+    }
+  }
 }
 
 async function executeTool(name: string, input: Record<string, unknown>): Promise<string> {
@@ -113,7 +208,8 @@ export class ToolLoop {
     console.time('[Perf] Total request');
 
     const promptStart = performance.now();
-    const systemPrompt = buildSystemPrompt();
+    const modelLabel = getModelLabel(this.client.getModel());
+    const systemPrompt = buildSystemPrompt() + `\n\nYou are running as Claude ${modelLabel}.`;
     console.log(`[Perf] System prompt: ${(performance.now() - promptStart).toFixed(1)}ms`);
 
     const histStart = performance.now();
@@ -142,7 +238,7 @@ export class ToolLoop {
         messages.push(
           makeMessage(
             'user',
-            '[SYSTEM: You are approaching the tool call limit. Prioritize breadth — make sure you address ALL parts of the user\'s request before going deeper on any single part. If you cannot complete everything, provide your best answers for each part with what you have so far. Do NOT give up or ask for permission to continue.]'
+            '[SYSTEM: Approaching tool limit. Prioritize breadth — address ALL parts of the user\'s request. Do not give up or ask permission to continue.]'
           )
         );
       }
@@ -160,6 +256,10 @@ export class ToolLoop {
         streamedFullText += chunk;
         this.handleStreamChunk(chunk, interceptor);
       };
+
+      // Compress old tool results before sending — keeps last 2 at full size,
+      // truncates everything older to ~2000 chars. Saves 50-70% input tokens on later iterations.
+      compressOldToolResults(messages);
 
       // Use lower max_tokens for intermediate tool-decision calls (tools available).
       // The LLM only needs ~300 tokens to emit tool_use blocks.
@@ -203,7 +303,7 @@ export class ToolLoop {
       const toolResults: Array<{ type: 'tool_result'; tool_use_id: string; content: string }> = [];
 
       // Build execution tasks, handling search dedup inline
-      const execTasks: Array<{ toolCall: ToolCall; skip?: string }> = [];
+      const execTasks: ExecutionTask[] = [];
       for (const toolCall of toolCalls) {
         if (toolCall.name === 'browser_search') {
           const query = String(toolCall.input?.query || '');
@@ -225,21 +325,7 @@ export class ToolLoop {
       }
 
       const toolsStart = performance.now();
-      const results = await Promise.all(
-        execTasks.map(async ({ toolCall, skip }) => {
-          if (this.aborted) return { id: toolCall.id, content: '[Stopped]' };
-          if (skip) return { id: toolCall.id, content: skip };
-          const tStart = performance.now();
-          try {
-            const result = await executeTool(toolCall.name, toolCall.input);
-            console.log(`[Perf] Tool: ${toolCall.name}: ${(performance.now() - tStart).toFixed(0)}ms (${result.length} chars)`);
-            return { id: toolCall.id, content: result };
-          } catch (error: any) {
-            console.log(`[Perf] Tool: ${toolCall.name}: ${(performance.now() - tStart).toFixed(0)}ms (error)`);
-            return { id: toolCall.id, content: `Tool error: ${error?.message || 'unknown error'}` };
-          }
-        })
-      );
+      const results = await this.executeToolsParallel(execTasks);
       console.log(`[Perf] All tools (parallel): ${(performance.now() - toolsStart).toFixed(0)}ms`);
 
       if (this.aborted) {
@@ -247,8 +333,13 @@ export class ToolLoop {
         return '[Stopped]';
       }
 
-      for (const r of results) {
-        toolResults.push({ type: 'tool_result', tool_use_id: r.id, content: r.content });
+      const resultMap = new Map(results.map((r) => [r.id, r.content]));
+      for (const toolCall of toolCalls) {
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: toolCall.id,
+          content: resultMap.get(toolCall.id) || 'Tool execution failed',
+        });
       }
 
       this.emitThinking(generateSynthesisThought(toolCallCount));
@@ -270,6 +361,125 @@ export class ToolLoop {
     this.writeQueue = this.writeQueue.then(fn).catch((err) => {
       console.warn('[ToolLoop] Write queue error:', err?.message || err);
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Tool scheduling — parallel where safe, sequential where stateful
+  // -------------------------------------------------------------------------
+
+  private getLocalWritePath(toolCall: ToolCall): string | null {
+    if (!LOCAL_WRITE_TOOL_NAMES.has(toolCall.name)) return null;
+    const rawPath = toolCall.input?.path;
+    if (typeof rawPath !== 'string' || !rawPath.trim()) return null;
+    const trimmed = rawPath.trim();
+    if (trimmed.startsWith('~')) return path.normalize(path.join(homedir(), trimmed.slice(1)));
+    if (path.isAbsolute(trimmed)) return path.normalize(trimmed);
+    return path.normalize(path.join(homedir(), trimmed));
+  }
+
+  private async runToolTask(task: ExecutionTask): Promise<ToolExecutionResult> {
+    const { toolCall, skip } = task;
+    if (this.aborted) return { id: toolCall.id, content: '[Stopped]' };
+    if (skip) return { id: toolCall.id, content: skip };
+
+    const tStart = performance.now();
+    try {
+      const result = await executeTool(toolCall.name, toolCall.input);
+      console.log(`[Perf] Tool: ${toolCall.name}: ${(performance.now() - tStart).toFixed(0)}ms (${result.length} chars)`);
+      return { id: toolCall.id, content: result };
+    } catch (error: any) {
+      console.log(`[Perf] Tool: ${toolCall.name}: ${(performance.now() - tStart).toFixed(0)}ms (error)`);
+      return { id: toolCall.id, content: `Tool error: ${error?.message || 'unknown error'}` };
+    }
+  }
+
+  private async runSequentialToolTasks(tasks: ExecutionTask[]): Promise<ToolExecutionResult[]> {
+    const results: ToolExecutionResult[] = [];
+    for (const task of tasks) {
+      results.push(await this.runToolTask(task));
+    }
+    return results;
+  }
+
+  private extractSettledValues<T>(settled: PromiseSettledResult<T>[], label: string): T[] {
+    const values: T[] = [];
+    for (const item of settled) {
+      if (item.status === 'fulfilled') {
+        values.push(item.value);
+      } else {
+        console.warn(`[ToolLoop] ${label} task rejected:`, item.reason);
+      }
+    }
+    return values;
+  }
+
+  private async executeToolsParallel(execTasks: ExecutionTask[]): Promise<ToolExecutionResult[]> {
+    const immediate: ToolExecutionResult[] = [];
+    const localParallel: ExecutionTask[] = [];
+    const localWriteUnknownPath: ExecutionTask[] = [];
+    const localWriteGroups = new Map<string, ExecutionTask[]>();
+    const browserSequential: ExecutionTask[] = [];
+
+    for (const task of execTasks) {
+      if (task.skip) {
+        immediate.push({ id: task.toolCall.id, content: task.skip });
+        continue;
+      }
+
+      const toolName = task.toolCall.name;
+      if (
+        BROWSER_NAVIGATION_TOOL_NAMES.has(toolName) ||
+        BROWSER_PAGE_STATE_READ_TOOL_NAMES.has(toolName) ||
+        (toolName.startsWith('browser_') && !BROWSER_STATELESS_TOOL_NAMES.has(toolName))
+      ) {
+        browserSequential.push(task);
+        continue;
+      }
+
+      if (!LOCAL_TOOL_NAMES.has(toolName)) {
+        localParallel.push(task);
+        continue;
+      }
+
+      const writePath = this.getLocalWritePath(task.toolCall);
+      if (writePath) {
+        const group = localWriteGroups.get(writePath);
+        if (group) {
+          group.push(task);
+        } else {
+          localWriteGroups.set(writePath, [task]);
+        }
+      } else if (LOCAL_WRITE_TOOL_NAMES.has(toolName)) {
+        localWriteUnknownPath.push(task);
+      } else {
+        localParallel.push(task);
+      }
+    }
+
+    const localParallelPromise = Promise.allSettled(localParallel.map((task) => this.runToolTask(task)))
+      .then((settled) => this.extractSettledValues(settled, 'local parallel'));
+
+    const localWriteGroupsPromise = Promise.allSettled(
+      Array.from(localWriteGroups.values()).map((group) => this.runSequentialToolTasks(group))
+    ).then((settledGroups) => this.extractSettledValues(settledGroups, 'local write group').flat());
+
+    const localWriteUnknownPromise = this.runSequentialToolTasks(localWriteUnknownPath);
+    const browserSequentialPromise = this.runSequentialToolTasks(browserSequential);
+
+    const [parallelResults, groupedWriteResults, unknownWriteResults, browserResults] = await Promise.all([
+      localParallelPromise,
+      localWriteGroupsPromise,
+      localWriteUnknownPromise,
+      browserSequentialPromise,
+    ]);
+
+    return [
+      ...immediate,
+      ...parallelResults,
+      ...groupedWriteResults,
+      ...unknownWriteResults,
+      ...browserResults,
+    ];
   }
 
   // -------------------------------------------------------------------------
@@ -467,7 +677,7 @@ export class ToolLoop {
     messages.push(
       makeMessage(
         'user',
-        '[SYSTEM: Tool limit reached. Respond now with your best answers for ALL parts of the user\'s request. Use the information you\'ve already gathered. Do not mention tool limits or ask to continue — just answer.]'
+        '[SYSTEM: Tool limit reached. Respond now with answers for ALL parts of the user\'s request using information already gathered. Do not mention limits or ask to continue.]'
       )
     );
     const finalResponse = await this.client.chat(messages, [], systemPrompt, undefined, { maxTokens: 4096 });

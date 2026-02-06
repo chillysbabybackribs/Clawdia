@@ -1,5 +1,10 @@
 node_modules/
 dist/
+out/
 .env
+.env.local
 *.js.map
 *.d.ts.map
+*.AppImage
+config.json
+readme_env/

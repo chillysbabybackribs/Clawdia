@@ -90,6 +90,92 @@ function updateActiveTab(): void {
 }
 
 // ---------------------------------------------------------------------------
+// OAuth / auth popup support
+// ---------------------------------------------------------------------------
+
+const AUTH_URL_PATTERNS = [
+  'accounts.google.com',
+  'appleid.apple.com/auth',
+  'login.microsoftonline.com',
+  'github.com/login/oauth',
+  'api.twitter.com/oauth',
+  'www.facebook.com/v',
+  'www.facebook.com/dialog/oauth',
+  'discord.com/oauth2',
+  'slack.com/oauth',
+  'login.salesforce.com',
+  'auth0.com/authorize',
+  'accounts.spotify.com',
+];
+
+function isAuthUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const full = parsed.hostname + parsed.pathname;
+    return AUTH_URL_PATTERNS.some((pattern) => full.includes(pattern));
+  } catch {
+    return false;
+  }
+}
+
+function openAuthPopup(url: string): void {
+  console.log(`[Auth] Opening auth popup for: ${url}`);
+
+  // Extract the origin of the page that initiated the auth flow
+  const openerOrigin = browserView
+    ? new URL(browserView.webContents.getURL()).origin
+    : null;
+
+  const popup = new BrowserWindow({
+    width: 500,
+    height: 700,
+    parent: mainWindow ?? undefined,
+    modal: false,
+    show: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+    },
+  });
+
+  // Clean the user agent to match the BrowserView
+  const defaultUA = popup.webContents.getUserAgent();
+  const cleanUA = defaultUA.replace(/\s*Electron\/\S+/i, '').replace(/\s*clawdia\/\S+/i, '');
+  popup.webContents.setUserAgent(cleanUA);
+
+  popup.webContents.on('will-navigate', (_event, navUrl) => {
+    console.log(`[Auth] Popup navigating to: ${navUrl}`);
+  });
+
+  // Detect when the OAuth flow redirects back to the opener's origin.
+  // This means auth is complete — close the popup and reload the BrowserView.
+  popup.webContents.on('did-navigate', (_event, navUrl) => {
+    try {
+      const navOrigin = new URL(navUrl).origin;
+      if (openerOrigin && navOrigin === openerOrigin) {
+        console.log(`[Auth] Auth complete — redirected back to ${navOrigin}`);
+        if (browserView) {
+          void browserView.webContents.loadURL(navUrl).catch(() => null);
+        }
+        popup.close();
+      }
+    } catch { /* ignore invalid URLs */ }
+  });
+
+  // Handle the popup closing itself (window.close()) — standard OAuth behavior
+  popup.on('closed', () => {
+    console.log('[Auth] Auth popup closed');
+    // Refresh the BrowserView to pick up any new session/cookies
+    if (browserView) {
+      browserView.webContents.reload();
+    }
+  });
+
+  void popup.loadURL(url);
+}
+
+// ---------------------------------------------------------------------------
 // BrowserView — the real, visible browser inside the app
 // ---------------------------------------------------------------------------
 
@@ -164,6 +250,10 @@ function ensureBrowserView(): BrowserView {
     });
 
     browserView.webContents.setWindowOpenHandler(({ url }) => {
+      if (isAuthUrl(url)) {
+        openAuthPopup(url);
+        return { action: 'deny' };
+      }
       void navigate(url);
       return { action: 'deny' };
     });

@@ -2,10 +2,6 @@ import { Conversation, Message } from '../../shared/types';
 import Store from 'electron-store';
 import { randomUUID } from 'crypto';
 
-interface StoreSchema {
-  conversations?: Conversation[];
-}
-
 const DEFAULT_TITLE = 'New Chat';
 
 function evictToolResults(messages: Message[]): Message[] {
@@ -17,11 +13,11 @@ function evictToolResults(messages: Message[]): Message[] {
 // ============================================================================
 
 export class ConversationManager {
-  private store: Store<StoreSchema>;
+  private store: Store<any>;
   private conversations: Map<string, Conversation> = new Map();
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(store: Store<StoreSchema>) {
+  constructor(store: Store<any>) {
     this.store = store;
     this.loadFromStore();
   }

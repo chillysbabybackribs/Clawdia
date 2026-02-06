@@ -39,13 +39,16 @@ export const LOCAL_TOOL_DEFINITIONS: LocalToolDefinition[] = [
   },
   {
     name: 'file_read',
-    description: 'Read file contents efficiently.',
+    description:
+      'Read file contents. For large files, returns first/last sections with line count. Use startLine/endLine to read specific sections.',
     input_schema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Absolute or relative file path.' },
         max_lines: { type: 'number', description: 'Optional line count cap.' },
         offset: { type: 'number', description: 'Optional starting line offset (0-based).' },
+        startLine: { type: 'number', description: 'Start line (1-indexed, optional). Use to read specific sections of large files.' },
+        endLine: { type: 'number', description: 'End line (1-indexed, inclusive, optional).' },
       },
       required: ['path'],
     },
@@ -170,11 +173,12 @@ async function toolShellExec(input: {
     if (stderr) output += (output ? '\n\n[stderr]\n' : '[stderr]\n') + stderr;
     if (!output.trim()) output = '[Command completed with no output]';
 
-    const maxOutput = 50000;
+    const maxOutput = 5000;
     if (output.length > maxOutput) {
-      output =
-        output.slice(0, maxOutput) +
-        `\n\n[Output truncated - ${output.length} total characters. Redirect command output to a file for full results.]`;
+      const head = output.slice(0, 2000);
+      const tail = output.slice(-2000);
+      const lineCount = (output.match(/\n/g) || []).length;
+      output = `${head}\n\n[... ${output.length - 4000} chars / ~${lineCount} lines truncated ...]\n\n${tail}\n\n[Output truncated — ${output.length} total chars. Redirect to a file for full results.]`;
     }
 
     return output;
@@ -195,10 +199,14 @@ async function toolShellExec(input: {
   }
 }
 
+const MAX_FILE_READ_CHARS = 8000; // ~2000 tokens — prevents 22K char bombs
+
 async function toolFileRead(input: {
   path: string;
   max_lines?: number;
   offset?: number;
+  startLine?: number;
+  endLine?: number;
 }): Promise<string> {
   const filePath = resolvePath(String(input?.path || ''));
   if (!filePath) return '[Error: path is required]';
@@ -210,18 +218,38 @@ async function toolFileRead(input: {
     }
 
     const content = await fs.readFile(filePath, 'utf-8');
-    const lines = content.split('\n');
-    const offset = Math.max(0, input?.offset || 0);
-    const maxLines = input?.max_lines && input.max_lines > 0 ? input.max_lines : lines.length;
-    const selected = lines.slice(offset, offset + maxLines);
-
-    let output = selected.join('\n');
-    if (offset > 0 || maxLines < lines.length) {
-      output += `\n\n[Showing lines ${offset + 1}-${offset + selected.length} of ${lines.length} total]`;
-    }
-    if (output.includes('\ufffd')) {
+    if (content.includes('\ufffd')) {
       return `[Binary file detected: ${filePath}. Size: ${formatBytes(stat.size)}. Use shell_exec with xxd or file to inspect.]`;
     }
+
+    const allLines = content.split('\n');
+    const totalLines = allLines.length;
+
+    // startLine/endLine take precedence (1-indexed, inclusive)
+    if (input?.startLine && input.startLine > 0) {
+      const start = input.startLine - 1; // convert to 0-indexed
+      const end = input?.endLine ? Math.min(input.endLine, totalLines) : totalLines;
+      const selected = allLines.slice(start, end);
+      return `${selected.join('\n')}\n\n[Showing lines ${start + 1}-${start + selected.length} of ${totalLines} total]`;
+    }
+
+    // Legacy offset/max_lines support
+    const offset = Math.max(0, input?.offset || 0);
+    const maxLines = input?.max_lines && input.max_lines > 0 ? input.max_lines : totalLines;
+    const selected = allLines.slice(offset, offset + maxLines);
+    let output = selected.join('\n');
+
+    if (offset > 0 || maxLines < totalLines) {
+      output += `\n\n[Showing lines ${offset + 1}-${offset + selected.length} of ${totalLines} total]`;
+    }
+
+    // Truncate large outputs — show head + tail with omission notice
+    if (output.length > MAX_FILE_READ_CHARS) {
+      const headLines = allLines.slice(0, 100).join('\n');
+      const tailLines = allLines.slice(-50).join('\n');
+      output = `${headLines}\n\n[... ${totalLines - 150} lines omitted (${content.length} total chars) — use file_read with startLine/endLine to see specific sections ...]\n\n${tailLines}`;
+    }
+
     return output;
   } catch (err: any) {
     if (err?.code === 'ENOENT') return `[File not found: ${filePath}]`;
