@@ -59,6 +59,12 @@ export const IPC = {
 
   // Utilities
   CLIPBOARD_WRITE_TEXT: 'clipboard:write-text',
+
+  // Logging
+  LOG_LEVEL_SET: 'log:level:set',
+
+  // Store management
+  STORE_RESET: 'store:reset',
 } as const;
 
 // Main → Renderer (send)
@@ -72,6 +78,7 @@ export const IPC_EVENTS = {
   CHAT_ERROR: 'chat:error',
   CHAT_LIVE_HTML_START: 'chat:live-html:start',
   CHAT_LIVE_HTML_END: 'chat:live-html:end',
+  API_USAGE_WARNING: 'api:usage:warning',
 
   // Browser state
   BROWSER_NAVIGATED: 'browser:navigated',
@@ -83,5 +90,6 @@ export const IPC_EVENTS = {
   RESEARCH_PROGRESS: 'research:progress',
 
   // Documents
+  DOC_PROGRESS: 'doc:progress',
   CHAT_DOCUMENT_CREATED: 'chat:document:created',
 } as const;

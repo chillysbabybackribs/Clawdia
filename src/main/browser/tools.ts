@@ -5,6 +5,7 @@ import {
   closeTab,
   getActivePage,
   getActiveTabId,
+  listTabs,
   navigate as managerNavigate,
   waitForLoad,
 } from './manager';
@@ -83,6 +84,17 @@ export const BROWSER_TOOL_DEFINITIONS: BrowserToolDefinition[] = [
         pressEnter: { type: 'boolean', description: 'Press Enter after typing' },
       },
       required: ['text'],
+    },
+  },
+  {
+    name: 'browser_scroll',
+    description: 'Scroll the current page up or down by a number of pixels.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        direction: { type: 'string', enum: ['up', 'down'] },
+        amount: { type: 'number', description: 'Scroll amount in pixels. Defaults to 600.' },
+      },
     },
   },
   {
@@ -182,6 +194,8 @@ export async function executeTool(name: string, input: any): Promise<string> {
       return toolClick(String(input?.ref || ''));
     case 'browser_type':
       return toolType(String(input?.text || ''), input?.ref, Boolean(input?.pressEnter));
+    case 'browser_scroll':
+      return toolScroll(input?.direction, input?.amount);
     case 'browser_tab':
       return toolTab(String(input?.action || ''), input?.tabId, input?.url);
     case 'browser_screenshot':
@@ -236,6 +250,16 @@ export function registerPlaywrightSearchFallback(): void {
 
 async function toolSearch(query: string): Promise<string> {
   if (!query.trim()) return 'Missing query.';
+
+  // Keep BrowserView in sync with search activity so the browser panel reflects
+  // what the agent is doing, even when result ranking comes from API backends.
+  const serpUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+  try {
+    await managerNavigate(serpUrl);
+    await waitForLoad(2000);
+  } catch {
+    // Best effort only — search results can still be returned from API backends.
+  }
 
   const response: ConsensusResult = await apiSearch(query);
 
@@ -339,12 +363,81 @@ async function tryClickRef(page: Page, ref: string): Promise<boolean> {
   return false;
 }
 
+function isTwitterUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, '');
+    return host === 'x.com' || host === 'twitter.com';
+  } catch {
+    return false;
+  }
+}
+
+async function tryClickLocators(locators: Array<ReturnType<Page['locator']> | ReturnType<Page['getByRole']>>): Promise<boolean> {
+  for (const locator of locators) {
+    try {
+      await locator.scrollIntoViewIfNeeded({ timeout: 1500 });
+      await locator.click({ timeout: 3000 });
+      return true;
+    } catch {
+      // Try the next fallback locator.
+    }
+  }
+  return false;
+}
+
+async function tryTwitterClickFallback(page: Page, ref: string): Promise<boolean> {
+  const normalized = ref.trim().toLowerCase();
+
+  // Open/focus composer from the home timeline in a resilient way.
+  if (normalized.includes('what') || normalized.includes('happening') || normalized === 'compose') {
+    return tryClickLocators([
+      page.locator('[data-testid="tweetTextarea_0"]').first(),
+      page.locator('[data-testid="SideNav_NewTweet_Button"]').first(),
+      page.locator('[role="textbox"][contenteditable="true"]').first(),
+      page.getByRole('textbox', { name: /post text/i }).first(),
+      page.getByRole('textbox').first(),
+    ]);
+  }
+
+  // Submit post across timeline/modal variants.
+  if (normalized === 'post' || normalized === 'tweet') {
+    return tryClickLocators([
+      page.locator('[data-testid="tweetButtonInline"]').first(),
+      page.locator('[data-testid="tweetButton"]').first(),
+      page.getByRole('button', { name: /^post$/i }).first(),
+      page.getByRole('button', { name: /^tweet$/i }).first(),
+    ]);
+  }
+
+  // Reply button variants.
+  if (normalized === 'reply') {
+    return tryClickLocators([
+      page.locator('[data-testid="tweetButton"]').first(),
+      page.getByRole('button', { name: /^reply$/i }).first(),
+    ]);
+  }
+
+  return false;
+}
+
+async function focusTwitterComposer(page: Page): Promise<boolean> {
+  return tryClickLocators([
+    page.locator('[data-testid="tweetTextarea_0"]').first(),
+    page.locator('[role="textbox"][contenteditable="true"]').first(),
+    page.getByRole('textbox', { name: /post text/i }).first(),
+    page.getByRole('textbox').first(),
+  ]);
+}
+
 async function toolClick(ref: string): Promise<string> {
   if (!ref.trim()) return 'Missing ref.';
   const page = getActivePage();
   if (!page) return 'No active page.';
 
-  const clicked = await tryClickRef(page, ref);
+  let clicked = await tryClickRef(page, ref);
+  if (!clicked && isTwitterUrl(page.url())) {
+    clicked = await tryTwitterClickFallback(page, ref);
+  }
   if (!clicked) {
     return `Could not click "${ref}". Use browser_read_page to inspect the current page.`;
   }
@@ -384,10 +477,24 @@ async function toolType(text: string, ref: unknown, pressEnter: boolean): Promis
         }
       }
 
+      if (!filled && isTwitterUrl(page.url())) {
+        const focused = await focusTwitterComposer(page);
+        if (focused) {
+          await page.keyboard.type(text, { delay: 8 });
+          if (pressEnter) {
+            await page.keyboard.press('Enter');
+          }
+          filled = true;
+        }
+      }
+
       if (!filled) {
         return `Could not find input "${key}".`;
       }
     } else {
+      if (isTwitterUrl(page.url())) {
+        await focusTwitterComposer(page).catch(() => false);
+      }
       await page.keyboard.type(text, { delay: 8 });
       if (pressEnter) {
         await page.keyboard.press('Enter');
@@ -400,6 +507,23 @@ async function toolType(text: string, ref: unknown, pressEnter: boolean): Promis
   return `Typed "${text}"${pressEnter ? ' and pressed Enter' : ''}.`;
 }
 
+async function toolScroll(directionInput: unknown, amountInput: unknown): Promise<string> {
+  const page = getActivePage();
+  if (!page) return 'No active page.';
+
+  const direction = String(directionInput || 'down').toLowerCase() === 'up' ? 'up' : 'down';
+  const parsedAmount = Number(amountInput);
+  const amount = Number.isFinite(parsedAmount) && parsedAmount > 0 ? Math.floor(parsedAmount) : 600;
+  const deltaY = direction === 'up' ? -amount : amount;
+
+  try {
+    await page.mouse.wheel(0, deltaY);
+    return `Scrolled ${direction} by ${amount}px.`;
+  } catch (error: any) {
+    return `Failed to scroll: ${error?.message || 'unknown error'}`;
+  }
+}
+
 async function toolTab(action: string, tabId?: string, url?: string): Promise<string> {
   switch (action) {
     case 'new': {
@@ -407,12 +531,15 @@ async function toolTab(action: string, tabId?: string, url?: string): Promise<st
       return `Opened tab ${id}${url ? ` at ${url}` : ''}.`;
     }
     case 'list': {
-      const activeId = getActiveTabId();
-      const page = getActivePage();
-      if (!activeId) return 'No tabs open.';
-      const title = page ? await page.title().catch(() => '') : '';
-      const pageUrl = page ? page.url() : '';
-      return `Open tabs:\n* ${activeId}: ${title || 'Untitled'} (${pageUrl || 'about:blank'})`;
+      const tabs = listTabs();
+      if (tabs.length === 0) return 'No tabs open.';
+      const lines = tabs.map((tab) => {
+        const marker = tab.active ? '*' : '-';
+        const title = tab.title || 'Untitled';
+        const url = tab.url || 'about:blank';
+        return `${marker} ${tab.id}: ${title} (${url})`;
+      });
+      return `Open tabs:\n${lines.join('\n')}`;
     }
     case 'switch': {
       if (!tabId) return 'Missing tabId for switch.';
@@ -441,12 +568,12 @@ async function getPageSnapshot(page: Page): Promise<string> {
   const url = page.url() || 'about:blank';
 
   try {
-    const ariaSnapshot = await page.locator('body').ariaSnapshot({ timeout: 3000 });
+    const ariaSnapshot = await page.locator('body').ariaSnapshot({ timeout: 1500 });
     if (ariaSnapshot && ariaSnapshot.trim()) {
       return `Page: ${title}\nURL: ${url}\n\n${ariaSnapshot.slice(0, 6000)}`;
     }
   } catch {
-    // Fallback to text extraction if ARIA snapshot is unavailable.
+    // Fallback to text extraction if ARIA snapshot is unavailable or timed out.
   }
 
   const text = await page.evaluate(() => {

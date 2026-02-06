@@ -1,5 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { Message } from '../../shared/types';
+import { RateLimiter } from '../rate-limiter';
+import { usageTracker } from '../usage-tracker';
+import { createLogger } from '../logger';
+
+const log = createLogger('llm-client');
 
 // ============================================================================
 // TYPES
@@ -57,7 +62,10 @@ export class AnthropicClient {
     tools: ToolDefinition[],
     systemPrompt: string,
     onText?: (text: string) => void,
-    options?: { maxTokens?: number }
+    options?: {
+      maxTokens?: number;
+      onToolUse?: (toolUse: ToolUse) => Promise<string> | string | undefined;
+    }
   ): Promise<LLMResponse> {
     // Convert messages to Anthropic format
     const anthropicMessages = this.convertMessages(messages);
@@ -71,6 +79,15 @@ export class AnthropicClient {
       input_schema: t.input_schema as Anthropic.Tool.InputSchema,
       ...(i === tools.length - 1 ? { cache_control: { type: 'ephemeral' as const } } : {}),
     }));
+
+    const anthropicLimiter = RateLimiter.getInstance('anthropic', {
+      maxTokens: 5,
+      refillRate: 1,
+      maxQueueDepth: 10,
+      maxWaitMs: 30_000,
+    });
+    await anthropicLimiter.acquire();
+    usageTracker.trackApiCall('anthropic');
 
     const response = await this.client.messages.create({
       model: this.model,
@@ -139,8 +156,14 @@ export class AnthropicClient {
               try {
                 currentToolUse.input = JSON.parse(currentToolJsonFragments);
               } catch (err) {
-                console.warn(`[Client] Failed to parse tool input JSON for ${currentToolUse.name}:`, err);
+                log.warn(`Failed to parse tool input JSON for ${currentToolUse.name}:`, err);
                 currentToolUse.input = {};
+              }
+            }
+            if (options?.onToolUse) {
+              const started = options.onToolUse(currentToolUse);
+              if (typeof started !== 'undefined') {
+                void Promise.resolve(started);
               }
             }
             contentBlocks.push(currentToolUse);
@@ -193,6 +216,25 @@ export class AnthropicClient {
         }
       }
 
+      // If message has images, build multi-content block with image + text
+      if (msg.images && msg.images.length > 0 && msg.role === 'user') {
+        const blocks: Array<Anthropic.ImageBlockParam | Anthropic.TextBlockParam> = [];
+        for (const img of msg.images) {
+          blocks.push({
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: img.mediaType,
+              data: img.base64,
+            },
+          });
+        }
+        if (msg.content) {
+          blocks.push({ type: 'text', text: msg.content });
+        }
+        content = blocks;
+      }
+
       result.push({
         role: msg.role,
         content,
@@ -225,7 +267,7 @@ export class AnthropicClient {
       const filtered = (msg.content as unknown[]).filter((block: unknown) => {
         const b = block as { type?: string; tool_use_id?: string };
         if (b.type === 'tool_result' && b.tool_use_id && !validIds.has(b.tool_use_id)) {
-          console.warn(`[Client] Dropping orphaned tool_result for id ${b.tool_use_id}`);
+          log.warn(`Dropping orphaned tool_result for id ${b.tool_use_id}`);
           return false;
         }
         return true;

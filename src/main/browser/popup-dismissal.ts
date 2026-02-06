@@ -1,4 +1,7 @@
 import type { Page } from 'playwright';
+import { createLogger } from '../logger';
+
+const log = createLogger('browser-manager');
 
 const POST_NAV_DISMISS_DELAY_MS = 800;
 const INITIAL_POPUP_RENDER_DELAY_MS = 500;
@@ -250,6 +253,6 @@ export async function dismissPopups(page: Page): Promise<void> {
       document.documentElement.style.overflowY = '';
     });
   } catch (err) {
-    console.warn('[Popup] Dismissal failed:', err);
+    log.warn('Popup dismissal failed:', err);
   }
 }

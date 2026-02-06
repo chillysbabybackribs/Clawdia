@@ -2,6 +2,11 @@
 // Keys are loaded from electron-store settings at call time.
 
 import { store } from '../store';
+import { RateLimiter } from '../rate-limiter';
+import { usageTracker } from '../usage-tracker';
+import { createLogger } from '../logger';
+
+const log = createLogger('search');
 
 export interface SearchResult {
   title: string;
@@ -20,13 +25,29 @@ export interface ConsensusResult extends SearchResponse {
   secondaryResults?: SearchResult[];
 }
 
+const searchLimiter = RateLimiter.getInstance('search', {
+  maxTokens: 3,
+  refillRate: 0.5,
+  maxQueueDepth: 10,
+  maxWaitMs: 30_000,
+});
+
+async function rateLimitedSearchFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit
+): Promise<Response> {
+  await searchLimiter.acquire();
+  usageTracker.trackApiCall('search');
+  return fetch(input, init);
+}
+
 // --- Serper.dev (Primary — real Google results as JSON) ---
 
 async function searchSerper(query: string): Promise<SearchResponse> {
   const apiKey = store.get('serper_api_key') as string;
   if (!apiKey) throw new Error('No Serper API key configured');
 
-  const response = await fetch('https://google.serper.dev/search', {
+  const response = await rateLimitedSearchFetch('https://google.serper.dev/search', {
     method: 'POST',
     headers: {
       'X-API-KEY': apiKey,
@@ -87,7 +108,7 @@ async function searchBrave(query: string): Promise<SearchResponse> {
 
   const params = new URLSearchParams({ q: query, count: '8' });
 
-  const response = await fetch(
+  const response = await rateLimitedSearchFetch(
     `https://api.search.brave.com/res/v1/web/search?${params}`,
     {
       headers: {
@@ -147,7 +168,7 @@ async function searchSerpApi(query: string): Promise<SearchResponse> {
     num: '8',
   });
 
-  const response = await fetch(`https://serpapi.com/search.json?${params}`);
+  const response = await rateLimitedSearchFetch(`https://serpapi.com/search.json?${params}`);
   if (!response.ok) throw new Error(`SerpAPI error: ${response.status}`);
 
   const data = await response.json();
@@ -186,7 +207,7 @@ async function searchBing(query: string): Promise<SearchResponse> {
     responseFilter: 'Webpages',
   });
 
-  const response = await fetch(
+  const response = await rateLimitedSearchFetch(
     `https://api.bing.microsoft.com/v7.0/search?${params}`,
     { headers: { 'Ocp-Apim-Subscription-Key': apiKey } }
   );
@@ -265,7 +286,7 @@ export async function search(query: string): Promise<ConsensusResult> {
   // Check cache first
   const cached = getCachedSearch(query);
   if (cached) {
-    console.log(`[Search] Cache hit for "${query}"`);
+    log.debug(`Cache hit for "${query}"`);
     return cached;
   }
 
@@ -487,10 +508,10 @@ export async function searchNews(query: string): Promise<NewsResult[]> {
   const braveResults = braveResult.status === 'fulfilled' ? braveResult.value : [];
 
   if (serperResult.status === 'rejected') {
-    console.warn('[Search] Serper news failed:', serperResult.reason);
+    log.warn('Serper news failed:', serperResult.reason);
   }
   if (braveResult.status === 'rejected') {
-    console.warn('[Search] Brave news failed:', braveResult.reason);
+    log.warn('Brave news failed:', braveResult.reason);
   }
 
   if (serperResults.length === 0 && braveResults.length === 0) {
@@ -501,7 +522,7 @@ export async function searchNews(query: string): Promise<NewsResult[]> {
 }
 
 async function searchNewsSerper(query: string, apiKey: string): Promise<NewsResult[]> {
-  const response = await fetch('https://google.serper.dev/news', {
+  const response = await rateLimitedSearchFetch('https://google.serper.dev/news', {
     method: 'POST',
     headers: {
       'X-API-KEY': apiKey,
@@ -530,7 +551,7 @@ async function searchNewsBrave(query: string, apiKey: string): Promise<NewsResul
     freshness: 'pw',
   });
 
-  const response = await fetch(
+  const response = await rateLimitedSearchFetch(
     `https://api.search.brave.com/res/v1/news/search?${params}`,
     {
       headers: {
@@ -580,7 +601,7 @@ export async function searchShopping(query: string): Promise<ShoppingResult[]> {
   const serperKey = store.get('serper_api_key') as string;
   if (serperKey) {
     try {
-      const response = await fetch('https://google.serper.dev/shopping', {
+      const response = await rateLimitedSearchFetch('https://google.serper.dev/shopping', {
         method: 'POST',
         headers: {
           'X-API-KEY': serperKey,
@@ -603,7 +624,7 @@ export async function searchShopping(query: string): Promise<ShoppingResult[]> {
         }));
       }
     } catch (err) {
-      console.warn('[Search] Serper shopping failed:', err);
+      log.warn('Serper shopping failed:', err);
     }
   }
 
@@ -633,10 +654,10 @@ export async function searchPlaces(query: string): Promise<PlaceResult[]> {
   const serpApiResults = serpApiResult.status === 'fulfilled' ? serpApiResult.value : [];
 
   if (serperResult.status === 'rejected') {
-    console.warn('[Search] Serper places failed:', serperResult.reason);
+    log.warn('Serper places failed:', serperResult.reason);
   }
   if (serpApiResult.status === 'rejected') {
-    console.warn('[Search] SerpAPI places failed:', serpApiResult.reason);
+    log.warn('SerpAPI places failed:', serpApiResult.reason);
   }
 
   if (serperResults.length === 0 && serpApiResults.length === 0) {
@@ -647,7 +668,7 @@ export async function searchPlaces(query: string): Promise<PlaceResult[]> {
 }
 
 async function searchPlacesSerper(query: string, apiKey: string): Promise<PlaceResult[]> {
-  const response = await fetch('https://google.serper.dev/places', {
+  const response = await rateLimitedSearchFetch('https://google.serper.dev/places', {
     method: 'POST',
     headers: {
       'X-API-KEY': apiKey,
@@ -678,7 +699,7 @@ async function searchPlacesSerpApi(query: string, apiKey: string): Promise<Place
     type: 'search',
   });
 
-  const response = await fetch(`https://serpapi.com/search.json?${params}`);
+  const response = await rateLimitedSearchFetch(`https://serpapi.com/search.json?${params}`);
   if (!response.ok) throw new Error(`${response.status}`);
   const data = await response.json();
   if (!data.local_results || data.local_results.length === 0) return [];
@@ -718,7 +739,7 @@ export async function searchImages(query: string): Promise<ImageResult[]> {
   const serperKey = store.get('serper_api_key') as string;
   if (serperKey) {
     try {
-      const response = await fetch('https://google.serper.dev/images', {
+      const response = await rateLimitedSearchFetch('https://google.serper.dev/images', {
         method: 'POST',
         headers: {
           'X-API-KEY': serperKey,
@@ -739,7 +760,7 @@ export async function searchImages(query: string): Promise<ImageResult[]> {
         }));
       }
     } catch (err) {
-      console.warn('[Search] Serper images failed:', err);
+      log.warn('Serper images failed:', err);
     }
   }
 

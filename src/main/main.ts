@@ -1,18 +1,29 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
+// Must run before Electron app initialization so Linux packaging paths do not hit SUID sandbox startup checks.
+if (process.platform === 'linux') {
+  process.env.ELECTRON_DISABLE_SANDBOX = 'true';
+}
+
+import { app, BrowserWindow, clipboard, dialog, shell } from 'electron';
 import { execSync } from 'child_process';
+import { randomUUID } from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
 import { IPC, IPC_EVENTS } from '../shared/ipc-channels';
-import { ImageAttachment, DocumentAttachment, DocumentMeta } from '../shared/types';
+import { DocumentMeta } from '../shared/types';
 import { extractDocument } from './documents/extractor';
 import { createDocument } from './documents/creator';
-import { setupBrowserIpc, setMainWindow, closeBrowser, initPlaywright, setCdpPort } from './browser/manager';
+import { setupBrowserIpc, setMainWindow, closeBrowser, initPlaywright, setCdpPort, stopSessionReaper, killOrphanedCDPProcesses } from './browser/manager';
 import { registerPlaywrightSearchFallback } from './browser/tools';
 import { AnthropicClient } from './llm/client';
 import { ConversationManager } from './llm/conversation';
-import { ToolLoop } from './llm/tool-loop';
-import { store, migrateLegacyStoreSchema, type ChatTabState, type ClawdiaStoreSchema } from './store';
+import { ToolLoop, clearPrefetchCache } from './llm/tool-loop';
+import { store, runMigrations, resetStore, type ChatTabState, type ClawdiaStoreSchema } from './store';
 import { DEFAULT_MODEL } from '../shared/models';
+import { usageTracker } from './usage-tracker';
+import { createLogger, setLogLevel, type LogLevel } from './logger';
+import { handleValidated, ipcSchemas } from './ipc-validator';
+
+const log = createLogger('main');
 
 // Pick a free CDP port before Electron starts.
 // Must be synchronous because appendSwitch must run at module load time.
@@ -23,7 +34,7 @@ function pickFreePort(candidates: number[]): number {
       // Use grep -E with word boundary after port number to avoid partial matches.
       execSync(`ss -tln | grep -qE ':${port}\\b'`, { stdio: 'ignore' });
       // grep succeeded → port is in use, skip.
-      console.log(`[Main] Port ${port} in use, trying next...`);
+      log.debug(`Port ${port} in use, trying next...`);
     } catch {
       // grep failed → port is free.
       return port;
@@ -38,13 +49,14 @@ const portList = envPort ? [envPort, ...CDP_CANDIDATES.filter((p) => p !== envPo
 const REMOTE_DEBUGGING_PORT = pickFreePort(portList);
 
 app.commandLine.appendSwitch('remote-debugging-port', String(REMOTE_DEBUGGING_PORT));
-// Use Chromium's native dark-mode rendering instead of custom per-site CSS overrides.
-app.commandLine.appendSwitch('force-dark-mode');
-app.commandLine.appendSwitch('enable-features', 'WebContentsForceDark');
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('no-sandbox');
+  app.commandLine.appendSwitch('disable-setuid-sandbox');
+}
 // FedCM is currently flaky in embedded Chromium flows (e.g., Google sign-in on claude.ai).
 // Force classic OAuth popup/redirect fallback instead of navigator.credentials.get().
 app.commandLine.appendSwitch('disable-features', 'FedCm');
-console.log(`[Main] CDP debug port: ${REMOTE_DEBUGGING_PORT}`);
+log.info(`CDP debug port: ${REMOTE_DEBUGGING_PORT}`);
 
 if (process.env.NODE_ENV !== 'production') {
   process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
@@ -108,7 +120,31 @@ async function warmConnections(): Promise<void> {
   );
 }
 
-migrateLegacyStoreSchema();
+async function warmAnthropicMessagesConnection(apiKey: string): Promise<void> {
+  const key = apiKey.trim();
+  if (!key) return;
+  const model = getSelectedModel();
+  try {
+    await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 1,
+        messages: [{ role: 'user', content: '.' }],
+      }),
+      signal: AbortSignal.timeout(6000),
+    });
+  } catch {
+    // Connection warmup is best effort.
+  }
+}
+
+runMigrations(store);
 
 async function validateAnthropicApiKey(key: string, model?: string): Promise<{ valid: boolean; error?: string }> {
   const normalized = key.trim();
@@ -162,10 +198,10 @@ async function validateAnthropicApiKey(key: string, model?: string): Promise<{ v
 
 function createWindow(): void {
   const preloadPath = path.join(__dirname, 'preload.js');
-  console.log('[Main] Preload absolute path:', preloadPath);
+  log.debug(`Preload absolute path: ${preloadPath}`);
 
   if (!fs.existsSync(preloadPath)) {
-    console.error('[Main] ERROR: Preload file does not exist at:', preloadPath);
+    log.error(`Preload file does not exist at: ${preloadPath}`);
   }
 
   mainWindow = new BrowserWindow({
@@ -191,10 +227,51 @@ function createWindow(): void {
     }
   });
 
+  // -------------------------------------------------------------------
+  // CSP header enforcement (defense in depth — HTTP headers override meta tags)
+  // In production: locked-down policy, no eval, no inline scripts.
+  // In development: permissive for Vite HMR hot reload.
+  // Only applied to the renderer's own pages, NOT the BrowserView panel.
+  // -------------------------------------------------------------------
+  const PROD_CSP = [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "connect-src 'self'",
+    "img-src 'self' data: blob: https://www.google.com",
+    "font-src 'self' data: https://fonts.gstatic.com",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'none'",
+  ].join('; ');
+
+  const DEV_CSP = [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:*",
+    "style-src 'self' 'unsafe-inline'",
+    "connect-src 'self' http://localhost:* ws://localhost:*",
+    "img-src 'self' data: blob: https:",
+    "font-src 'self' data: https://fonts.gstatic.com",
+  ].join('; ');
+
+  const isDev = process.env.NODE_ENV === 'development';
+  mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [isDev ? DEV_CSP : PROD_CSP],
+      },
+    });
+  });
+
   setMainWindow(mainWindow);
+  usageTracker.setWarningEmitter((event, payload) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send(event, payload);
+  });
   conversationManager = new ConversationManager(store);
 
-  if (process.env.NODE_ENV === 'development') {
+  if (isDev) {
     mainWindow.loadURL('http://localhost:5173');
   } else {
     mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
@@ -202,6 +279,8 @@ function createWindow(): void {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
+    // Kill any orphaned CDP processes from a prior crashed session before connecting.
+    killOrphanedCDPProcesses();
     // CDP server is reliably up once the window is ready to show.
     // Kick off Playwright connection here so it doesn't race.
     void initPlaywright().then(() => registerPlaywrightSearchFallback());
@@ -212,16 +291,18 @@ function createWindow(): void {
   });
 
   mainWindow.on('closed', () => {
+    usageTracker.setWarningEmitter(null);
     mainWindow = null;
     void closeBrowser();
   });
 }
 
 function setupIpcHandlers(): void {
-  ipcMain.handle(IPC.CHAT_SEND, async (_event, conversationId: string, content: string, images?: ImageAttachment[], documents?: DocumentAttachment[]) => {
+  handleValidated(IPC.CHAT_SEND, ipcSchemas[IPC.CHAT_SEND], async (_event, payload) => {
+    const { conversationId, message, images, documents, messageId } = payload;
     if (!mainWindow) return { error: 'No window' };
 
-    let conversation = conversationManager.get(conversationId);
+    let conversation = conversationManager.get(conversationId || '');
     if (!conversation) {
       conversation = conversationManager.create();
     }
@@ -251,7 +332,12 @@ function setupIpcHandlers(): void {
     }));
 
     try {
-      const response = await loop.run(content, history, images, documents);
+      const response = await usageTracker.runWithConversation(conversation.id, () =>
+        loop.run(message, history, images, documents, {
+          conversationId: conversation.id,
+          messageId: messageId || randomUUID(),
+        })
+      );
       // If the loop streamed chunks itself (real-time streaming with HTML interception),
       // we only need to send the end event. Otherwise send the full text.
       if (!loop.streamed) {
@@ -259,7 +345,7 @@ function setupIpcHandlers(): void {
       }
       mainWindow.webContents.send(IPC_EVENTS.CHAT_STREAM_END, response);
 
-      conversationManager.addMessage(conversation.id, { role: 'user', content, images, documents: documentMetas });
+      conversationManager.addMessage(conversation.id, { role: 'user', content: message, images, documents: documentMetas });
       conversationManager.addMessage(conversation.id, { role: 'assistant', content: response });
 
       return { conversationId: conversation.id };
@@ -274,7 +360,7 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle(IPC.CHAT_STOP, async () => {
+  handleValidated(IPC.CHAT_STOP, ipcSchemas[IPC.CHAT_STOP], async () => {
     if (activeToolLoop) {
       activeToolLoop.abort();
       activeToolLoop = null;
@@ -283,46 +369,67 @@ function setupIpcHandlers(): void {
     return { stopped: true };
   });
 
-  ipcMain.handle(IPC.CHAT_NEW, async () => conversationManager.create());
-  ipcMain.handle(IPC.CHAT_LIST, async () => conversationManager.list());
-  ipcMain.handle(IPC.CHAT_LOAD, async (_event, id: string) => conversationManager.get(id));
-  ipcMain.handle(IPC.CHAT_DELETE, async (_event, id: string) => {
+  handleValidated(IPC.CHAT_NEW, ipcSchemas[IPC.CHAT_NEW], async () => {
+    clearPrefetchCache();
+    return conversationManager.create();
+  });
+  handleValidated(IPC.CHAT_LIST, ipcSchemas[IPC.CHAT_LIST], async () => conversationManager.list());
+  handleValidated(IPC.CHAT_LOAD, ipcSchemas[IPC.CHAT_LOAD], async (_event, payload) => {
+    const { id } = payload;
+    clearPrefetchCache();
+    return conversationManager.get(id);
+  });
+  handleValidated(IPC.CHAT_DELETE, ipcSchemas[IPC.CHAT_DELETE], async (_event, payload) => {
+    const { id } = payload;
     conversationManager.delete(id);
+    clearPrefetchCache();
     return { deleted: true };
   });
-  ipcMain.handle(IPC.CHAT_GET_TITLE, async (_event, id: string) => conversationManager.getTitle(id));
-  ipcMain.handle(IPC.CHAT_TABS_GET_STATE, async () => {
+  handleValidated(IPC.CHAT_GET_TITLE, ipcSchemas[IPC.CHAT_GET_TITLE], async (_event, payload) => {
+    return conversationManager.getTitle(payload.id);
+  });
+  handleValidated(IPC.CHAT_TABS_GET_STATE, ipcSchemas[IPC.CHAT_TABS_GET_STATE], async () => {
     const stored = store.get(CHAT_TAB_STATE_KEY);
     return sanitizeChatTabState(stored);
   });
-  ipcMain.handle(IPC.CHAT_TABS_SET_STATE, async (_event, state: ChatTabState) => {
-    const sanitized = sanitizeChatTabState(state);
+  handleValidated(IPC.CHAT_TABS_SET_STATE, ipcSchemas[IPC.CHAT_TABS_SET_STATE], async (_event, payload) => {
+    const sanitized = sanitizeChatTabState(payload);
     store.set(CHAT_TAB_STATE_KEY, sanitized);
     return { success: true };
   });
 
-  ipcMain.handle(IPC.API_KEY_GET, async () => getAnthropicApiKey());
+  handleValidated(IPC.API_KEY_GET, ipcSchemas[IPC.API_KEY_GET], async () => getAnthropicApiKey());
 
-  ipcMain.handle(IPC.API_KEY_SET, async (_event, key: string) => {
+  handleValidated(IPC.API_KEY_SET, ipcSchemas[IPC.API_KEY_SET], async (_event, payload) => {
+    const { key } = payload;
     const normalized = key.trim();
     store.set('anthropicApiKey', normalized);
     store.set('hasCompletedSetup', Boolean(normalized));
+    void warmAnthropicMessagesConnection(normalized);
     return { success: true };
   });
 
-  ipcMain.handle(IPC.HAS_COMPLETED_SETUP, async () => Boolean(store.get('hasCompletedSetup')));
+  handleValidated(IPC.HAS_COMPLETED_SETUP, ipcSchemas[IPC.HAS_COMPLETED_SETUP], async () => Boolean(store.get('hasCompletedSetup')));
 
-  ipcMain.handle(IPC.API_KEY_CLEAR, async () => {
+  handleValidated(IPC.API_KEY_CLEAR, ipcSchemas[IPC.API_KEY_CLEAR], async () => {
     store.set('anthropicApiKey', '');
     store.set('hasCompletedSetup', false);
     return { success: true };
   });
 
-  ipcMain.handle(IPC.API_KEY_VALIDATE, async (_event, key: string, model?: string) => validateAnthropicApiKey(key, model));
+  handleValidated(IPC.API_KEY_VALIDATE, ipcSchemas[IPC.API_KEY_VALIDATE], async (_event, payload) => {
+    const { key, model } = payload;
+    const result = await validateAnthropicApiKey(key, model);
+    if (result.valid) {
+      void warmAnthropicMessagesConnection(key);
+    }
+    return result;
+  });
 
-  ipcMain.handle(IPC.MODEL_GET, async () => (store.get('selectedModel') as string) || DEFAULT_MODEL);
+  handleValidated(IPC.MODEL_GET, ipcSchemas[IPC.MODEL_GET], async () => (store.get('selectedModel') as string) || DEFAULT_MODEL);
 
-  ipcMain.handle(IPC.MODEL_SET, async (_event, model: string) => {
+  handleValidated(IPC.MODEL_SET, ipcSchemas[IPC.MODEL_SET], async (_event, payload) => {
+    const { model } = payload;
     store.set('selectedModel', model);
     // Invalidate cached client so next request uses the new model.
     cachedClient = null;
@@ -331,7 +438,7 @@ function setupIpcHandlers(): void {
     return { success: true };
   });
 
-  ipcMain.handle(IPC.SETTINGS_GET, async () => ({
+  handleValidated(IPC.SETTINGS_GET, ipcSchemas[IPC.SETTINGS_GET], async () => ({
     anthropic_api_key: getMaskedAnthropicApiKey(),
     anthropic_key_masked: getMaskedAnthropicApiKey(),
     has_completed_setup: Boolean(store.get('hasCompletedSetup')),
@@ -343,22 +450,24 @@ function setupIpcHandlers(): void {
     search_backend: store.get('search_backend') || 'serper',
   }));
 
-  ipcMain.handle(IPC.SETTINGS_SET, async (_event, key: string, value: string | boolean) => {
+  handleValidated(IPC.SETTINGS_SET, ipcSchemas[IPC.SETTINGS_SET], async (_event, payload) => {
+    const { key, value } = payload;
     if (key === 'anthropic_api_key' || key === 'anthropicApiKey') {
       const normalized = String(value ?? '').trim();
       store.set('anthropicApiKey', normalized);
       store.set('hasCompletedSetup', Boolean(normalized));
+      void warmAnthropicMessagesConnection(normalized);
       return { success: true };
     }
     store.set(key as keyof ClawdiaStoreSchema, value as any);
     return { success: true };
   });
 
-  ipcMain.handle(IPC.WINDOW_MINIMIZE, () => {
+  handleValidated(IPC.WINDOW_MINIMIZE, ipcSchemas[IPC.WINDOW_MINIMIZE], () => {
     mainWindow?.minimize();
   });
 
-  ipcMain.handle(IPC.WINDOW_MAXIMIZE, () => {
+  handleValidated(IPC.WINDOW_MAXIMIZE, ipcSchemas[IPC.WINDOW_MAXIMIZE], () => {
     if (mainWindow?.isMaximized()) {
       mainWindow.unmaximize();
     } else {
@@ -366,11 +475,11 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle(IPC.WINDOW_CLOSE, () => {
+  handleValidated(IPC.WINDOW_CLOSE, ipcSchemas[IPC.WINDOW_CLOSE], () => {
     mainWindow?.close();
   });
 
-  ipcMain.handle(IPC.DOCUMENT_EXTRACT, async (_event, data: { buffer: number[]; filename: string; mimeType: string }) => {
+  handleValidated(IPC.DOCUMENT_EXTRACT, ipcSchemas[IPC.DOCUMENT_EXTRACT], async (_event, data) => {
     try {
       const buf = Buffer.from(data.buffer);
       const result = await extractDocument(buf, data.filename, data.mimeType);
@@ -380,7 +489,8 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle(IPC.DOCUMENT_SAVE, async (_event, sourcePath: string, suggestedName: string) => {
+  handleValidated(IPC.DOCUMENT_SAVE, ipcSchemas[IPC.DOCUMENT_SAVE], async (_event, payload) => {
+    const { sourcePath, suggestedName } = payload;
     if (!mainWindow) return { success: false };
     const result = await dialog.showSaveDialog(mainWindow, {
       defaultPath: suggestedName,
@@ -395,13 +505,31 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle(IPC.DOCUMENT_OPEN_FOLDER, async (_event, filePath: string) => {
+  handleValidated(IPC.DOCUMENT_OPEN_FOLDER, ipcSchemas[IPC.DOCUMENT_OPEN_FOLDER], async (_event, payload) => {
+    const { filePath } = payload;
     shell.showItemInFolder(filePath);
     return { success: true };
   });
 
-  ipcMain.handle(IPC.CLIPBOARD_WRITE_TEXT, async (_event, text: string) => {
+  handleValidated(IPC.CLIPBOARD_WRITE_TEXT, ipcSchemas[IPC.CLIPBOARD_WRITE_TEXT], async (_event, payload) => {
+    const { text } = payload;
     clipboard.writeText(String(text ?? ''));
+    return { success: true };
+  });
+
+  handleValidated(IPC.LOG_LEVEL_SET, ipcSchemas[IPC.LOG_LEVEL_SET], async (_event, payload) => {
+    const { level } = payload;
+    const valid: LogLevel[] = ['debug', 'info', 'warn', 'error'];
+    if (valid.includes(level as LogLevel)) {
+      setLogLevel(level as LogLevel);
+      log.info(`Log level set to: ${level}`);
+      return { success: true };
+    }
+    return { success: false, error: `Invalid log level: ${level}` };
+  });
+
+  handleValidated(IPC.STORE_RESET, ipcSchemas[IPC.STORE_RESET], async () => {
+    resetStore(store);
     return { success: true };
   });
 }
@@ -436,6 +564,7 @@ if (!gotTheLock) {
 }
 
 app.on('window-all-closed', () => {
+  stopSessionReaper();
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -450,21 +579,36 @@ app.on('certificate-error', (event, _webContents, _url, _error, _certificate, ca
   }
 });
 
-// Clean shutdown on SIGTERM (nodemon restart) — release CDP port immediately.
-process.on('SIGTERM', () => {
-  console.log('[Main] SIGTERM received, shutting down...');
-  void closeBrowser().then(() => app.quit());
-});
+// Hardened shutdown — clean up all sessions with a hard timeout.
+const SHUTDOWN_TIMEOUT_MS = 10_000;
 
-process.on('SIGINT', () => {
-  console.log('[Main] SIGINT received, shutting down...');
-  void closeBrowser().then(() => app.quit());
-});
+async function gracefulShutdown(signal: string): Promise<void> {
+  log.info(`${signal} received, shutting down...`);
+  stopSessionReaper();
+
+  const shutdownTimer = setTimeout(() => {
+    log.warn(`Shutdown timed out after ${SHUTDOWN_TIMEOUT_MS}ms, forcing exit`);
+    app.exit(0);
+  }, SHUTDOWN_TIMEOUT_MS);
+
+  try {
+    await closeBrowser();
+  } catch (err: any) {
+    log.warn(`closeBrowser error during shutdown: ${err?.message}`);
+  } finally {
+    clearTimeout(shutdownTimer);
+    killOrphanedCDPProcesses();
+    app.quit();
+  }
+}
+
+process.on('SIGTERM', () => void gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => void gracefulShutdown('SIGINT'));
 
 process.on('uncaughtException', (error) => {
-  console.error('Uncaught exception:', error);
+  log.error('Uncaught exception:', error);
 });
 
 process.on('unhandledRejection', (reason) => {
-  console.error('Unhandled rejection:', reason);
+  log.error('Unhandled rejection:', reason);
 });

@@ -3,8 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- CSP meta tag: replaced at build time by vite-plugin-csp-swap (see vite.config.ts) -->
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'self' http://localhost:* ws://localhost:*; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:*; style-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:* ws://localhost:*; img-src 'self' https: blob: data:">
+    content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:*; style-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:* ws://localhost:*; img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com">
   <title>Clawdia</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -34,9 +35,9 @@
                 </div>
               </div>
               <span class="brand-name">Clawdia</span>
-              <button id="readme-toggle" class="readme-toggle" title="User Guide">README</button>
               <div class="header-spacer"></div>
               <div class="header-controls">
+                <button id="readme-toggle" class="readme-toggle" title="User Guide">README</button>
                 <button id="settings-toggle" class="header-icon-btn" title="Settings">
                   <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="8" cy="8" r="2"/>
@@ -416,10 +417,7 @@
             <div class="browser-menu-container">
               <button id="browser-menu-btn" class="browser-menu-btn" title="Browser menu">&#8942;</button>
               <div id="browser-menu-dropdown" class="browser-menu-dropdown hidden">
-                <button class="browser-menu-item" data-action="history">History</button>
-                <button class="browser-menu-item" data-action="clear-history">Clear History</button>
-                <button class="browser-menu-item" data-action="clear-cookies">Clear Cookies</button>
-                <button class="browser-menu-item browser-menu-item-danger" data-action="clear-all">Clear All Data</button>
+                <div id="browser-menu-body" class="browser-menu-body"></div>
               </div>
             </div>
           </div>
@@ -439,22 +437,9 @@
           </div>
 
           <div class="browser-placeholder">
-            <p class="placeholder-text">Browser view will appear here</p>
+            <p id="browser-hidden-quote" class="browser-hidden-quote hidden">EVEN THE MONA LISA'S FALLING APART</p>
           </div>
         </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Confirmation dialog for browser clear operations -->
-  <div id="confirm-dialog" class="confirm-dialog hidden">
-    <div class="confirm-dialog-backdrop"></div>
-    <div class="confirm-dialog-content">
-      <h3 id="confirm-dialog-title" class="confirm-dialog-title"></h3>
-      <p id="confirm-dialog-message" class="confirm-dialog-message"></p>
-      <div class="confirm-dialog-actions">
-        <button id="confirm-dialog-cancel" class="secondary">Cancel</button>
-        <button id="confirm-dialog-confirm" class="danger"></button>
       </div>
     </div>
   </div>

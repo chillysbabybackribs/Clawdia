@@ -4,7 +4,8 @@ import * as fs from 'fs/promises';
 import { homedir } from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
-import { createDocument } from '../documents/creator';
+import { createDocument, type LlmGenerationMetrics } from '../documents/creator';
+import type { DocProgressEvent } from '../../shared/types';
 
 const execAsync = promisify(exec);
 
@@ -12,6 +13,13 @@ export interface LocalToolDefinition {
   name: string;
   description: string;
   input_schema: Record<string, unknown>;
+}
+
+export interface LocalToolExecutionContext {
+  conversationId?: string;
+  messageId?: string;
+  llmMetrics?: LlmGenerationMetrics;
+  onDocProgress?: (event: DocProgressEvent) => void;
 }
 
 export const LOCAL_TOOL_DEFINITIONS: LocalToolDefinition[] = [
@@ -160,7 +168,11 @@ export const LOCAL_TOOL_DEFINITIONS: LocalToolDefinition[] = [
   },
 ];
 
-export async function executeLocalTool(toolName: string, input: any): Promise<string> {
+export async function executeLocalTool(
+  toolName: string,
+  input: any,
+  context?: LocalToolExecutionContext,
+): Promise<string> {
   switch (toolName) {
     case 'shell_exec':
       return toolShellExec(input);
@@ -175,7 +187,7 @@ export async function executeLocalTool(toolName: string, input: any): Promise<st
     case 'process_manager':
       return toolProcessManager(input);
     case 'create_document':
-      return toolCreateDocument(input);
+      return toolCreateDocument(input, context);
     default:
       return `Unknown tool: ${toolName}`;
   }
@@ -495,7 +507,7 @@ async function toolCreateDocument(input: {
   content: string;
   structured_data?: unknown;
   title?: string;
-}): Promise<string> {
+}, context?: LocalToolExecutionContext): Promise<string> {
   const filename = String(input?.filename || 'document.txt');
   const format = String(input?.format || 'txt');
   const content = String(input?.content ?? '');
@@ -504,6 +516,10 @@ async function toolCreateDocument(input: {
     const result = await createDocument(filename, format, content, {
       structuredData: input?.structured_data,
       title: input?.title,
+      conversationId: context?.conversationId,
+      messageId: context?.messageId,
+      llmMetrics: context?.llmMetrics,
+      onProgress: context?.onDocProgress,
     });
     // Return JSON with __clawdia_document__ marker so tool-loop can detect it
     return JSON.stringify({
@@ -512,6 +528,7 @@ async function toolCreateDocument(input: {
       filename: result.filename,
       sizeBytes: result.sizeBytes,
       format: result.format,
+      timing: result.timing,
     });
   } catch (err: any) {
     return `[Error creating document: ${err?.message || 'unknown error'}]`;

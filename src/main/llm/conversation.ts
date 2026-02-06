@@ -99,7 +99,8 @@ export class ConversationManager {
     // Auto-generate title from first user message
     const isUntitled = !conversation.title || conversation.title === 'New Conversation' || conversation.title === DEFAULT_TITLE;
     if (isUntitled && message.role === 'user') {
-      conversation.title = message.content.slice(0, 50) + (message.content.length > 50 ? '...' : '');
+      const titleText = message.content || (message.images?.length ? `[${message.images.length} image${message.images.length > 1 ? 's' : ''}]` : '');
+      conversation.title = titleText.slice(0, 50) + (titleText.length > 50 ? '...' : '');
     }
 
     this.saveToStore();

@@ -1,0 +1,177 @@
+import DOMPurify from 'dompurify';
+import {
+  appState,
+  COPY_BUTTON_SUCCESS_DURATION_MS,
+  COPY_ICON_SVG,
+  COPY_NOTE_DURATION_MS,
+  SAFE_MARKDOWN_RENDER_CHARS,
+} from './state';
+
+// ---------------------------------------------------------------------------
+// DOMPurify configuration — sanitizes LLM-generated HTML before DOM insertion.
+// Allows safe markdown elements (headings, lists, links, code blocks, etc.)
+// while stripping scripts, event handlers, and dangerous URI schemes.
+// ---------------------------------------------------------------------------
+const PURIFY_CONFIG = {
+  ALLOWED_TAGS: [
+    'p', 'br', 'strong', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'code', 'pre', 'a', 'li', 'ul', 'ol', 'div', 'span', 'button', 'svg',
+    'line', 'img',
+  ],
+  ALLOWED_ATTR: [
+    'href', 'target', 'rel', 'class', 'title', 'type', 'aria-label',
+    'data-source-url', 'data-source-title',
+    // SVG attributes for copy-button icon
+    'viewBox', 'fill', 'stroke', 'stroke-width', 'stroke-linecap',
+    'stroke-linejoin', 'd', 'x1', 'y1', 'x2', 'y2',
+    // img
+    'src', 'alt',
+    // inline style (needed for favicon fallback display toggling)
+    'style',
+  ],
+  ALLOW_DATA_ATTR: false,
+  ALLOWED_URI_REGEXP: /^(?:https?|mailto):/i,
+};
+
+/** Sanitize HTML through DOMPurify. Use for ALL LLM-generated content before innerHTML. */
+export function sanitizeHtml(dirty: string): string {
+  return DOMPurify.sanitize(dirty, PURIFY_CONFIG) as string;
+}
+
+export function initMarkdown(): void {
+  // No initialization required.
+}
+
+export function escapeHtml(text: string): string {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+export async function copyTextToClipboard(text: string): Promise<void> {
+  try {
+    const viaMain = await window.api.clipboardWriteText(text);
+    if (viaMain?.success) {
+      return;
+    }
+  } catch {
+    // Fall back to renderer clipboard paths.
+  }
+
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textArea = document.createElement('textarea');
+  textArea.value = text;
+  textArea.setAttribute('readonly', 'true');
+  textArea.style.position = 'absolute';
+  textArea.style.left = '-9999px';
+  document.body.appendChild(textArea);
+  textArea.select();
+  textArea.setSelectionRange(0, textArea.value.length);
+
+  const copied = document.execCommand('copy');
+  document.body.removeChild(textArea);
+  if (!copied) {
+    throw new Error('Clipboard copy command failed');
+  }
+}
+
+export function showCopyNote(wrapper: HTMLElement, text: string): void {
+  let noteEl = wrapper.querySelector('.code-copy-note') as HTMLSpanElement | null;
+  if (!noteEl) {
+    noteEl = document.createElement('span');
+    noteEl.className = 'code-copy-note';
+    wrapper.appendChild(noteEl);
+  }
+
+  noteEl.textContent = text;
+  noteEl.classList.add('visible');
+
+  const existingTimer = appState.copyNoteHideTimers.get(wrapper);
+  if (existingTimer) {
+    window.clearTimeout(existingTimer);
+  }
+  const nextTimer = window.setTimeout(() => {
+    noteEl?.classList.remove('visible');
+    appState.copyNoteHideTimers.delete(wrapper);
+  }, COPY_NOTE_DURATION_MS);
+  appState.copyNoteHideTimers.set(wrapper, nextTimer);
+}
+
+export function handleCodeCopyClick(event: MouseEvent): void {
+  const btn = (event.target as Element).closest('.code-copy-btn') as HTMLButtonElement | null;
+  if (!btn) return;
+  event.preventDefault();
+  const wrapper = btn.closest('.code-block-wrapper') as HTMLElement | null;
+  const codeEl = wrapper?.querySelector('code');
+  if (!codeEl) return;
+  btn.classList.add('is-clicked');
+  window.setTimeout(() => btn.classList.remove('is-clicked'), 120);
+
+  void copyTextToClipboard(codeEl.textContent || '')
+    .then(() => {
+      btn.classList.add('is-copied');
+      const existingTimer = appState.copyButtonStateTimers.get(btn);
+      if (existingTimer) {
+        window.clearTimeout(existingTimer);
+      }
+      const nextTimer = window.setTimeout(() => {
+        btn.classList.remove('is-copied');
+        appState.copyButtonStateTimers.delete(btn);
+      }, COPY_BUTTON_SUCCESS_DURATION_MS);
+      appState.copyButtonStateTimers.set(btn, nextTimer);
+
+      if (wrapper) {
+        showCopyNote(wrapper, 'Copied');
+      }
+    })
+    .catch((error) => {
+      console.error('[Renderer] failed to copy code block:', error);
+    });
+}
+
+export function renderMarkdown(text: string): string {
+  if (text.length > SAFE_MARKDOWN_RENDER_CHARS) {
+    return `<pre>${escapeHtml(text)}</pre>`;
+  }
+
+  let html = escapeHtml(text)
+    .replace(
+      /```(\w*)\n([\s\S]*?)```/g,
+      (_match, _language, code) =>
+        `<div class="code-block-wrapper"><button type="button" class="code-copy-btn" title="Copy code" aria-label="Copy code">${COPY_ICON_SVG}</button><pre><code>${code}</code></pre></div>`
+    )
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+    .replace(/^- (.+)$/gm, '<li>$1</li>')
+    .replace(/\n\n/g, '</p><p>')
+    .replace(/\n/g, '<br>');
+
+  html = html.replace(/(https?:\/\/[^\s<]+)/g, (match) => {
+    let display = match;
+    try {
+      const parsed = new URL(match);
+      const host = parsed.hostname;
+      let rest = parsed.pathname.replace(/\/$/, '');
+      if (rest.length > 20) {
+        rest = rest.slice(0, 20) + '…';
+      }
+      display = `${host}${rest}${parsed.search ? parsed.search : ''}`;
+    } catch {
+      // Ignore parse failures.
+    }
+
+    return `<a href="${match}" class="source-link" data-source-url="${match}" data-source-title="${escapeHtml(display)}" title="${escapeHtml(match)}" target="_blank" rel="noreferrer">${escapeHtml(
+      display
+    )}</a>`;
+  });
+
+  return sanitizeHtml(`<p>${html}</p>`);
+}

@@ -1,8 +1,37 @@
-import { BrowserView, BrowserWindow, ipcMain } from 'electron';
+import { BrowserView, BrowserWindow, session } from 'electron';
 import { chromium, Browser, BrowserContext, Page } from 'playwright';
 import { IPC, IPC_EVENTS } from '../../shared/ipc-channels';
 import { BrowserTabInfo } from '../../shared/types';
 import { wireUniversalPopupDismissal } from './popup-dismissal';
+import { store, BrowserHistoryEntry } from '../store';
+import { randomUUID } from 'crypto';
+import { execSync } from 'child_process';
+import { createLogger } from '../logger';
+import { handleValidated, ipcSchemas } from '../ipc-validator';
+
+const log = createLogger('browser-manager');
+
+// ---------------------------------------------------------------------------
+// Playwright session tracking — detect and clean up leaked resources
+// ---------------------------------------------------------------------------
+
+interface PlaywrightSession {
+  id: string;
+  browserContext: BrowserContext | null;
+  pages: Page[];
+  createdAt: number;
+  lastActivityAt: number;
+  associatedTabId: string | null;
+  status: 'active' | 'idle' | 'orphaned' | 'closing';
+}
+
+const activeSessions = new Map<string, PlaywrightSession>();
+let reaperInterval: ReturnType<typeof setInterval> | null = null;
+const SESSION_IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const REAPER_INTERVAL_MS = 60_000; // 60 seconds
+const CLEANUP_STEP_TIMEOUT_MS = 5_000; // 5 seconds per cleanup step
+const MEMORY_WARN_MB = 1024; // 1 GB
+const MEMORY_CRITICAL_MB = 2048; // 2 GB
 
 const TABS_UPDATED_EVENT = IPC_EVENTS.BROWSER_TABS_UPDATED;
 
@@ -43,6 +72,17 @@ const NOISE_PATTERNS = [
   'customer events tracker', 'run pagefly', 'm.ai', 'k-web-pixel',
   'sandbox warning',
 ];
+
+const BENIGN_PAGE_ERROR_PATTERNS = [
+  'routechange aborted',
+  'minified react error #421',
+  "unexpected token '&'",
+];
+
+
+function sanitizeUserAgent(userAgent: string): string {
+  return userAgent.replace(/\s*Electron\/\S+/i, '').replace(/\s*clawdia\/\S+/i, '');
+}
 
 function withProtocol(url: string): string {
   const trimmed = url.trim();
@@ -90,6 +130,49 @@ function updateActiveTab(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Browser history tracking
+// ---------------------------------------------------------------------------
+
+const BROWSER_HISTORY_MAX = 500;
+
+function recordHistoryEntry(url: string, title: string): void {
+  if (!url || url === 'about:blank' || url.startsWith('data:')) return;
+  const history = (store.get('browserHistory') as BrowserHistoryEntry[] | undefined) ?? [];
+  // Skip duplicate consecutive entries
+  if (history.length > 0 && history[0].url === url) return;
+  const entry: BrowserHistoryEntry = {
+    id: randomUUID(),
+    url,
+    title: title || url,
+    timestamp: Date.now(),
+  };
+  history.unshift(entry);
+  store.set('browserHistory', history.slice(0, BROWSER_HISTORY_MAX));
+}
+
+export function getBrowserHistory(): BrowserHistoryEntry[] {
+  return (store.get('browserHistory') as BrowserHistoryEntry[] | undefined) ?? [];
+}
+
+export function clearBrowserHistory(): void {
+  store.set('browserHistory', []);
+}
+
+export async function clearBrowserCookies(): Promise<void> {
+  const ses = session.defaultSession;
+  await ses.clearStorageData({ storages: ['cookies'] });
+}
+
+export async function clearAllBrowserData(): Promise<void> {
+  store.set('browserHistory', []);
+  const ses = session.defaultSession;
+  await ses.clearCache();
+  await ses.clearStorageData({
+    storages: ['cookies', 'localstorage', 'cachestorage'],
+  });
+}
+
+// ---------------------------------------------------------------------------
 // OAuth / auth popup support
 // ---------------------------------------------------------------------------
 
@@ -118,61 +201,20 @@ function isAuthUrl(url: string): boolean {
   }
 }
 
-function openAuthPopup(url: string): void {
-  console.log(`[Auth] Opening auth popup for: ${url}`);
+function wireAuthPopup(popup: BrowserWindow, initialUrl: string): void {
+  log.info(`Auth popup created for: ${initialUrl}`);
 
-  // Extract the origin of the page that initiated the auth flow
-  const openerOrigin = browserView
-    ? new URL(browserView.webContents.getURL()).origin
-    : null;
-
-  const popup = new BrowserWindow({
-    width: 500,
-    height: 700,
-    parent: mainWindow ?? undefined,
-    modal: false,
-    show: true,
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
-    },
-  });
-
-  // Clean the user agent to match the BrowserView
-  const defaultUA = popup.webContents.getUserAgent();
-  const cleanUA = defaultUA.replace(/\s*Electron\/\S+/i, '').replace(/\s*clawdia\/\S+/i, '');
-  popup.webContents.setUserAgent(cleanUA);
+  // Match BrowserView UA so auth providers do not branch to Electron-specific behavior.
+  popup.webContents.setUserAgent(sanitizeUserAgent(popup.webContents.getUserAgent()));
 
   popup.webContents.on('will-navigate', (_event, navUrl) => {
-    console.log(`[Auth] Popup navigating to: ${navUrl}`);
+    log.debug(`Auth popup navigating to: ${navUrl}`);
   });
 
-  // Detect when the OAuth flow redirects back to the opener's origin.
-  // This means auth is complete — close the popup and reload the BrowserView.
-  popup.webContents.on('did-navigate', (_event, navUrl) => {
-    try {
-      const navOrigin = new URL(navUrl).origin;
-      if (openerOrigin && navOrigin === openerOrigin) {
-        console.log(`[Auth] Auth complete — redirected back to ${navOrigin}`);
-        if (browserView) {
-          void browserView.webContents.loadURL(navUrl).catch(() => null);
-        }
-        popup.close();
-      }
-    } catch { /* ignore invalid URLs */ }
-  });
-
-  // Handle the popup closing itself (window.close()) — standard OAuth behavior
+  // Let the popup complete callback scripts naturally, then refresh parent view on close.
   popup.on('closed', () => {
-    console.log('[Auth] Auth popup closed');
-    // Refresh the BrowserView to pick up any new session/cookies
-    if (browserView) {
-      browserView.webContents.reload();
-    }
+    log.debug('Auth popup closed');
   });
-
-  void popup.loadURL(url);
 }
 
 // ---------------------------------------------------------------------------
@@ -190,10 +232,9 @@ function ensureBrowserView(): BrowserView {
     },
   });
 
-  const defaultUA = browserView.webContents.getUserAgent();
-  const cleanUA = defaultUA.replace(/\s*Electron\/\S+/i, '').replace(/\s*clawdia\/\S+/i, '');
+  const cleanUA = sanitizeUserAgent(browserView.webContents.getUserAgent());
   browserView.webContents.setUserAgent(cleanUA);
-  console.log(`[BrowserView] UA set to: ${cleanUA}`);
+  log.debug(`UA set to: ${cleanUA}`);
 
   if (mainWindow) {
     mainWindow.addBrowserView(browserView);
@@ -209,18 +250,27 @@ function ensureBrowserView(): BrowserView {
       mainWindow?.webContents.send(IPC_EVENTS.BROWSER_NAVIGATED, url);
       updateActiveTab();
       emitTabState();
+      recordHistoryEntry(url, browserView!.webContents.getTitle() || '');
     });
 
     browserView.webContents.on('did-navigate-in-page', (_event, url) => {
       mainWindow?.webContents.send(IPC_EVENTS.BROWSER_NAVIGATED, url);
       updateActiveTab();
       emitTabState();
+      recordHistoryEntry(url, browserView!.webContents.getTitle() || '');
     });
 
     browserView.webContents.on('page-title-updated', (_event, title) => {
       mainWindow?.webContents.send(IPC_EVENTS.BROWSER_TITLE, title);
       updateActiveTab();
       emitTabState();
+      // Update the most recent history entry's title if URL matches
+      const history = (store.get('browserHistory') as BrowserHistoryEntry[] | undefined) ?? [];
+      const currentUrl = browserView!.webContents.getURL();
+      if (history.length > 0 && history[0].url === currentUrl && title) {
+        history[0].title = title;
+        store.set('browserHistory', history);
+      }
     });
 
     browserView.webContents.on('did-start-loading', () => {
@@ -232,6 +282,8 @@ function ensureBrowserView(): BrowserView {
     });
 
     browserView.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
+      // Common during redirects / rapid SPA navigations; not a user-facing failure.
+      if (errorCode === -3) return; // ERR_ABORTED
       mainWindow?.webContents.send(IPC_EVENTS.BROWSER_ERROR, `${errorDescription} (${errorCode})`);
     });
 
@@ -241,18 +293,39 @@ function ensureBrowserView(): BrowserView {
       const normalizedSource = (sourceId || '').toLowerCase();
       if (NOISY_SOURCES.some((src) => normalizedSource.includes(src) || normalizedMessage.includes(src))) return;
       if (NOISE_PATTERNS.some((pattern) => normalizedMessage.includes(pattern))) return;
+      if (BENIGN_PAGE_ERROR_PATTERNS.some((pattern) => normalizedMessage.includes(pattern))) return;
       if (level < 2) return;
 
       const levelName = ['DEBUG', 'INFO', 'WARN', 'ERROR'][level] ?? `L${level}`;
       const preview = message.length > 200 ? `${message.slice(0, 200)}...` : message;
       const srcInfo = sourceId ? ` (${sourceId}:${line})` : '';
-      console.log(`[BrowserView:${levelName}] ${preview}${srcInfo}`);
+      log.debug(`[BrowserView:${levelName}] ${preview}${srcInfo}`);
+    });
+
+    browserView.webContents.on('did-create-window', (popup, details) => {
+      if (!isAuthUrl(details.url)) return;
+      wireAuthPopup(popup, details.url);
     });
 
     browserView.webContents.setWindowOpenHandler(({ url }) => {
       if (isAuthUrl(url)) {
-        openAuthPopup(url);
-        return { action: 'deny' };
+        log.info(`Allowing auth popup for: ${url}`);
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: {
+            width: 500,
+            height: 700,
+            parent: mainWindow ?? undefined,
+            modal: false,
+            show: true,
+            autoHideMenuBar: true,
+            webPreferences: {
+              nodeIntegration: false,
+              contextIsolation: true,
+              sandbox: true,
+            },
+          },
+        };
       }
       void navigate(url);
       return { action: 'deny' };
@@ -264,9 +337,9 @@ function ensureBrowserView(): BrowserView {
 
 export function setMainWindow(window: BrowserWindow): void {
   mainWindow = window;
-  console.log('[BrowserView] setMainWindow called, creating BrowserView...');
+  log.info('setMainWindow called, creating BrowserView...');
   ensureBrowserView();
-  console.log(`[BrowserView] BrowserView created, attached=${!!browserView}`);
+  log.debug(`BrowserView created, attached=${!!browserView}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -281,7 +354,7 @@ async function probeCDP(port: number): Promise<string | null> {
     const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(2000) });
     if (res.ok) {
       const info = await res.json();
-      console.log(`[Browser] CDP probe :${port} OK — ${info?.Browser || 'unknown'}`);
+      log.debug(`CDP probe :${port} OK — ${info?.Browser || 'unknown'}`);
       return info?.webSocketDebuggerUrl || null;
     }
   } catch { /* not responding */ }
@@ -298,14 +371,228 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
+/** Soft timeout — resolves null instead of rejecting on timeout. Used for cleanup steps. */
+async function withSoftTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T | null> {
+  const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), ms));
+  const result = await Promise.race([promise, timeout]);
+  if (result === null) log.warn(`${label} timed out after ${ms}ms, skipping`);
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Session lifecycle — create, update, cleanup
+// ---------------------------------------------------------------------------
+
+function registerSession(ctx: BrowserContext | null, tabId: string | null): PlaywrightSession {
+  const session: PlaywrightSession = {
+    id: randomUUID(),
+    browserContext: ctx,
+    pages: ctx ? ctx.pages() : [],
+    createdAt: Date.now(),
+    lastActivityAt: Date.now(),
+    associatedTabId: tabId,
+    status: 'active',
+  };
+  activeSessions.set(session.id, session);
+  log.info(`Session registered: ${session.id} (tab=${tabId}, pages=${session.pages.length})`);
+  return session;
+}
+
+function touchSession(): void {
+  for (const s of activeSessions.values()) {
+    if (s.status === 'active') {
+      s.lastActivityAt = Date.now();
+    }
+  }
+}
+
+/** Flag indicating the tool loop's browser session was externally closed. */
+let sessionInvalidated = false;
+
+export function isSessionInvalidated(): boolean {
+  return sessionInvalidated;
+}
+
+export function clearSessionInvalidated(): void {
+  sessionInvalidated = false;
+}
+
+async function cleanupSession(session: PlaywrightSession, reason: string): Promise<void> {
+  if (session.status === 'closing') return;
+  session.status = 'closing';
+  log.info(`Cleaning up session ${session.id}: reason=${reason}`);
+
+  // 1. Close all tracked pages
+  for (const page of session.pages) {
+    try {
+      if (!page.isClosed()) {
+        await withSoftTimeout(page.close(), CLEANUP_STEP_TIMEOUT_MS, `close page ${page.url()}`);
+      }
+    } catch (err: any) {
+      log.warn(`Failed to close page: ${err?.message}`);
+    }
+  }
+
+  // 2. Close browser context if it exists
+  if (session.browserContext) {
+    try {
+      await withSoftTimeout(session.browserContext.close(), CLEANUP_STEP_TIMEOUT_MS, 'close browser context');
+    } catch (err: any) {
+      log.warn(`Failed to close context: ${err?.message}`);
+    }
+  }
+
+  // 3. Remove from tracker
+  activeSessions.delete(session.id);
+  log.info(`Session ${session.id} cleaned up (reason=${reason})`);
+}
+
+async function cleanupAllSessions(reason: string): Promise<void> {
+  const sessions = Array.from(activeSessions.values());
+  if (sessions.length === 0) return;
+  log.info(`Cleaning up ${sessions.length} session(s): reason=${reason}`);
+  await Promise.allSettled(sessions.map((s) => cleanupSession(s, reason)));
+}
+
+function findSessionByTab(tabId: string): PlaywrightSession | null {
+  for (const s of activeSessions.values()) {
+    if (s.associatedTabId === tabId && s.status !== 'closing') return s;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Session reaper — periodic idle/orphan/stale detection + memory monitoring
+// ---------------------------------------------------------------------------
+
+async function isSessionAlive(session: PlaywrightSession): Promise<boolean> {
+  if (!session.browserContext) return false;
+  try {
+    const pages = session.browserContext.pages();
+    if (pages.length === 0) return false;
+    // Lightweight CDP ping — evaluate a trivial expression
+    const result = await withSoftTimeout(pages[0].evaluate(() => 1), CLEANUP_STEP_TIMEOUT_MS, 'CDP ping');
+    if (result === null) return false; // timeout means dead
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function logMemoryUsage(): void {
+  const mem = process.memoryUsage();
+  const heapMB = Math.round(mem.heapUsed / 1024 / 1024);
+  const rssMB = Math.round(mem.rss / 1024 / 1024);
+  const info = {
+    heapUsedMB: heapMB,
+    rssMB,
+    activeSessions: activeSessions.size,
+    totalPages: Array.from(activeSessions.values()).reduce((sum, s) => sum + s.pages.length, 0),
+  };
+
+  if (rssMB >= MEMORY_CRITICAL_MB) {
+    log.warn('Memory critical', info);
+    // Aggressive cleanup: reap all idle sessions regardless of timeout
+    // Collect first to avoid mutating Map during iteration
+    const toClean = Array.from(activeSessions.values()).filter(
+      (s) => s.status === 'active' || s.status === 'idle'
+    );
+    for (const s of toClean) {
+      void cleanupSession(s, 'memory-critical');
+    }
+    // Hint GC if exposed
+    if (typeof global.gc === 'function') global.gc();
+  } else if (rssMB >= MEMORY_WARN_MB) {
+    log.warn('Memory usage high', info);
+  } else {
+    log.info('Memory usage', info);
+  }
+}
+
+async function runSessionReaper(): Promise<void> {
+  const now = Date.now();
+  for (const session of Array.from(activeSessions.values())) {
+    if (session.status === 'closing') continue;
+
+    // Orphan detection: tab no longer exists
+    if (session.associatedTabId && !tabs.has(session.associatedTabId)) {
+      await cleanupSession(session, 'orphaned');
+      sessionInvalidated = true;
+      continue;
+    }
+
+    // Idle timeout: no activity for 5 minutes
+    if (now - session.lastActivityAt > SESSION_IDLE_TIMEOUT_MS) {
+      await cleanupSession(session, 'idle-timeout');
+      continue;
+    }
+
+    // Stale CDP: connection is dead
+    if (!(await isSessionAlive(session))) {
+      await cleanupSession(session, 'cdp-dead');
+      sessionInvalidated = true;
+      continue;
+    }
+  }
+
+  logMemoryUsage();
+}
+
+export function startSessionReaper(): void {
+  if (reaperInterval) return;
+  // Use setTimeout chaining instead of setInterval to prevent overlapping runs
+  const scheduleNext = () => {
+    reaperInterval = setTimeout(async () => {
+      await runSessionReaper().catch((err: any) => {
+        log.warn(`Session reaper error: ${err?.message}`);
+      });
+      if (reaperInterval) scheduleNext(); // Re-arm only if not stopped
+    }, REAPER_INTERVAL_MS);
+  };
+  scheduleNext();
+  log.info('Session reaper started');
+}
+
+export function stopSessionReaper(): void {
+  if (reaperInterval) {
+    clearTimeout(reaperInterval);
+    reaperInterval = null;
+    log.info('Session reaper stopped');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Startup cleanup — kill orphaned CDP processes from prior crashed sessions
+// ---------------------------------------------------------------------------
+
+/**
+ * Kill orphaned processes on CDP ports from a prior crashed session.
+ * Skips our own CDP port to avoid self-killing.
+ */
+export function killOrphanedCDPProcesses(): void {
+  const ownPort = cdpPort();
+  const candidates = [9222, 9223, 9224, 9225, 9226, 9227];
+  for (const port of candidates) {
+    if (port === ownPort) continue; // Don't kill our own process
+    try {
+      execSync(`ss -tln | grep -qE ':${port}\\b'`, { stdio: 'ignore' });
+      log.info(`Killing orphaned process on CDP port ${port}`);
+      // Send SIGTERM first for graceful shutdown; fall back to SIGKILL
+      execSync(`fuser -TERM ${port}/tcp 2>/dev/null || fuser -k ${port}/tcp 2>/dev/null || true`, { stdio: 'ignore' });
+    } catch {
+      // Port not in use — nothing to clean up
+    }
+  }
+}
+
 async function connectCDP(): Promise<boolean> {
   const port = cdpPort();
-  console.log(`[Browser] Will connect to CDP on :${port} (PID ${process.pid})`);
+  log.info(`Will connect to CDP on :${port} (PID ${process.pid})`);
 
   for (let attempt = 1; attempt <= CDP_MAX_RETRIES; attempt++) {
     const wsUrl = await probeCDP(port);
     if (!wsUrl) {
-      console.log(`[Browser] CDP :${port} not responding (attempt ${attempt}/${CDP_MAX_RETRIES})`);
+      log.debug(`CDP :${port} not responding (attempt ${attempt}/${CDP_MAX_RETRIES})`);
       if (attempt < CDP_MAX_RETRIES) {
         await new Promise((resolve) => setTimeout(resolve, CDP_RETRY_DELAY_MS));
       }
@@ -314,16 +601,16 @@ async function connectCDP(): Promise<boolean> {
 
     try {
       const httpEndpoint = `http://127.0.0.1:${port}`;
-      console.log(`[Browser] Connecting Playwright via ${httpEndpoint} (attempt ${attempt})...`);
+      log.info(`Connecting Playwright via ${httpEndpoint} (attempt ${attempt})...`);
       playwrightBrowser = await withTimeout(chromium.connectOverCDP(httpEndpoint), 10000, 'connectOverCDP');
       const contexts = playwrightBrowser.contexts();
-      console.log(`[Browser] Playwright connected — ${contexts.length} context(s)`);
+      log.info(`Playwright connected with ${contexts.length} context(s)`);
       return true;
     } catch (err: any) {
-      console.warn(`[Browser] CDP connect failed: ${err?.message || err}`);
+      log.warn(`CDP connect failed: ${err?.message || err}`);
       playwrightBrowser = null;
       if (attempt < CDP_MAX_RETRIES) {
-        console.log(`[Browser] Waiting ${CDP_RETRY_DELAY_MS}ms before retry ${attempt + 1}...`);
+        log.debug(`Waiting ${CDP_RETRY_DELAY_MS}ms before retry ${attempt + 1}...`);
         await new Promise((resolve) => setTimeout(resolve, CDP_RETRY_DELAY_MS));
       }
     }
@@ -340,13 +627,24 @@ function findBrowserViewPage(): Page | null {
 
   const bvUrl = browserView.webContents.getURL() || '';
   const allPages = browserContext.pages();
-  console.log(`[Browser] Looking for BrowserView page among ${allPages.length} CDP page(s), BV url="${bvUrl}"`);
+  log.debug(`Looking for BrowserView page among ${allPages.length} CDP page(s), BV url="${bvUrl}"`);
 
-  // The BrowserView is typically the page whose URL is NOT the renderer (localhost:5173).
+  // Prefer exact URL match when possible.
+  if (bvUrl) {
+    for (const page of allPages) {
+      const pUrl = page.url() || '';
+      if (pUrl === bvUrl) {
+        log.debug(`Matched BrowserView page by exact URL: ${pUrl}`);
+        return page;
+      }
+    }
+  }
+
+  // Otherwise pick the most likely browser surface (not app renderer/devtools).
   for (const page of allPages) {
     const pUrl = page.url() || '';
     if (!pUrl.includes('localhost:5173') && !pUrl.includes('devtools://')) {
-      console.log(`[Browser] Matched BrowserView page: ${pUrl}`);
+      log.debug(`Matched BrowserView page: ${pUrl}`);
       return page;
     }
   }
@@ -354,7 +652,7 @@ function findBrowserViewPage(): Page | null {
   // Fallback: pick the last page (BrowserView is usually created after the main window).
   if (allPages.length > 1) {
     const last = allPages[allPages.length - 1];
-    console.log(`[Browser] Fallback: using last page: ${last.url()}`);
+    log.debug(`Fallback: using last page: ${last.url()}`);
     return last;
   }
 
@@ -374,29 +672,29 @@ function ensurePlaywrightPageBinding(): void {
   if (!page) return;
 
   bindPlaywrightPage(page);
-  console.log(`[Browser] Bound Playwright page: ${page.url()}`);
+  log.debug(`Bound Playwright page: ${page.url()}`);
 }
 
 export async function initPlaywright(): Promise<void> {
-  console.log('[Browser] initPlaywright called');
+  log.info('initPlaywright called');
   if (playwrightBrowser && browserContext) {
-    console.log('[Browser] Already initialized, resolving immediately');
+    log.debug('Already initialized, resolving immediately');
     playwrightReadyResolve();
     return;
   }
 
   const connected = await connectCDP();
-  console.log(`[Browser] connectCDP returned: ${connected}`);
+  log.info(`connectCDP returned: ${connected}`);
 
   if (!connected) {
-    console.error('[Browser] CDP connection failed. Playwright tools unavailable — BrowserView-only mode.');
+    log.error('CDP connection failed. Playwright tools unavailable, BrowserView-only mode.');
     playwrightReadyResolve();
     return;
   }
 
   browserContext = playwrightBrowser!.contexts()[0] ?? null;
   if (!browserContext) {
-    console.error('[Browser] No browser context found after CDP connect.');
+    log.error('No browser context found after CDP connect.');
     playwrightReadyResolve();
     return;
   }
@@ -407,10 +705,14 @@ export async function initPlaywright(): Promise<void> {
   const page = findBrowserViewPage();
   if (page) {
     bindPlaywrightPage(page);
-    console.log(`[Browser] Playwright wrapping BrowserView page: ${page.url()}`);
+    log.info(`Playwright wrapping BrowserView page: ${page.url()}`);
   } else {
-    console.warn('[Browser] Could not find BrowserView page in CDP targets. Tools may not work.');
+    log.warn('Could not find BrowserView page in CDP targets. Tools may not work.');
   }
+
+  // Register the CDP session for tracking
+  registerSession(browserContext, activeTabId);
+  startSessionReaper();
 
   playwrightReadyResolve();
 }
@@ -424,6 +726,7 @@ export async function navigate(url: string): Promise<{ success: boolean; url?: s
   mainWindow?.webContents.send(IPC_EVENTS.BROWSER_LOADING, true);
 
   const view = ensureBrowserView();
+
   try {
     await view.webContents.loadURL(targetUrl);
   } catch (error: any) {
@@ -454,7 +757,7 @@ function newTab(url: string): string {
 export async function createTab(url = 'about:blank'): Promise<string> {
   const targetUrl = withProtocol(url);
   const tabId = newTab(targetUrl);
-  console.log(`[Browser] createTab: ${tabId} → ${targetUrl}`);
+  log.info(`createTab: ${tabId} -> ${targetUrl}`);
 
   const view = ensureBrowserView();
   if (targetUrl !== 'about:blank') {
@@ -487,6 +790,13 @@ export async function switchTab(tabId: string): Promise<void> {
 }
 
 export async function closeTab(tabId: string): Promise<void> {
+  // Immediately clean up any Playwright session associated with this tab
+  const session = findSessionByTab(tabId);
+  if (session) {
+    sessionInvalidated = true;
+    void cleanupSession(session, 'tab-closed');
+  }
+
   tabs.delete(tabId);
   if (activeTabId === tabId) {
     const next = Array.from(tabs.keys())[0] ?? null;
@@ -531,10 +841,10 @@ export async function createLivePreviewTab(): Promise<string> {
     activeTabId = livePreviewTabId;
     // Navigate to a minimal data URI so document.open() works reliably
     await view.webContents.loadURL('data:text/html,<html><head></head><body></body></html>');
-    console.log('[LivePreview] Reusing tab, calling document.open()');
+    log.debug('LivePreview reusing tab, calling document.open()');
     await view.webContents.executeJavaScript('document.open(); "ok"');
     await view.webContents.executeJavaScript(`document.write(${JSON.stringify(QUALITY_BASELINE_CSS)})`);
-    console.log('[LivePreview] document.open() done + baseline CSS injected');
+    log.debug('LivePreview document.open() done and baseline CSS injected');
     emitTabState();
     return livePreviewTabId;
   }
@@ -547,10 +857,10 @@ export async function createLivePreviewTab(): Promise<string> {
 
   // Use data URI instead of about:blank — about:blank can have restrictions
   await view.webContents.loadURL('data:text/html,<html><head></head><body></body></html>');
-  console.log('[LivePreview] New tab loaded, calling document.open()');
+  log.debug('LivePreview new tab loaded, calling document.open()');
   await view.webContents.executeJavaScript('document.open(); "ok"');
   await view.webContents.executeJavaScript(`document.write(${JSON.stringify(QUALITY_BASELINE_CSS)})`);
-  console.log('[LivePreview] document.open() done + baseline CSS injected');
+  log.debug('LivePreview document.open() done and baseline CSS injected');
 
   emitTabState();
   return tabId;
@@ -561,16 +871,16 @@ export async function createLivePreviewTab(): Promise<string> {
  */
 export async function writeLiveHtml(html: string): Promise<void> {
   if (!browserView) {
-    console.warn('[LivePreview] write skipped: no browserView');
+    log.warn('LivePreview write skipped: no browserView');
     return;
   }
   try {
     const escaped = JSON.stringify(html);
     const preview = html.length > 80 ? html.slice(0, 80) + '...' : html;
-    console.log(`[LivePreview] writing ${html.length} chars: ${preview}`);
+    log.debug(`LivePreview writing ${html.length} chars: ${preview}`);
     await browserView.webContents.executeJavaScript(`document.write(${escaped})`);
   } catch (err: any) {
-    console.warn('[LivePreview] write failed:', err?.message);
+    log.warn('LivePreview write failed:', err?.message);
   }
 }
 
@@ -582,7 +892,7 @@ export async function closeLiveHtml(): Promise<void> {
   try {
     await browserView.webContents.executeJavaScript('document.close()');
   } catch (err: any) {
-    console.warn('[LivePreview] close failed:', err?.message);
+    log.warn('LivePreview close failed:', err?.message);
   }
   // Update tab title from the rendered page
   if (livePreviewTabId) {
@@ -623,9 +933,9 @@ export function waitForLoad(timeoutMs = 3000): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export function setupBrowserIpc(): void {
-  ipcMain.handle(IPC.BROWSER_NAVIGATE, async (_event, url: string) => navigate(url));
+  handleValidated(IPC.BROWSER_NAVIGATE, ipcSchemas[IPC.BROWSER_NAVIGATE], async (_event, payload) => navigate(payload.url));
 
-  ipcMain.handle(IPC.BROWSER_BACK, async () => {
+  handleValidated(IPC.BROWSER_BACK, ipcSchemas[IPC.BROWSER_BACK], async () => {
     const view = browserView;
     if (!view) return { success: false };
     mainWindow?.webContents.send(IPC_EVENTS.BROWSER_LOADING, true);
@@ -633,7 +943,7 @@ export function setupBrowserIpc(): void {
     return { success: true };
   });
 
-  ipcMain.handle(IPC.BROWSER_FORWARD, async () => {
+  handleValidated(IPC.BROWSER_FORWARD, ipcSchemas[IPC.BROWSER_FORWARD], async () => {
     const view = browserView;
     if (!view) return { success: false };
     mainWindow?.webContents.send(IPC_EVENTS.BROWSER_LOADING, true);
@@ -641,7 +951,7 @@ export function setupBrowserIpc(): void {
     return { success: true };
   });
 
-  ipcMain.handle(IPC.BROWSER_REFRESH, async () => {
+  handleValidated(IPC.BROWSER_REFRESH, ipcSchemas[IPC.BROWSER_REFRESH], async () => {
     const view = browserView;
     if (!view) return { success: false };
     mainWindow?.webContents.send(IPC_EVENTS.BROWSER_LOADING, true);
@@ -649,7 +959,7 @@ export function setupBrowserIpc(): void {
     return { success: true };
   });
 
-  ipcMain.handle(IPC.BROWSER_SET_BOUNDS, async (_event, bounds: { x: number; y: number; width: number; height: number }) => {
+  handleValidated(IPC.BROWSER_SET_BOUNDS, ipcSchemas[IPC.BROWSER_SET_BOUNDS], async (_event, bounds) => {
     currentBounds = bounds;
     if (browserView) {
       browserView.setBounds(bounds);
@@ -657,23 +967,43 @@ export function setupBrowserIpc(): void {
     return { success: true };
   });
 
-  ipcMain.handle(IPC.BROWSER_TAB_NEW, async (_event, url?: string) => {
-    const tabId = await createTab(url || 'about:blank');
+  handleValidated(IPC.BROWSER_TAB_NEW, ipcSchemas[IPC.BROWSER_TAB_NEW], async (_event, payload) => {
+    const tabId = await createTab(payload.url || 'about:blank');
     return { success: true, tabId };
   });
 
-  ipcMain.handle(IPC.BROWSER_TAB_LIST, async () => ({
+  handleValidated(IPC.BROWSER_TAB_LIST, ipcSchemas[IPC.BROWSER_TAB_LIST], async () => ({
     success: true,
     tabs: getTabsSnapshot(),
   }));
 
-  ipcMain.handle(IPC.BROWSER_TAB_SWITCH, async (_event, tabId: string) => {
-    await switchTab(tabId);
+  handleValidated(IPC.BROWSER_TAB_SWITCH, ipcSchemas[IPC.BROWSER_TAB_SWITCH], async (_event, payload) => {
+    await switchTab(payload.tabId);
     return { success: true };
   });
 
-  ipcMain.handle(IPC.BROWSER_TAB_CLOSE, async (_event, tabId: string) => {
-    await closeTab(tabId);
+  handleValidated(IPC.BROWSER_TAB_CLOSE, ipcSchemas[IPC.BROWSER_TAB_CLOSE], async (_event, payload) => {
+    await closeTab(payload.tabId);
+    return { success: true };
+  });
+
+  handleValidated(IPC.BROWSER_HISTORY_GET, ipcSchemas[IPC.BROWSER_HISTORY_GET], async () => ({
+    success: true,
+    history: getBrowserHistory(),
+  }));
+
+  handleValidated(IPC.BROWSER_HISTORY_CLEAR, ipcSchemas[IPC.BROWSER_HISTORY_CLEAR], async () => {
+    clearBrowserHistory();
+    return { success: true };
+  });
+
+  handleValidated(IPC.BROWSER_COOKIES_CLEAR, ipcSchemas[IPC.BROWSER_COOKIES_CLEAR], async () => {
+    await clearBrowserCookies();
+    return { success: true };
+  });
+
+  handleValidated(IPC.BROWSER_CLEAR_ALL, ipcSchemas[IPC.BROWSER_CLEAR_ALL], async () => {
+    await clearAllBrowserData();
     return { success: true };
   });
 }
@@ -688,6 +1018,7 @@ export function setupBrowserIpc(): void {
  */
 export function getActivePage(): Page | null {
   ensurePlaywrightPageBinding();
+  touchSession();
   return playwrightPage;
 }
 
@@ -705,24 +1036,36 @@ export function getActiveTabId(): string | null {
   return activeTabId;
 }
 
+export function listTabs(): BrowserTabInfo[] {
+  return getTabsSnapshot();
+}
+
 // ---------------------------------------------------------------------------
 // Cleanup
 // ---------------------------------------------------------------------------
 
 export async function closeBrowser(): Promise<void> {
+  stopSessionReaper();
+  await cleanupAllSessions('browser-close');
+
   tabs.clear();
   activeTabId = null;
   playwrightPage = null;
 
   if (playwrightBrowser) {
-    await playwrightBrowser.close().catch(() => null);
+    await withSoftTimeout(playwrightBrowser.close(), CLEANUP_STEP_TIMEOUT_MS, 'close playwright browser')
+      .catch(() => null);
     playwrightBrowser = null;
     browserContext = null;
   }
 
-  if (browserView && mainWindow) {
-    mainWindow.removeBrowserView(browserView);
-    browserView.webContents.close();
+  if (browserView) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.removeBrowserView(browserView);
+    }
+    if (browserView.webContents && !browserView.webContents.isDestroyed()) {
+      browserView.webContents.close();
+    }
     browserView = null;
   }
 }

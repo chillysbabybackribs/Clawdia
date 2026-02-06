@@ -30,6 +30,28 @@ export interface DocumentMeta {
   truncated?: boolean;
 }
 
+export type DocProgressStage =
+  | 'generating'
+  | 'parsing'
+  | 'assembling'
+  | 'writing'
+  | 'complete'
+  | 'error';
+
+export interface DocProgressEvent {
+  conversationId: string;
+  messageId: string;
+  stage: DocProgressStage;
+  stageLabel: string;
+  stageNumber: number;
+  totalStages: number;
+  elapsedMs: number;
+  detail?: string;
+  filename?: string;
+  error?: string;
+  writeCompletedAtMs?: number;
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';

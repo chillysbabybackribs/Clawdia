@@ -1,3 +1,11 @@
+@font-face {
+  font-family: 'Satoshi';
+  src: url('./fonts/Satoshi-Bold.woff') format('woff');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* ============================================================================
    CSS VARIABLES
    ============================================================================ */
@@ -616,19 +624,17 @@ body {
   bottom: 8px;
 }
 
-/* Single-line thinking indicator (between chat and input) */
+/* Thinking indicator — lives inside #output (chat messages area) */
 .thinking-indicator {
   width: 100%;
-  max-width: 900px;
-  margin: 8px auto 0 auto;
-  padding: 0 12px;
-  height: 28px;
+  max-width: 100%;
+  padding: 4px 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   overflow: hidden;
   pointer-events: none;
   opacity: 0;
-  transform: translateY(2px);
+  transform: translateY(4px);
   transition: opacity 0.3s ease, transform 0.3s ease;
 }
 
@@ -638,21 +644,20 @@ body {
 }
 
 .thinking-text {
-  font-size: 13px;
-  line-height: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 15px;
+  line-height: 1.55;
+  white-space: normal;
+  overflow-wrap: anywhere;
   max-width: 100%;
   opacity: 0;
   transition: opacity 0.25s ease;
   background: linear-gradient(
     90deg,
-    var(--text-secondary) 0%,
-    var(--text-secondary) 35%,
-    var(--text-shimmer) 50%,
-    var(--text-secondary) 65%,
-    var(--text-secondary) 100%
+    rgba(255, 255, 255, 0.72) 0%,
+    rgba(255, 255, 255, 0.72) 35%,
+    rgba(255, 255, 255, 1) 50%,
+    rgba(255, 255, 255, 0.72) 65%,
+    rgba(255, 255, 255, 0.72) 100%
   );
   background-size: 200% 100%;
   -webkit-background-clip: text;
@@ -1326,6 +1331,19 @@ button:disabled {
 .placeholder-text {
   color: var(--text-tertiary);
   font-size: 14px;
+}
+
+.browser-hidden-quote {
+  font-family: 'Satoshi', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-weight: 600;
+  font-size: clamp(14px, 2.2vw, 30px);
+  white-space: nowrap;
+  text-align: center;
+  color: var(--text-tertiary);
+  opacity: 0.22;
+  padding: 0 24px;
+  user-select: none;
+  margin: 0;
 }
 
 /* ============================================================================
@@ -2185,25 +2203,29 @@ button.danger:hover:not(:disabled) {
 
 .readme-toggle {
   -webkit-app-region: no-drag;
-  background: none;
+  background: transparent;
   border: none;
   color: var(--text-secondary);
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   font-size: 11px;
-  letter-spacing: 0.08em;
+  font-weight: 500;
+  letter-spacing: 0.04em;
   cursor: pointer;
-  padding: 2px 10px;
-  margin-left: 12px;
-  opacity: 0.5;
-  transition: opacity var(--transition-fast);
+  padding: 4px 8px;
+  border-radius: 4px;
+  opacity: 0.7;
+  transition: color var(--transition-fast), background-color var(--transition-fast), opacity var(--transition-fast);
 }
 
 .readme-toggle:hover {
-  opacity: 0.9;
+  color: var(--text-primary);
+  background-color: var(--bg-tertiary);
+  opacity: 1;
 }
 
 .readme-toggle.active {
-  opacity: 0.9;
+  color: var(--text-primary);
+  opacity: 1;
 }
 
 .readme-view {
@@ -2296,8 +2318,8 @@ button.danger:hover:not(:disabled) {
 }
 
 .readme-close {
-  position: fixed;
-  top: 52px;
+  position: absolute;
+  top: 12px;
   right: 16px;
   background: none;
   border: none;
@@ -2383,62 +2405,39 @@ button.danger:hover:not(:disabled) {
   background: rgba(248, 113, 113, 0.1);
 }
 
-/* ============================================================================
-   CONFIRMATION DIALOG
-   ============================================================================ */
-
-.confirm-dialog {
-  position: fixed;
-  inset: 0;
-  z-index: 3000;
+.browser-menu-back {
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 16px;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  margin-top: 2px;
 }
 
-.confirm-dialog-backdrop {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+.browser-menu-back:hover {
+  background: var(--bg-tertiary);
 }
 
-.confirm-dialog-content {
-  position: relative;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 24px 28px;
-  max-width: 400px;
-  width: 90%;
-  box-shadow: var(--shadow-lg);
-}
-
-.confirm-dialog-title {
-  margin: 0 0 12px;
-  font-size: 15px;
+.browser-menu-confirm-title {
+  padding: 10px 16px 4px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
+  margin: 0;
 }
 
-.confirm-dialog-message {
-  margin: 0 0 20px;
-  font-size: 13px;
+.browser-menu-confirm-msg {
+  padding: 0 16px 8px;
+  font-size: 12px;
   color: var(--text-secondary);
   line-height: 1.5;
-}
-
-.confirm-dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.confirm-dialog-actions .danger {
-  background: rgba(248, 113, 113, 0.15);
-  color: var(--error);
-  border: 1px solid rgba(248, 113, 113, 0.3);
-}
-
-.confirm-dialog-actions .danger:hover {
-  background: rgba(248, 113, 113, 0.25);
+  margin: 0;
 }
