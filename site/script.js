@@ -5,7 +5,53 @@
 (function () {
   'use strict';
 
-  // ─── OS Detection & Download Button ───
+  // ─── GitHub Release Config ───
+
+  var GITHUB_REPO = 'chillysbabybackribs/Clawdia';
+  var GITHUB_API = 'https://api.github.com/repos/' + GITHUB_REPO + '/releases/latest';
+
+  var FALLBACK_VERSION = '1.0.0';
+  var FALLBACK_BASE = 'https://github.com/' + GITHUB_REPO + '/releases/download/v' + FALLBACK_VERSION;
+  var FALLBACK_DOWNLOADS = {
+    linux: { url: FALLBACK_BASE + '/Clawdia-' + FALLBACK_VERSION + '.AppImage', filename: 'Clawdia-' + FALLBACK_VERSION + '.AppImage' },
+    mac: { url: FALLBACK_BASE + '/Clawdia-' + FALLBACK_VERSION + '.dmg', filename: 'Clawdia-' + FALLBACK_VERSION + '.dmg' },
+    windows: { url: FALLBACK_BASE + '/Clawdia-Setup-' + FALLBACK_VERSION + '.exe', filename: 'Clawdia-Setup-' + FALLBACK_VERSION + '.exe' }
+  };
+
+  function getLatestRelease() {
+    return fetch(GITHUB_API)
+      .then(function (response) {
+        if (!response.ok) throw new Error('GitHub API returned ' + response.status);
+        return response.json();
+      })
+      .then(function (release) {
+        var version = release.tag_name.replace(/^v/, '');
+        var assets = release.assets || [];
+
+        var linux = assets.find(function (a) { return /\.AppImage$/i.test(a.name); });
+        var mac = assets.find(function (a) { return /\.dmg$/i.test(a.name); });
+        var windows = assets.find(function (a) { return /Setup.*\.exe$/i.test(a.name) || /\.exe$/i.test(a.name); });
+
+        return {
+          version: version,
+          linux: linux ? { url: linux.browser_download_url, filename: linux.name, size: linux.size } : FALLBACK_DOWNLOADS.linux,
+          mac: mac ? { url: mac.browser_download_url, filename: mac.name, size: mac.size } : FALLBACK_DOWNLOADS.mac,
+          windows: windows ? { url: windows.browser_download_url, filename: windows.name, size: windows.size } : FALLBACK_DOWNLOADS.windows
+        };
+      })
+      .catch(function (err) {
+        console.warn('Failed to fetch latest release, using fallback:', err);
+        return { version: FALLBACK_VERSION, linux: FALLBACK_DOWNLOADS.linux, mac: FALLBACK_DOWNLOADS.mac, windows: FALLBACK_DOWNLOADS.windows };
+      });
+  }
+
+  function formatSize(bytes) {
+    if (!bytes) return '';
+    var mb = bytes / (1024 * 1024);
+    return Math.round(mb) + ' MB';
+  }
+
+  // ─── OS Detection ───
 
   function detectOS() {
     var ua = navigator.userAgent.toLowerCase();
@@ -16,46 +62,64 @@
     return 'linux';
   }
 
-  function getDownloadInfo(os) {
-    var version = '1.0.0';
-    var base = 'https://github.com/chillysbabybackribs/Clawdia/releases/download/v' + version;
-    switch (os) {
-      case 'windows':
-        return { label: 'Download for Windows', file: base + '/Clawdia-Setup-' + version + '.exe', note: '.exe installer', others: 'macOS and Linux' };
-      case 'mac':
-        return { label: 'Download for macOS', file: base + '/Clawdia-' + version + '.dmg', note: '.dmg \u00b7 Universal', others: 'Linux and Windows' };
-      default:
-        return { label: 'Download for Linux', file: base + '/Clawdia-' + version + '.AppImage', note: '.AppImage \u00b7 159 MB', others: 'macOS and Windows' };
-    }
-  }
-
   var os = detectOS();
-  var info = getDownloadInfo(os);
+
+  // ─── Set Download Links (fallback first, then dynamic) ───
 
   var downloadBtn = document.getElementById('download-btn');
   var downloadLabel = document.getElementById('download-label');
   var downloadNote = document.getElementById('download-note');
   var downloadSize = document.getElementById('download-size');
 
+  var osLabels = { linux: 'Download for Linux', mac: 'Download for macOS', windows: 'Download for Windows' };
+  var osOthers = { linux: 'macOS and Windows', mac: 'Linux and Windows', windows: 'macOS and Linux' };
+  var osFormats = { linux: '.AppImage', mac: '.dmg \u00b7 Universal', windows: '.exe installer' };
+
+  // Set label immediately based on detected OS (no API needed)
   if (downloadBtn && downloadLabel) {
-    downloadBtn.href = info.file;
-    downloadLabel.textContent = info.label;
+    downloadLabel.textContent = osLabels[os] || osLabels.linux;
   }
-
   if (downloadNote) {
-    downloadNote.innerHTML = 'Also available for <a href="https://github.com/chillysbabybackribs/Clawdia/releases" target="_blank" rel="noopener">' + info.others + '</a>';
+    var others = osOthers[os] || osOthers.linux;
+    downloadNote.innerHTML = 'Also available for <a href="https://github.com/' + GITHUB_REPO + '/releases" target="_blank" rel="noopener">' + others + '</a>';
   }
-
   if (downloadSize) {
-    downloadSize.textContent = info.note;
+    downloadSize.textContent = osFormats[os] || osFormats.linux;
   }
 
   // Highlight current OS in download grid
-  var downloadCards = document.querySelectorAll('.download-card[data-os]');
+  var downloadCards = document.querySelectorAll('.download-card[data-platform]');
   downloadCards.forEach(function (card) {
-    if (card.getAttribute('data-os') === os) {
+    if (card.getAttribute('data-platform') === os) {
       card.setAttribute('data-current', 'true');
     }
+  });
+
+  // Fetch latest release and update all links
+  getLatestRelease().then(function (release) {
+    var platformData = release[os] || release.linux;
+
+    // Update hero download button
+    if (downloadBtn) {
+      downloadBtn.href = platformData.url;
+    }
+    if (downloadSize && platformData.size) {
+      downloadSize.textContent = (osFormats[os] || osFormats.linux) + ' \u00b7 ' + formatSize(platformData.size);
+    }
+
+    // Update download grid cards
+    downloadCards.forEach(function (card) {
+      var platform = card.getAttribute('data-platform');
+      var data = release[platform];
+      if (data && data.url) {
+        card.href = data.url;
+        var formatEl = card.querySelector('.download-format');
+        if (formatEl && data.size) {
+          var ext = (osFormats[platform] || '').split(' \u00b7 ')[0];
+          formatEl.textContent = ext + ' \u00b7 ' + formatSize(data.size);
+        }
+      }
+    });
   });
 
   // ─── Fixed Top Bar ───
