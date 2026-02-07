@@ -28,7 +28,7 @@
     "build": "npm run build:main && npm run build:renderer",
     "build:main": "tsc -p tsconfig.main.json",
     "build:renderer": "vite build",
-    "postinstall": "cross-env PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 node -e \"console.log('Skipping Playwright browser download')\" && electron-rebuild -f -w better-sqlite3",
+    "postinstall": "cross-env PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 electron-rebuild -f -w better-sqlite3",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
     "dist:linux": "npm run build && electron-builder --linux",
