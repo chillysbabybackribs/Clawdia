@@ -11,6 +11,9 @@ Thumbs.db
 *.js.map
 *.d.ts.map
 *.AppImage
+*.deb
+*.dmg
+*.exe
 config.json
 readme_env/
 release/

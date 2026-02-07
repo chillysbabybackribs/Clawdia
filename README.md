@@ -2,9 +2,9 @@
 
 **A local-first AI workspace for browser, code, and task automation.**
 
-![Electron](https://img.shields.io/badge/Electron-33-47848F?logo=electron&logoColor=white)
-![TypeScript](https://img.shields.io/badge/TypeScript-5.5-3178C6?logo=typescript&logoColor=white)
-![Claude API](https://img.shields.io/badge/Claude-Sonnet_4-cc785c)
+![Electron](https://img.shields.io/badge/Electron-40-47848F?logo=electron&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)
+![Claude API](https://img.shields.io/badge/Claude-Multi--model-cc785c)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ![Clawdia](docs/screenshot.png)
@@ -96,7 +96,7 @@ API key is managed through the in-app settings. No `.env` file needed for end us
 
 ## Tech Stack
 
-`Electron · TypeScript · Vite · Playwright · Claude Sonnet 4`
+`Electron · TypeScript · Vite · Playwright · Claude API (multi-model)`
 
 ## License
 
