@@ -104,6 +104,16 @@ export function generateThought(toolName: string, input: any): string {
           return 'Managing processes';
       }
 
+    case 'sequential_thinking': {
+      const step = Number(input?.thoughtNumber || 1);
+      const total = Number(input?.totalThoughts || 1);
+      if (step === 1) return 'Planning approach';
+      if (input?.isRevision) return `Reconsidering step ${input?.revisesThought || step}`;
+      if (input?.branchId) return `Exploring alternative: ${truncate(String(input.branchId), 30)}`;
+      if (!input?.nextThoughtNeeded) return 'Finalizing plan';
+      return `Reasoning (step ${step}/${total})`;
+    }
+
     default:
       return 'Thinking';
   }

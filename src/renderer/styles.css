@@ -186,6 +186,20 @@ body {
   opacity: 1;
 }
 
+.header-clock {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: 'Courier New', monospace;
+  font-weight: 500;
+  padding: 0 8px;
+  -webkit-app-region: no-drag;
+  transition: color var(--transition-fast);
+}
+
+.header-clock:hover {
+  color: var(--text-primary);
+}
+
 /* ============================================================================
    CONVERSATIONS DROPDOWN
    ============================================================================ */
@@ -524,6 +538,18 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  position: relative;
+}
+
+.chat-footer {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  user-select: none;
+  pointer-events: none;
+  white-space: nowrap;
 }
 
 .chat-scroll-region {
@@ -692,6 +718,7 @@ body {
   width: fit-content;
   align-self: flex-end;
   margin-left: auto;
+  font-size: 17px;
 }
 
 .user-message-label {
@@ -704,6 +731,7 @@ body {
 .assistant-content {
   color: var(--text-primary);
   padding: 0;
+  font-size: 17px;
   line-height: 1.55;
   max-width: 100%;
   width: 100%;
@@ -719,7 +747,7 @@ body {
 
 .assistant-content code {
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-  font-size: 12px;
+  font-size: 13px;
   background: rgba(0, 0, 0, 0.2);
   padding: 2px 6px;
   border-radius: 4px;
@@ -1344,6 +1372,44 @@ button:disabled {
   padding: 0 24px;
   user-select: none;
   margin: 0;
+  cursor: grab;
+  transition: opacity 0.2s;
+}
+
+.browser-hidden-quote:active {
+  cursor: grabbing;
+}
+
+.browser-hidden-quote.draggable-active {
+  opacity: 0.35;
+}
+
+.browser-hidden-quote.resizable {
+  position: absolute;
+  white-space: normal;
+}
+
+.resize-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: var(--text-secondary);
+  bottom: -6px;
+  right: -6px;
+  cursor: nwse-resize;
+  border-radius: 2px;
+  opacity: 0;
+  transition: opacity 0.2s;
+  z-index: 10;
+}
+
+.browser-hidden-quote:hover .resize-handle {
+  opacity: 0.6;
+}
+
+.resize-handle:hover {
+  background: var(--text-shimmer);
+  opacity: 1;
 }
 
 /* ============================================================================
@@ -2440,4 +2506,223 @@ button.danger:hover:not(:disabled) {
   color: var(--text-secondary);
   line-height: 1.5;
   margin: 0;
+}
+
+/* ============================================================================
+   TOOL ACTIVITY PANEL
+   ============================================================================ */
+
+/* The panel sits above #output in the chat-scroll-region flow.
+   When expanded the list overlays the entire chat area with a dark backdrop. */
+
+.tool-activity-panel {
+  flex-shrink: 0;
+  position: relative;
+  z-index: 20;
+  transition: all var(--transition-fast);
+}
+
+.tool-activity-panel.hidden {
+  display: none;
+}
+
+.tool-activity-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  user-select: none;
+  min-height: 28px;
+  border-radius: 6px;
+}
+
+.tool-activity-header:hover {
+  background: var(--bg-tertiary);
+}
+
+.tool-activity-badge {
+  font-size: 11px;
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+}
+
+.tool-activity-badge.has-errors {
+  color: var(--error);
+}
+
+.tool-activity-chevron {
+  display: flex;
+  align-items: center;
+  color: var(--text-tertiary);
+  transition: transform var(--transition-fast);
+  margin-left: auto;
+}
+
+.tool-activity-panel.expanded .tool-activity-chevron {
+  transform: rotate(180deg);
+}
+
+.tool-activity-warning {
+  padding: 4px 12px;
+  font-size: 11px;
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+  border-left: 2px solid #f59e0b;
+  line-height: 1.4;
+}
+
+.tool-activity-warning.hidden {
+  display: none;
+}
+
+/* --- Overlay backdrop --- */
+.tool-activity-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 19;
+}
+
+.tool-activity-panel.expanded .tool-activity-backdrop {
+  display: block;
+}
+
+/* --- Dropdown list (absolute overlay) --- */
+.tool-activity-list {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 0;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 21;
+}
+
+.tool-activity-panel.expanded .tool-activity-list {
+  display: block;
+}
+
+.tool-activity-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.tool-activity-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tool-activity-list::-webkit-scrollbar-thumb {
+  background: var(--text-tertiary);
+  border-radius: 3px;
+}
+
+.tool-activity-empty {
+  padding: 12px 16px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+.tool-activity-item {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.tool-activity-item:last-child {
+  border-bottom: none;
+}
+
+.tool-activity-item-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.tool-activity-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+  width: 18px;
+  text-align: center;
+}
+
+.tool-activity-name {
+  color: var(--text-primary);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+}
+
+.tool-activity-duration {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.tool-activity-check {
+  color: var(--success);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.tool-activity-error-icon {
+  color: var(--error);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.tool-activity-skip {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.tool-activity-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--text-tertiary);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: tool-spin 0.7s linear infinite;
+}
+
+@keyframes tool-spin {
+  to { transform: rotate(360deg); }
+}
+
+.tool-activity-input {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  padding: 2px 0 2px 24px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.tool-activity-error {
+  font-size: 10px;
+  color: var(--error);
+  padding: 2px 0 0 24px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-activity-result {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  padding: 2px 0 0 24px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  opacity: 0.7;
 }

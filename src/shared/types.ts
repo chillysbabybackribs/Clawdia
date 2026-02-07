@@ -71,6 +71,28 @@ export interface ToolCall {
 }
 
 // ============================================================================
+// TOOL ACTIVITY TYPES (anti-fabrication tracking)
+// ============================================================================
+
+export interface ToolActivityEntry {
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+  status: 'running' | 'success' | 'error' | 'skipped';
+  startedAt: number;
+  completedAt?: number;
+  durationMs?: number;
+  resultPreview?: string;
+  error?: string;
+}
+
+export interface ToolActivitySummary {
+  totalCalls: number;
+  entries: ToolActivityEntry[];
+  fabricationWarning?: string;
+}
+
+// ============================================================================
 // CONVERSATION TYPES
 // ============================================================================
 

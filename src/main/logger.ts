@@ -1,6 +1,53 @@
 import { app } from 'electron';
+import * as fs from 'fs';
+import * as path from 'path';
+import { homedir } from 'os';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+// ── Performance log file (ring buffer, readable by the AI via file_read) ──
+const PERF_LOG_PATH = path.join(homedir(), '.clawdia-perf.log');
+const PERF_LOG_MAX_LINES = 200;
+let perfLineCount = 0;
+
+// Wipe on startup so we always start fresh
+try { fs.writeFileSync(PERF_LOG_PATH, ''); } catch { /* ignore */ }
+
+function appendPerfLine(line: string): void {
+  try {
+    if (perfLineCount >= PERF_LOG_MAX_LINES) {
+      // Truncate: keep last 100 lines
+      const existing = fs.readFileSync(PERF_LOG_PATH, 'utf-8').split('\n');
+      const keep = existing.slice(-100).join('\n') + '\n';
+      fs.writeFileSync(PERF_LOG_PATH, keep);
+      perfLineCount = 100;
+    }
+    fs.appendFileSync(PERF_LOG_PATH, line + '\n');
+    perfLineCount++;
+  } catch { /* ignore */ }
+}
+
+/**
+ * Log a performance timing entry. Callable from anywhere.
+ * Writes to ~/.clawdia-perf.log which the AI can read via file_read.
+ */
+export function perfLog(module: string, label: string, durationMs: number, extra?: Record<string, unknown>): void {
+  const ts = new Date().toISOString();
+  const extraStr = extra ? ' ' + JSON.stringify(extra) : '';
+  appendPerfLine(`[${ts}] [${module}] ${label}: ${durationMs.toFixed(1)}ms${extraStr}`);
+}
+
+/**
+ * Start a perf timer. Returns a function that logs the elapsed time when called.
+ */
+export function perfTimer(module: string, label: string): (extra?: Record<string, unknown>) => number {
+  const start = performance.now();
+  return (extra?: Record<string, unknown>) => {
+    const elapsed = performance.now() - start;
+    perfLog(module, label, elapsed, extra);
+    return elapsed;
+  };
+}
 
 const LEVEL_PRIORITY: Record<LogLevel, number> = {
   debug: 0,

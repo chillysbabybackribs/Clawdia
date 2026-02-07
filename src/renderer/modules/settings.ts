@@ -117,7 +117,6 @@ export function initSettings(): void {
   elements.saveSettingsBtn.addEventListener('click', async () => {
     const keyPairs: [HTMLInputElement, string][] = [
       [elements.serperKeyInput, 'serper_api_key'],
-      [elements.braveKeyInput, 'brave_api_key'],
       [elements.serpapiKeyInput, 'serpapi_api_key'],
       [elements.bingKeyInput, 'bing_api_key'],
     ];
@@ -201,7 +200,21 @@ function getShortModelLabel(modelId: string): string {
   return full.replace(/^Claude\s+/, '');
 }
 
+/** Populate a <select> element with options from CLAUDE_MODELS. */
+function populateModelSelect(select: HTMLSelectElement): void {
+  if (select.options.length === CLAUDE_MODELS.length) return; // already populated
+  select.innerHTML = '';
+  for (const model of CLAUDE_MODELS) {
+    const opt = document.createElement('option');
+    opt.value = model.id;
+    opt.textContent = model.label;
+    select.appendChild(opt);
+  }
+}
+
 export function syncAllModelSelects(modelId: string): void {
+  populateModelSelect(elements.settingsModelSelect);
+  populateModelSelect(elements.setupModelSelect);
   elements.settingsModelSelect.value = modelId;
   elements.setupModelSelect.value = modelId;
   elements.modelPickerLabel.textContent = getShortModelLabel(modelId);
@@ -209,6 +222,7 @@ export function syncAllModelSelects(modelId: string): void {
 }
 
 export async function selectModel(modelId: string): Promise<void> {
+  console.log(`[IPC:Renderer→Main] selectModel=${modelId}`);
   appState.currentSelectedModel = modelId;
   await window.api.setSelectedModel(modelId);
   syncAllModelSelects(modelId);

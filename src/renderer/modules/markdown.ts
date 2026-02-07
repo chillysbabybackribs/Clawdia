@@ -8,6 +8,49 @@ import {
 } from './state';
 
 // ---------------------------------------------------------------------------
+// LRU Markdown Cache - avoids re-parsing identical content
+// ---------------------------------------------------------------------------
+const MARKDOWN_CACHE_MAX_SIZE = 500;
+const markdownCache = new Map<string, string>();
+const cacheAccessOrder: string[] = [];
+
+function quickHash(str: string): string {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return hash.toString(36);
+}
+
+function getCachedMarkdown(key: string): string | undefined {
+  const cached = markdownCache.get(key);
+  if (cached) {
+    const idx = cacheAccessOrder.indexOf(key);
+    if (idx > -1) {
+      cacheAccessOrder.splice(idx, 1);
+      cacheAccessOrder.push(key);
+    }
+  }
+  return cached;
+}
+
+function setCachedMarkdown(key: string, html: string): void {
+  while (markdownCache.size >= MARKDOWN_CACHE_MAX_SIZE && cacheAccessOrder.length > 0) {
+    const oldest = cacheAccessOrder.shift();
+    if (oldest) markdownCache.delete(oldest);
+  }
+  markdownCache.set(key, html);
+  cacheAccessOrder.push(key);
+}
+
+export function clearMarkdownCache(): void {
+  markdownCache.clear();
+  cacheAccessOrder.length = 0;
+}
+
+// ---------------------------------------------------------------------------
 // DOMPurify configuration — sanitizes LLM-generated HTML before DOM insertion.
 // Allows safe markdown elements (headings, lists, links, code blocks, etc.)
 // while stripping scripts, event handlers, and dangerous URI schemes.
@@ -133,12 +176,30 @@ export function handleCodeCopyClick(event: MouseEvent): void {
     });
 }
 
-export function renderMarkdown(text: string): string {
-  if (text.length > SAFE_MARKDOWN_RENDER_CHARS) {
-    return `<pre>${escapeHtml(text)}</pre>`;
+export function renderMarkdown(text: string, skipCache = false): string {
+  // Check cache first (skip during streaming for partial content)
+  const cacheKey = quickHash(text);
+  if (!skipCache) {
+    const cached = getCachedMarkdown(cacheKey);
+    if (cached) return cached;
   }
 
-  let html = escapeHtml(text)
+  // Strip ALL tool call and thinking blocks - they should NEVER be visible in chat
+  let cleaned = text
+    .replace(/<thinking>[\s\S]*?<\/thinking>/g, '')
+    .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
+    .replace(/<function_calls>[\s\S]*?<\/antml:function_calls>/g, '')
+    .replace(/<function_calls>[\s\S]*?<\/function_calls>/g, '')
+    .replace(/<invoke[\s\S]*?<\/antml:invoke>/g, '')
+    .trim();
+
+  if (cleaned.length > SAFE_MARKDOWN_RENDER_CHARS) {
+    const result = `<pre>${escapeHtml(cleaned)}</pre>`;
+    if (!skipCache) setCachedMarkdown(cacheKey, result);
+    return result;
+  }
+
+  let html = escapeHtml(cleaned)
     .replace(
       /```(\w*)\n([\s\S]*?)```/g,
       (_match, _language, code) =>
@@ -173,5 +234,7 @@ export function renderMarkdown(text: string): string {
     )}</a>`;
   });
 
-  return sanitizeHtml(`<p>${html}</p>`);
+  const result = sanitizeHtml(`<p>${html}</p>`);
+  if (!skipCache) setCachedMarkdown(cacheKey, result);
+  return result;
 }

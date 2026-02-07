@@ -111,6 +111,8 @@ function setupBrowserControlListeners(): void {
   });
 
   elements.browserUrlInput.addEventListener('focus', () => {
+    // Select all text on focus for easy overwrite
+    elements.browserUrlInput.select();
     refreshAddressSuggestions();
   });
   elements.browserUrlInput.addEventListener('input', () => {
@@ -151,6 +153,9 @@ function setupBrowserControlListeners(): void {
     }
     if (e.key === 'Escape') {
       closeAddressSuggestions();
+      // Revert URL bar to the current page URL and blur
+      setBrowserAddressValue(appState.currentBrowserUrl);
+      elements.browserUrlInput.blur();
     }
   });
 
@@ -215,6 +220,7 @@ function setupBrowserControlListeners(): void {
 
 function setupBrowserListeners(): void {
   window.api.onBrowserNavigated((url) => {
+    appState.currentBrowserUrl = url;
     setBrowserAddressValue(url);
     addAddressHistoryEntry(url);
   });
@@ -278,9 +284,11 @@ function applyTabsUpdate(tabs: BrowserTabInfo[]): void {
     if (tab.active) {
       nextActive = tab.id;
       if (tab.url) {
+        appState.currentBrowserUrl = tab.url;
         setBrowserAddressValue(tab.url);
         addAddressHistoryEntry(tab.url);
       } else {
+        appState.currentBrowserUrl = '';
         setBrowserAddressValue('');
       }
     }
@@ -381,7 +389,7 @@ export async function ensureLandingTab(): Promise<void> {
     await window.api.browserTabNew(DEFAULT_TAB_URL);
     return;
   }
-  const active = tabs.find((tab) => tab.active) || tabs[0];
+  const active = tabs.find((tab: any) => tab.active) || tabs[0];
   if (active?.url && active.url !== 'about:blank') return;
   await window.api.browserNavigate(DEFAULT_TAB_URL);
 }

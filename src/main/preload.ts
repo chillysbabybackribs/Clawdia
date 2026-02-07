@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC, IPC_EVENTS } from '../shared/ipc-channels';
 import { DEFAULT_MODEL } from '../shared/models';
-import { BrowserTabInfo, ImageAttachment, DocumentAttachment, DocProgressEvent } from '../shared/types';
+import { BrowserTabInfo, ImageAttachment, DocumentAttachment, DocProgressEvent, ToolActivityEntry, ToolActivitySummary } from '../shared/types';
 import { createLogger } from './logger';
 
 const log = createLogger('preload');
@@ -104,6 +104,18 @@ const api = {
     const handler = (_event: Electron.IpcRendererEvent, error: any) => callback(error);
     ipcRenderer.on(IPC_EVENTS.CHAT_ERROR, handler);
     return () => ipcRenderer.removeListener(IPC_EVENTS.CHAT_ERROR, handler);
+  },
+
+  onToolActivity: (callback: (entry: ToolActivityEntry) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, entry: ToolActivityEntry) => callback(entry);
+    ipcRenderer.on(IPC_EVENTS.CHAT_TOOL_ACTIVITY, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.CHAT_TOOL_ACTIVITY, handler);
+  },
+
+  onToolActivitySummary: (callback: (summary: ToolActivitySummary) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, summary: ToolActivitySummary) => callback(summary);
+    ipcRenderer.on(IPC_EVENTS.CHAT_TOOL_ACTIVITY_SUMMARY, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.CHAT_TOOL_ACTIVITY_SUMMARY, handler);
   },
 
   onLiveHtmlStart: (callback: () => void) => {

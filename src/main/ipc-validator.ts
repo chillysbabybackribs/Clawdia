@@ -21,7 +21,7 @@ export class ValidationError extends Error {
 }
 
 const MODEL_IDS = CLAUDE_MODELS.map((model) => model.id);
-const SEARCH_BACKENDS = ['serper', 'brave', 'serpapi', 'bing', 'playwright'] as const;
+const SEARCH_BACKENDS = ['serper', 'serpapi', 'bing', 'playwright'] as const;
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
 const ANTHROPIC_KEY_PATTERN = /^sk-ant-[a-zA-Z0-9_-]+$/;
 const IMAGE_MIME_PATTERN = /^image\/(png|jpeg|gif|webp)$/;
@@ -35,7 +35,6 @@ export type SettingsKey =
   | 'hasCompletedSetup'
   | 'selectedModel'
   | 'serper_api_key'
-  | 'brave_api_key'
   | 'serpapi_api_key'
   | 'bing_api_key'
   | 'search_backend'
@@ -412,7 +411,6 @@ const settingsKeyValidator = isStringOneOf<SettingsKey>('key', [
   'hasCompletedSetup',
   'selectedModel',
   'serper_api_key',
-  'brave_api_key',
   'serpapi_api_key',
   'bing_api_key',
   'search_backend',
@@ -428,7 +426,6 @@ const settingsValueValidatorByKey: Record<SettingsKey, Validator<unknown>> = {
   hasCompletedSetup: isBoolean('value'),
   selectedModel: isStringOneOf('value', MODEL_IDS),
   serper_api_key: isString('value'),
-  brave_api_key: isString('value'),
   serpapi_api_key: isString('value'),
   bing_api_key: isString('value'),
   search_backend: isStringOneOf('value', SEARCH_BACKENDS),

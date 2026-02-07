@@ -78,6 +78,8 @@ export const IPC_EVENTS = {
   CHAT_ERROR: 'chat:error',
   CHAT_LIVE_HTML_START: 'chat:live-html:start',
   CHAT_LIVE_HTML_END: 'chat:live-html:end',
+  CHAT_TOOL_ACTIVITY: 'chat:tool:activity',
+  CHAT_TOOL_ACTIVITY_SUMMARY: 'chat:tool:activity:summary',
   API_USAGE_WARNING: 'api:usage:warning',
 
   // Browser state

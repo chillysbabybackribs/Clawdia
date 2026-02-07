@@ -98,9 +98,10 @@ function setupThinkingIndicator(): void {
     showThought(nextThought);
   });
 
-  window.api.onStreamText(() => {
-    hideThinking();
-  });
+  // Only hide thinking when visible text actually appears in the chat.
+  // The XML filter strips tool calls / thinking blocks, so many stream
+  // chunks produce no visible output — we must keep the indicator alive
+  // until real user-facing text arrives.
 
   window.api.onStreamEnd(() => {
     hideThinking();
@@ -167,8 +168,63 @@ export function hideThinking(): void {
   }, 300);
 }
 
+// ---------------------------------------------------------------------------
+// Stream XML filter — strips internal tags that should never appear in chat.
+//
+// Instead of parsing XML incrementally (fragile with chunk boundaries), we
+// accumulate the full stream buffer and apply regex stripping on each flush.
+// This reuses the same proven regexes as renderMarkdown().
+// ---------------------------------------------------------------------------
+
+/** Regex that matches all XML blocks that should be hidden from chat output. */
+const HIDDEN_XML_RE = new RegExp(
+  [
+    '<thinking>[\\s\\S]*?</thinking>',
+    '<function_calls>[\\s\\S]*?</function_calls>',
+    '<tool_call>[\\s\\S]*?</tool_call>',
+    '<invoke[\\s\\S]*?</invoke>',
+    // Standalone closing tags (orphaned when opening was in a prior message)
+    '</parameter>',
+    '</invoke>',
+    '</function_calls>',
+    '</tool_call>',
+    '</thinking>',
+    // Partial opening tags left at stream end
+    '<(?:thinking|function_calls|tool_call|invoke)[^>]*$',
+  ].join('|'),
+  'g'
+);
+
+/** How many chars of fullStreamBuffer we already emitted as visible text. */
+let streamVisibleEmitted = 0;
+
+function resetStreamFilter(): void {
+  streamVisibleEmitted = 0;
+}
+
+/**
+ * Given the full accumulated stream buffer, return only the NEW visible
+ * text that hasn't been emitted yet. Strips all hidden XML from the full
+ * buffer first, then returns the delta since last call.
+ */
+function getVisibleDelta(fullBuffer: string): string {
+  const cleaned = fullBuffer.replace(HIDDEN_XML_RE, '');
+  if (cleaned.length <= streamVisibleEmitted) return '';
+
+  // Don't emit text that ends with a partial `<` — it could be the start
+  // of a hidden tag. Hold it back until more data arrives.
+  const lastAngle = cleaned.lastIndexOf('<');
+  const safeEnd = (lastAngle > streamVisibleEmitted) ? lastAngle : cleaned.length;
+  if (safeEnd <= streamVisibleEmitted) return '';
+
+  const delta = cleaned.slice(streamVisibleEmitted, safeEnd);
+  streamVisibleEmitted = safeEnd;
+  return delta;
+}
+
 function startAssistantMessage(): void {
   hideArcade();
+  resetStreamFilter();
   appState.streamingContainer = document.createElement('div');
   appState.streamingContainer.className = 'assistant-content streaming';
   elements.outputEl.appendChild(appState.streamingContainer);
@@ -199,12 +255,16 @@ function flushPendingStreamText(): void {
 }
 
 function appendStreamText(text: string): void {
+  appState.fullStreamBuffer += text;
+  const delta = getVisibleDelta(appState.fullStreamBuffer);
+  if (!delta) return; // All XML / thinking — nothing visible yet
+
+  // First visible text — create the container and hide the thinking indicator
   if (!appState.streamingContainer) {
     startAssistantMessage();
   }
-
-  appState.fullStreamBuffer += text;
-  appState.pendingStreamTextChunks.push(text);
+  hideThinking();
+  appState.pendingStreamTextChunks.push(delta);
   scheduleStreamFlush();
 }
 
@@ -219,16 +279,18 @@ function finalizeAssistantMessage(fullText: string): void {
   appState.streamingContainer.classList.remove('streaming');
   const finalText = fullText || appState.fullStreamBuffer;
   const target = appState.streamingContainer;
-  target.innerHTML = `<div class="markdown-content"><p>${MARKDOWN_RENDER_BUSY_TEXT}</p></div>`;
+  target.innerHTML = '<div class="markdown-content"><p>' + MARKDOWN_RENDER_BUSY_TEXT + '</p></div>';
 
   window.setTimeout(() => {
     const rendered = renderMarkdown(finalText);
-    target.innerHTML = `<div class="markdown-content">${rendered}</div>`;
+    target.innerHTML = '<div class="markdown-content">' + rendered + '</div>';
   }, 0);
 
   appState.currentTextChunk = null;
   appState.streamingContainer = null;
   appState.pendingStreamTextChunks = [];
+  appState.fullStreamBuffer = '';
+  resetStreamFilter();
   scrollToBottom(false);
 }
 

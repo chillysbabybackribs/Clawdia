@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { Message } from '../../shared/types';
+import { DEFAULT_MODEL } from '../../shared/models';
 import { RateLimiter } from '../rate-limiter';
 import { usageTracker } from '../usage-tracker';
 import { createLogger } from '../logger';
@@ -37,6 +38,8 @@ export interface LLMResponse {
   usage: {
     inputTokens: number;
     outputTokens: number;
+    cacheReadInputTokens: number;
+    cacheCreationInputTokens: number;
   };
 }
 
@@ -50,7 +53,7 @@ export class AnthropicClient {
 
   constructor(apiKey: string, model?: string) {
     this.client = new Anthropic({ apiKey });
-    this.model = model ?? 'claude-sonnet-4-20250514';
+    this.model = model ?? DEFAULT_MODEL;
   }
 
   getModel(): string {
@@ -70,6 +73,12 @@ export class AnthropicClient {
     // Convert messages to Anthropic format
     const anthropicMessages = this.convertMessages(messages);
 
+    // Add cache_control breakpoint to the last tool_result message.
+    // Combined with system prompt (breakpoint 1) and last tool def (breakpoint 2),
+    // this is breakpoint 3 of max 4. On tool loop iteration N, everything up to
+    // the previous tool_result is cached — only the newest pair is fresh input.
+    this.addMessageCacheBreakpoint(anthropicMessages);
+
     // Build request — use prompt caching for system prompt and tool definitions.
     // The system prompt + tools are identical across every call in a tool loop.
     // With cache_control: ephemeral, calls #2+ get a 90% input token discount.
@@ -81,13 +90,25 @@ export class AnthropicClient {
     }));
 
     const anthropicLimiter = RateLimiter.getInstance('anthropic', {
-      maxTokens: 5,
-      refillRate: 1,
+      maxTokens: 20,
+      refillRate: 10,
       maxQueueDepth: 10,
-      maxWaitMs: 30_000,
+      maxWaitMs: 10_000,
     });
     await anthropicLimiter.acquire();
     usageTracker.trackApiCall('anthropic');
+
+    // Diagnostic: warn about any messages with empty or suspicious content before the API call
+    for (let i = 0; i < anthropicMessages.length; i++) {
+      const m = anthropicMessages[i];
+      const c = m.content;
+      const empty = !c || (typeof c === 'string' && c.trim() === '') || (Array.isArray(c) && c.length === 0);
+      if (empty) {
+        log.error(`[SANITIZE] Empty message at index ${i}, role=${m.role} — this should have been caught by convertMessages`);
+      }
+    }
+
+    log.info(`[API Request] model=${this.model} | endpoint=messages.create | stream=true | maxTokens=${options?.maxTokens ?? 4096} | msgCount=${anthropicMessages.length} | toolCount=${toolsWithCaching.length}`);
 
     const response = await this.client.messages.create({
       model: this.model,
@@ -111,12 +132,16 @@ export class AnthropicClient {
     let currentToolJsonFragments = '';
     let inputTokens = 0;
     let outputTokens = 0;
+    let cacheReadInputTokens = 0;
+    let cacheCreationInputTokens = 0;
     let stopReason: LLMResponse['stopReason'] = 'end_turn';
 
     for await (const event of response) {
       switch (event.type) {
         case 'message_start':
           inputTokens = event.message.usage?.input_tokens || 0;
+          cacheReadInputTokens = (event.message.usage as any)?.cache_read_input_tokens || 0;
+          cacheCreationInputTokens = (event.message.usage as any)?.cache_creation_input_tokens || 0;
           break;
 
         case 'content_block_start':
@@ -188,8 +213,37 @@ export class AnthropicClient {
       usage: {
         inputTokens,
         outputTokens,
+        cacheReadInputTokens,
+        cacheCreationInputTokens,
       },
     };
+  }
+
+  /**
+   * Add a cache_control breakpoint to the last tool_result message in the
+   * conversation. This is the 3rd cache breakpoint (system=1, tools=2,
+   * last_tool_result=3). On subsequent tool loop iterations, everything up
+   * to the previous tool_result is served from cache at 90% discount.
+   */
+  private addMessageCacheBreakpoint(messages: Anthropic.MessageParam[]): void {
+    // Walk backwards to find the last user message containing tool_result blocks
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.role !== 'user' || !Array.isArray(msg.content)) continue;
+
+      const content = msg.content as unknown[];
+      const hasToolResult = content.some(
+        (block) => block != null && typeof block === 'object' && (block as any).type === 'tool_result'
+      );
+      if (!hasToolResult) continue;
+
+      // Add cache_control to the last block in this message
+      const lastBlock = content[content.length - 1];
+      if (lastBlock && typeof lastBlock === 'object') {
+        (lastBlock as any).cache_control = { type: 'ephemeral' };
+      }
+      break;
+    }
   }
 
   private convertMessages(messages: Message[]): Anthropic.MessageParam[] {
@@ -263,14 +317,23 @@ export class AnthropicClient {
         }
       }
 
-      // Filter out orphaned tool_results
+      // Filter out orphaned tool_results & ensure tool_result content is non-empty
       const filtered = (msg.content as unknown[]).filter((block: unknown) => {
-        const b = block as { type?: string; tool_use_id?: string };
+        const b = block as { type?: string; tool_use_id?: string; content?: unknown };
         if (b.type === 'tool_result' && b.tool_use_id && !validIds.has(b.tool_use_id)) {
           log.warn(`Dropping orphaned tool_result for id ${b.tool_use_id}`);
           return false;
         }
         return true;
+      }).map((block: unknown) => {
+        const b = block as { type?: string; content?: unknown };
+        if (b.type === 'tool_result') {
+          const c = b.content;
+          if (!c || (typeof c === 'string' && c.trim() === '') || (Array.isArray(c) && c.length === 0)) {
+            return { ...b, content: '[No output]' };
+          }
+        }
+        return block;
       });
 
       if (filtered.length === 0) {
@@ -280,6 +343,51 @@ export class AnthropicClient {
       } else {
         msg.content = filtered as Anthropic.MessageParam['content'];
       }
+    }
+
+    // Final sanitization: ensure no message has empty content (Anthropic rejects these).
+    // This is the last-resort safety net — ideally content should never be empty.
+    for (let i = result.length - 1; i >= 0; i--) {
+      const msg = result[i];
+      const content = msg.content;
+
+      let isEmpty = false;
+      if (!content) {
+        isEmpty = true;
+      } else if (typeof content === 'string' && content.trim() === '') {
+        isEmpty = true;
+      } else if (Array.isArray(content) && content.length === 0) {
+        isEmpty = true;
+      }
+
+      if (isEmpty) {
+        log.warn(`[SANITIZE] Empty content at message index ${i}, role=${msg.role} — removing`);
+        result.splice(i, 1);
+      }
+    }
+
+    // Ensure alternating user/assistant pattern after removals
+    // (Anthropic requires strict alternation starting with user)
+    for (let i = 1; i < result.length; i++) {
+      if (result[i].role === result[i - 1].role) {
+        // Two consecutive messages with same role — merge or remove the duplicate
+        if (result[i].role === 'user' && typeof result[i].content === 'string' && typeof result[i - 1].content === 'string') {
+          // Merge consecutive user messages
+          result[i - 1].content = result[i - 1].content + '\n' + result[i].content;
+          result.splice(i, 1);
+          i--;
+        } else if (result[i].role === 'assistant') {
+          // Remove the earlier empty-ish assistant message
+          result.splice(i - 1, 1);
+          i--;
+        }
+      }
+    }
+
+    // Must start with a user message
+    while (result.length > 0 && result[0].role !== 'user') {
+      log.warn(`[SANITIZE] Removing leading non-user message, role=${result[0].role}`);
+      result.splice(0, 1);
     }
 
     return result;

@@ -27,7 +27,6 @@ export interface ClawdiaStoreSchema {
   hasCompletedSetup: boolean;
   selectedModel: string;
   serper_api_key?: string;
-  brave_api_key?: string;
   serpapi_api_key?: string;
   bing_api_key?: string;
   search_backend?: string;

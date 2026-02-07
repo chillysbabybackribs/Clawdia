@@ -1,5 +1,6 @@
 import type { API } from '../../main/preload';
 import type { ResearchSourcePreview, DocumentMeta } from '../../shared/types';
+import { DEFAULT_MODEL } from '../../shared/models';
 
 // Keep renderer access typed via preload API definition.
 declare global {
@@ -147,12 +148,13 @@ export const appState = {
   hasInitializedChatShell: false,
   isSetupMode: false,
   isValidatingSetupKey: false,
-  currentSelectedModel: 'claude-sonnet-4-20250514',
+  currentSelectedModel: DEFAULT_MODEL,
   pendingAttachments: [] as PendingImage[],
   pendingDocuments: [] as PendingDocument[],
   browserAddressHistory: [] as string[],
   visibleAddressSuggestions: [] as string[],
   highlightedAddressSuggestionIndex: -1,
+  currentBrowserUrl: '',  // tracks the actual URL of the active browser tab
   readmeVisible: false,
 };
 
@@ -192,7 +194,6 @@ export const elements = {} as {
   cancelChangeApiKeyBtn: HTMLButtonElement;
   changeApiKeyErrorEl: HTMLParagraphElement;
   serperKeyInput: HTMLInputElement;
-  braveKeyInput: HTMLInputElement;
   serpapiKeyInput: HTMLInputElement;
   bingKeyInput: HTMLInputElement;
   searchBackendSelect: HTMLSelectElement;
@@ -282,7 +283,6 @@ export function initElements(): void {
   elements.cancelChangeApiKeyBtn = required<HTMLButtonElement>('cancel-change-api-key-btn');
   elements.changeApiKeyErrorEl = required<HTMLParagraphElement>('change-api-key-error');
   elements.serperKeyInput = required<HTMLInputElement>('serper-key');
-  elements.braveKeyInput = required<HTMLInputElement>('brave-key');
   elements.serpapiKeyInput = required<HTMLInputElement>('serpapi-key');
   elements.bingKeyInput = required<HTMLInputElement>('bing-key');
   elements.searchBackendSelect = required<HTMLSelectElement>('search-backend-select');

@@ -16,6 +16,7 @@ import {
   type ChatTab,
 } from './state';
 import { appendError, handleOutputWheel, hideThinking, isOutputNearBottom, scrollToBottom, setStreaming, showThought, updateOutputAutoFollowState } from './stream';
+import { resetToolActivity } from './tool-activity';
 
 // ============================================================
 // STRUCTURAL MAP (from pre-split renderer audit)
@@ -452,8 +453,8 @@ async function openConversationInChatTab(conversationId: string): Promise<void> 
 async function initializeChatTabs(): Promise<void> {
   const [savedState, conversations] = await Promise.all([window.api.getChatTabState(), window.api.listConversations()]);
 
-  const knownConversationIds = new Set(conversations.map((conv) => conv.id));
-  let tabIds = (savedState?.tabIds || []).filter((id) => knownConversationIds.has(id));
+  const knownConversationIds = new Set(conversations.map((conv: any) => conv.id));
+  let tabIds = (savedState?.tabIds || []).filter((id: string) => knownConversationIds.has(id));
 
   if (tabIds.length === 0) {
     if (conversations.length > 0) {
@@ -464,7 +465,7 @@ async function initializeChatTabs(): Promise<void> {
     }
   }
 
-  const loaded = await Promise.all(tabIds.map((id) => window.api.loadConversation(id)));
+  const loaded = await Promise.all(tabIds.map((id: string) => window.api.loadConversation(id)));
   appState.openChatTabs = loaded
     .map((conversation, index) => {
       if (!conversation) return null;
@@ -560,9 +561,11 @@ async function sendMessage(): Promise<void> {
     truncated: d.truncated,
   }));
 
+  resetToolActivity();
   appendUserMessage(content, true, images, documentMetas);
   showThought('Thinking...');
   elements.promptEl.value = '';
+  elements.promptEl.focus();
   clearPendingAttachments();
 
   const attachCount = (images?.length || 0) + (documents?.length || 0);

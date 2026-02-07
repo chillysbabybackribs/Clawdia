@@ -83,7 +83,23 @@ export async function dismissPopups(page: Page): Promise<void> {
         ...document.querySelectorAll('.modal-close, .popup-close, .banner-close'),
       ] as HTMLElement[];
 
+      function isNavigationElement(el: HTMLElement): boolean {
+        let current: HTMLElement | null = el;
+        while (current && current !== document.body) {
+          if (current.tagName === 'NAV') return true;
+          const role = current.getAttribute('role') || '';
+          if (role === 'navigation') return true;
+          const cls = typeof current.className === 'string' ? current.className : '';
+          const ariaLabel = (current.getAttribute('aria-label') || '').toLowerCase();
+          if (/\bsidebar\b|\bsidenav\b|\bdrawer\b|\bnav[-_]?bar\b/i.test(`${cls} ${current.id || ''}`)) return true;
+          if (/sidebar|sidenav|drawer|navigation/i.test(ariaLabel)) return true;
+          current = current.parentElement;
+        }
+        return false;
+      }
+
       function isInOverlay(el: HTMLElement): boolean {
+        if (isNavigationElement(el)) return false;
         let current: HTMLElement | null = el;
         while (current && current !== document.body) {
           const style = getComputedStyle(current);
@@ -252,7 +268,15 @@ export async function dismissPopups(page: Page): Promise<void> {
       document.body.style.overflowY = '';
       document.documentElement.style.overflowY = '';
     });
-  } catch (err) {
-    log.warn('Popup dismissal failed:', err);
+  } catch (err: any) {
+    // Navigation-related failures are expected race conditions — suppress them
+    const msg = err?.message || '';
+    if (msg.includes('Execution context was destroyed') ||
+        msg.includes('Target closed') ||
+        msg.includes('frame was detached') ||
+        msg.includes('navigation')) {
+      return;
+    }
+    log.warn('Popup dismissal failed:', msg);
   }
 }

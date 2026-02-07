@@ -7,6 +7,26 @@ import { initSettings, syncAllModelSelects } from './modules/settings';
 import { initSetup, setSetupMode } from './modules/setup';
 import { appState, initElements } from './modules/state';
 import { initStream } from './modules/stream';
+import { initToolActivity } from './modules/tool-activity';
+import { initAffirmationWidget } from './modules/affirmation-widget';
+
+function initClock(): void {
+  const clockElement = document.getElementById('header-clock');
+  if (!clockElement) return;
+
+  const updateClock = () => {
+    const now = new Date();
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    clockElement.textContent = `${hours}:${minutes}`;
+  };
+
+  // Update immediately
+  updateClock();
+
+  // Update every minute
+  setInterval(updateClock, 60000);
+}
 
 async function init(): Promise<void> {
   initElements();
@@ -15,10 +35,13 @@ async function init(): Promise<void> {
   initDocuments();
   initAttachments();
   initStream();
+  initToolActivity();
   initBrowser();
   initSettings();
   initSetup();
   initChat();
+  initAffirmationWidget();
+  initClock();
 
   requestAnimationFrame(() => syncBrowserBounds());
 
@@ -29,6 +52,7 @@ async function init(): Promise<void> {
   } catch {
     // Keep default model from state.
   }
+  console.log(`[Renderer:Init] loadedModel=${appState.currentSelectedModel}`);
   syncAllModelSelects(appState.currentSelectedModel);
 
   const hasCompletedSetup = await window.api.hasCompletedSetup();

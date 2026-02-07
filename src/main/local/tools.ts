@@ -1,4 +1,4 @@
-import { exec } from 'child_process';
+import { exec, spawn, type ChildProcess } from 'child_process';
 import type { Dirent } from 'fs';
 import * as fs from 'fs/promises';
 import { homedir } from 'os';
@@ -8,6 +8,167 @@ import { createDocument, type LlmGenerationMetrics } from '../documents/creator'
 import type { DocProgressEvent } from '../../shared/types';
 
 const execAsync = promisify(exec);
+
+// ---------------------------------------------------------------------------
+// Directory tree cache — avoids repeated fs.readdir+stat walks for the same path.
+// TTL 60s, invalidated when file_write/file_edit touch a path under a cached dir.
+// ---------------------------------------------------------------------------
+
+interface DirTreeCacheEntry {
+  result: string;
+  timestamp: number;
+}
+
+const DIR_TREE_CACHE_TTL_MS = 60_000;
+const dirTreeCache = new Map<string, DirTreeCacheEntry>();
+
+function dirTreeCacheKey(dirPath: string, depth: number, showHidden: boolean, ignorePatterns: string[]): string {
+  return `${dirPath}|${depth}|${showHidden}|${ignorePatterns.sort().join(',')}`;
+}
+
+function invalidateDirTreeCache(filePath: string): void {
+  if (dirTreeCache.size === 0) return;
+  const dir = path.dirname(filePath);
+  for (const key of dirTreeCache.keys()) {
+    // Key starts with the cached dirPath before the first '|'
+    const cachedDir = key.slice(0, key.indexOf('|'));
+    if (dir === cachedDir || dir.startsWith(cachedDir + path.sep)) {
+      dirTreeCache.delete(key);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Persistent shell session — avoids spawning a new process per command
+// ---------------------------------------------------------------------------
+
+const SHELL_SENTINEL = `__CLAWDIA_DONE_${Date.now()}__`;
+
+interface PersistentShell {
+  proc: ChildProcess;
+  busy: boolean;
+  ready: boolean;
+}
+
+let persistentShell: PersistentShell | null = null;
+
+function getOrCreateShell(): PersistentShell {
+  if (persistentShell?.proc?.exitCode === null && persistentShell.ready) {
+    return persistentShell;
+  }
+  // Kill old shell if it's dead
+  if (persistentShell?.proc) {
+    try { persistentShell.proc.kill(); } catch { /* ignore */ }
+  }
+
+  const proc = spawn('/bin/bash', ['--norc', '--noprofile', '-i'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      HOME: homedir(),
+      PATH: process.env.PATH,
+      TERM: 'xterm-256color',
+      PS1: '',
+      PS2: '',
+    },
+    cwd: homedir(),
+  });
+
+  persistentShell = { proc, busy: false, ready: true };
+
+  proc.on('exit', () => {
+    if (persistentShell?.proc === proc) {
+      persistentShell = null;
+    }
+  });
+
+  return persistentShell;
+}
+
+function runInPersistentShell(
+  command: string,
+  cwd: string,
+  timeoutMs: number,
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const shell = getOrCreateShell();
+
+    if (shell.busy) {
+      // Fall back to execAsync if shell is busy (concurrent calls)
+      execAsync(command, {
+        cwd,
+        timeout: timeoutMs || undefined,
+        maxBuffer: 10 * 1024 * 1024,
+        shell: '/bin/bash',
+        env: {
+          ...process.env,
+          HOME: homedir(),
+          PATH: process.env.PATH,
+          TERM: 'xterm-256color',
+        },
+      }).then(resolve).catch(reject);
+      return;
+    }
+
+    shell.busy = true;
+
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const cleanup = () => {
+      shell.busy = false;
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (shell.proc.stdout) shell.proc.stdout.removeListener('data', onStdout);
+      if (shell.proc.stderr) shell.proc.stderr.removeListener('data', onStderr);
+    };
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve({ stdout, stderr });
+    };
+
+    const onStdout = (data: Buffer) => {
+      const text = data.toString();
+      if (text.includes(SHELL_SENTINEL)) {
+        // Extract everything before sentinel, strip the echo line
+        const parts = text.split(SHELL_SENTINEL);
+        const before = parts[0] || '';
+        // Remove the echo command line itself from output
+        const lines = before.split('\n');
+        const filtered = lines.filter(l => !l.includes('echo') || !l.includes(SHELL_SENTINEL));
+        stdout += filtered.join('\n');
+        finish();
+      } else {
+        stdout += text;
+      }
+    };
+
+    const onStderr = (data: Buffer) => {
+      stderr += data.toString();
+    };
+
+    shell.proc.stdout!.on('data', onStdout);
+    shell.proc.stderr!.on('data', onStderr);
+
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          reject({ killed: true, stdout, stderr, message: `Timeout after ${timeoutMs}ms` });
+        }
+      }, timeoutMs);
+    }
+
+    // Send command + sentinel marker
+    const fullCmd = `cd ${shellSingleQuote(cwd)} 2>/dev/null; ${command}\necho "${SHELL_SENTINEL}"\n`;
+    shell.proc.stdin!.write(fullCmd);
+  });
+}
 
 export interface LocalToolDefinition {
   name: string;
@@ -202,18 +363,11 @@ async function toolShellExec(input: {
   const timeoutMs = input?.timeout === 0 ? 0 : (input?.timeout || 30) * 1000;
 
   try {
-    const { stdout, stderr } = await execAsync(String(input?.command || ''), {
+    const { stdout, stderr } = await runInPersistentShell(
+      String(input?.command || ''),
       cwd,
-      timeout: timeoutMs || undefined,
-      maxBuffer: 10 * 1024 * 1024,
-      shell: '/bin/bash',
-      env: {
-        ...process.env,
-        HOME: homedir(),
-        PATH: process.env.PATH,
-        TERM: 'xterm-256color',
-      },
-    });
+      timeoutMs,
+    );
 
     let output = '';
     if (stdout) output += stdout;
@@ -320,9 +474,11 @@ async function toolFileWrite(input: {
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     if (mode === 'append') {
       await fs.appendFile(filePath, content);
+      invalidateDirTreeCache(filePath);
       return `[Appended ${content.length} characters to ${filePath}]`;
     }
     await fs.writeFile(filePath, content);
+    invalidateDirTreeCache(filePath);
     return `[Wrote ${content.length} characters to ${filePath}]`;
   } catch (err: any) {
     return `[Error writing ${filePath}: ${err?.message || 'unknown error'}]`;
@@ -352,6 +508,7 @@ async function toolFileEdit(input: {
 
     const nextContent = content.replace(oldString, newString);
     await fs.writeFile(filePath, nextContent);
+    invalidateDirTreeCache(filePath);
     return `[Replaced in ${filePath}. File is now ${nextContent.split('\n').length} lines.]`;
   } catch (err: any) {
     if (err?.code === 'ENOENT') return `[File not found: ${filePath}]`;
@@ -380,6 +537,13 @@ async function toolDirectoryTree(input: {
     'coverage',
     '.tox',
   ];
+
+  // Check cache
+  const cacheKey = dirTreeCacheKey(dirPath, maxDepth, showHidden, ignorePatterns);
+  const cached = dirTreeCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < DIR_TREE_CACHE_TTL_MS) {
+    return cached.result;
+  }
 
   const lines: string[] = [dirPath];
   let fileCount = 0;
@@ -441,7 +605,9 @@ async function toolDirectoryTree(input: {
   await walk(dirPath, '', 0);
   lines.push(`\n${dirCount} directories, ${fileCount} files`);
 
-  return lines.join('\n');
+  const result = lines.join('\n');
+  dirTreeCache.set(cacheKey, { result, timestamp: Date.now() });
+  return result;
 }
 
 async function toolProcessManager(input: {
@@ -472,6 +638,26 @@ async function toolProcessManager(input: {
       if (!input?.query) return '[Error: PID required for kill action]';
       const pid = Number.parseInt(input.query, 10);
       if (Number.isNaN(pid)) return `[Error: invalid PID "${input.query}"]`;
+
+      // Self-protection: never kill Clawdia's own process tree
+      const myPid = process.pid;
+      const myPpid = process.ppid;
+      if (pid === myPid || pid === myPpid) {
+        return `[BLOCKED: PID ${pid} belongs to Clawdia. Refusing to self-terminate.]`;
+      }
+      // Also check if the target is a parent/ancestor (concurrently, electron, node)
+      try {
+        const { stdout: cmdline } = await execAsync(`ps -p ${pid} -o command= 2>/dev/null`, { timeout: 3000 });
+        const cmd = (cmdline || '').toLowerCase();
+        if (cmd.includes('electron') && cmd.includes('clawdia') ||
+            cmd.includes('concurrently') ||
+            (cmd.includes('node') && cmd.includes('clawdia'))) {
+          return `[BLOCKED: PID ${pid} appears to be part of the Clawdia process tree. Refusing to kill.]`;
+        }
+      } catch {
+        // Can't inspect — proceed but with direct PID guard already done
+      }
+
       const signal = (input.signal || 'SIGTERM') as NodeJS.Signals;
       try {
         process.kill(pid, signal);

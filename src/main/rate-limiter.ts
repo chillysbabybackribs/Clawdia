@@ -1,4 +1,4 @@
-import { createLogger } from './logger';
+import { createLogger, perfLog } from './logger';
 
 const log = createLogger('rate-limiter');
 
@@ -60,10 +60,13 @@ export class RateLimiter {
   }
 
   async acquire(): Promise<void> {
+    const t0 = performance.now();
     this.refillTokens();
 
     if (this.queue.length === 0 && this.tokens >= 1) {
       this.tokens -= 1;
+      const ms = performance.now() - t0;
+      if (ms > 1) perfLog('rate-limiter', `${this.name}-acquire`, ms, { queued: false });
       return;
     }
 
@@ -94,6 +97,8 @@ export class RateLimiter {
       log.debug(`Rate limiter [${this.name}]: request queued, ${this.queue.length} in queue`);
       this.scheduleDrain();
     });
+    const ms = performance.now() - t0;
+    perfLog('rate-limiter', `${this.name}-acquire-waited`, ms, { queued: true, queueLen: this.queue.length });
   }
 
   private refillTokens(): void {

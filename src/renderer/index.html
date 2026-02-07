@@ -51,6 +51,7 @@
                     <line x1="1.5" y1="8" x2="14.5" y2="8"/>
                   </svg>
                 </button>
+                <div id="header-clock" class="header-clock">00:00</div>
                 <div class="window-controls">
                   <button id="min-btn" class="window-btn" title="Minimize">
                     <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
@@ -80,6 +81,7 @@
               <div class="chat-scroll-region">
                 <div id="output" class="output"></div>
               </div>
+              <div class="chat-footer">Built with ❤️</div>
             </main>
 
             <!-- Input Section -->
@@ -92,7 +94,7 @@
                       <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
                     </svg>
                   </button>
-                  <textarea id="prompt" placeholder="Type your message..." rows="2"></textarea>
+                  <textarea id="prompt" placeholder="Ask me anything..." rows="2"></textarea>
                   <button id="model-picker-btn" class="model-picker-btn" type="button" title="Switch model">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                       <path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/>
@@ -241,19 +243,7 @@
               <div class="setup-model-section">
                 <label class="setup-model-label" for="setup-model-select">Model</label>
                 <select id="setup-model-select" class="setup-model-select">
-                  <option value="claude-opus-4-6">Claude Opus 4.6</option>
-                  <option value="claude-opus-4-5-20251101">Claude Opus 4.5</option>
-                  <option value="claude-sonnet-4-5-20250929">Claude Sonnet 4.5</option>
-                  <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5</option>
-                  <option value="claude-opus-4-20250514">Claude Opus 4</option>
-                  <option value="claude-sonnet-4-20250514" selected>Claude Sonnet 4</option>
-                  <option value="claude-3-7-sonnet-20250219">Claude 3.7 Sonnet</option>
-                  <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet v2</option>
-                  <option value="claude-3-5-sonnet-20240620">Claude 3.5 Sonnet</option>
-                  <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku</option>
-                  <option value="claude-3-opus-20240229">Claude 3 Opus</option>
-                  <option value="claude-3-sonnet-20240229">Claude 3 Sonnet</option>
-                  <option value="claude-3-haiku-20240307">Claude 3 Haiku</option>
+                  <!-- Populated dynamically from CLAUDE_MODELS -->
                 </select>
               </div>
               <button id="setup-save-key-btn" class="primary setup-save-btn" type="button">
@@ -321,19 +311,7 @@
               <div class="form-group">
                 <label for="settings-model-select">Claude Model</label>
                 <select id="settings-model-select">
-                  <option value="claude-opus-4-6">Claude Opus 4.6</option>
-                  <option value="claude-opus-4-5-20251101">Claude Opus 4.5</option>
-                  <option value="claude-sonnet-4-5-20250929">Claude Sonnet 4.5</option>
-                  <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5</option>
-                  <option value="claude-opus-4-20250514">Claude Opus 4</option>
-                  <option value="claude-sonnet-4-20250514" selected>Claude Sonnet 4</option>
-                  <option value="claude-3-7-sonnet-20250219">Claude 3.7 Sonnet</option>
-                  <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet v2</option>
-                  <option value="claude-3-5-sonnet-20240620">Claude 3.5 Sonnet</option>
-                  <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku</option>
-                  <option value="claude-3-opus-20240229">Claude 3 Opus</option>
-                  <option value="claude-3-sonnet-20240229">Claude 3 Sonnet</option>
-                  <option value="claude-3-haiku-20240307">Claude 3 Haiku</option>
+                  <!-- Populated dynamically from CLAUDE_MODELS -->
                 </select>
               </div>
 
@@ -343,7 +321,6 @@
                 <label for="search-backend-select">Preferred Backend</label>
                 <select id="search-backend-select">
                   <option value="serper">Serper (recommended)</option>
-                  <option value="brave">Brave Search</option>
                   <option value="serpapi">SerpAPI</option>
                   <option value="bing">Bing</option>
                   <option value="playwright">Browser only (no API)</option>
@@ -359,17 +336,6 @@
                   <span class="free-hint">free</span>
                 </div>
                 <input type="password" id="serper-key" placeholder="Serper API key">
-              </div>
-
-              <div class="form-group">
-                <div class="api-key-label-row">
-                  <label for="brave-key">Brave Search API Key</label>
-                  <button class="get-key-btn" type="button" data-url="https://api.search.brave.com/app/keys" title="Get API key">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
-                  </button>
-                  <span class="free-hint">free</span>
-                </div>
-                <input type="password" id="brave-key" placeholder="Brave API key">
               </div>
 
               <div class="form-group">

@@ -46,10 +46,20 @@ let playwrightPage: Page | null = null;   // Wraps the BrowserView CDP target
 
 // Simple tab bookkeeping driven by BrowserView (no Playwright newPage).
 let tabCounter = 0;
-interface TabEntry { id: string; url: string; title: string; }
+interface TabEntry {
+  id: string;
+  url: string;
+  title: string;
+  historyBack: string[];   // stack of URLs we can go back to
+  historyForward: string[]; // stack of URLs we can go forward to
+}
 const tabs: Map<string, TabEntry> = new Map();
 let activeTabId: string | null = null;
 let livePreviewTabId: string | null = null;
+
+// Flag: when true, the next did-navigate should NOT push onto the tab history.
+// Set before programmatic navigations (goBack, goForward, switchTab).
+let suppressHistoryPush = false;
 
 // Promise that resolves once initPlaywright() completes (success or failure).
 let playwrightReadyResolve: () => void;
@@ -63,6 +73,9 @@ const NOISY_SOURCES = [
   'google-analytics', 'fbevents', 'hotjar', 'clarity.ms', 'segment.com',
   'mixpanel', 'amplitude', 'intercom', 'crisp', 'drift', 'tawk', 'zendesk',
   'cdn.shopify.com/extensions', 'sentry.io', 'googleadservices',
+  'onetag-sys.com', 'googletag', 'gpt.js', 'pubads_impl', 'adsbygoogle',
+  'doubleclick.net', 'adsense', 'google_ads', 'taboola', 'outbrain',
+  'hbspt', 'hubspot', 'optimizely', 'crazyegg', 'mouseflow',
 ];
 
 const NOISE_PATTERNS = [
@@ -71,12 +84,31 @@ const NOISE_PATTERNS = [
   'overflow: visible', 'productatcs', 'display cart', '%c', 'sectionfocus',
   'customer events tracker', 'run pagefly', 'm.ai', 'k-web-pixel',
   'sandbox warning',
+  // CSP / permissions / feature-policy noise from visited sites
+  'violates the following content security policy',
+  'permissions policy violation',
+  'error with feature-policy header',
+  'unrecognized feature:',
+  'mixed content:',
+  'err_blocked_by_csp',
+  // Ad/tracking script errors
+  'encryptedsignalproviders',
+  'google deploy of the sharedid',
+  'wcpconsent is not defined',
+  'is not defined',
+  // Device API warnings
+  'devicemotion events are blocked',
+  'deviceorientation events are blocked',
+  // Deprecation warnings
+  'deprecated',
 ];
 
 const BENIGN_PAGE_ERROR_PATTERNS = [
   'routechange aborted',
   'minified react error #421',
   "unexpected token '&'",
+  'net::err_aborted',
+  'failed to load resource',
 ];
 
 
@@ -87,7 +119,12 @@ function sanitizeUserAgent(userAgent: string): string {
 function withProtocol(url: string): string {
   const trimmed = url.trim();
   if (!trimmed) return 'about:blank';
-  if (trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.startsWith('about:')) {
+  if (
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('https://') ||
+    trimmed.startsWith('about:') ||
+    trimmed.startsWith('file://')
+  ) {
     return trimmed;
   }
   return `https://${trimmed}`;
@@ -127,6 +164,28 @@ function updateActiveTab(): void {
   if (!entry) return;
   entry.url = browserView.webContents.getURL() || entry.url;
   entry.title = browserView.webContents.getTitle() || entry.title;
+}
+
+/**
+ * Push a new URL onto the active tab's per-tab history.
+ * Skipped when suppressHistoryPush is set (back/forward/switchTab navigations).
+ */
+function pushTabHistory(url: string): void {
+  if (suppressHistoryPush) {
+    suppressHistoryPush = false;
+    return;
+  }
+  if (!activeTabId) return;
+  const entry = tabs.get(activeTabId);
+  if (!entry) return;
+  // Don't push duplicate consecutive URLs
+  const prevUrl = entry.historyBack.length > 0 ? entry.historyBack[entry.historyBack.length - 1] : null;
+  const currentUrl = entry.url;
+  if (currentUrl && currentUrl !== 'about:blank' && currentUrl !== url) {
+    entry.historyBack.push(currentUrl);
+  }
+  // Any new navigation clears the forward stack
+  entry.historyForward = [];
 }
 
 // ---------------------------------------------------------------------------
@@ -247,6 +306,7 @@ function ensureBrowserView(): BrowserView {
     });
 
     browserView.webContents.on('did-navigate', (_event, url) => {
+      pushTabHistory(url);
       mainWindow?.webContents.send(IPC_EVENTS.BROWSER_NAVIGATED, url);
       updateActiveTab();
       emitTabState();
@@ -254,6 +314,7 @@ function ensureBrowserView(): BrowserView {
     });
 
     browserView.webContents.on('did-navigate-in-page', (_event, url) => {
+      pushTabHistory(url);
       mainWindow?.webContents.send(IPC_EVENTS.BROWSER_NAVIGATED, url);
       updateActiveTab();
       emitTabState();
@@ -749,7 +810,7 @@ function makeTabId(): string {
 
 function newTab(url: string): string {
   const id = makeTabId();
-  tabs.set(id, { id, url, title: '' });
+  tabs.set(id, { id, url, title: '', historyBack: [], historyForward: [] });
   activeTabId = id;
   return id;
 }
@@ -777,12 +838,24 @@ export async function createTab(url = 'about:blank'): Promise<string> {
 export async function switchTab(tabId: string): Promise<void> {
   const entry = tabs.get(tabId);
   if (!entry) return;
+
+  // Save current tab state before switching
+  if (activeTabId && browserView) {
+    const prev = tabs.get(activeTabId);
+    if (prev) {
+      prev.url = browserView.webContents.getURL() || prev.url;
+      prev.title = browserView.webContents.getTitle() || prev.title;
+    }
+  }
+
   activeTabId = tabId;
 
   // Load the tab's last known URL in the BrowserView.
+  // Suppress history push so tab-switch doesn't pollute per-tab history.
   const view = ensureBrowserView();
   if (entry.url && entry.url !== 'about:blank') {
-    try { await view.webContents.loadURL(entry.url); } catch { /* best-effort */ }
+    suppressHistoryPush = true;
+    try { await view.webContents.loadURL(entry.url); } catch { suppressHistoryPush = false; }
   }
 
   updateActiveTab();
@@ -913,7 +986,7 @@ export async function closeLiveHtml(): Promise<void> {
  * Wait for the BrowserView's `did-stop-loading` event, with a timeout.
  * Resolves immediately if the view is already loaded (not loading).
  */
-export function waitForLoad(timeoutMs = 3000): Promise<void> {
+export function waitForLoad(timeoutMs = 1500): Promise<void> {
   return new Promise<void>((resolve) => {
     if (!browserView) { resolve(); return; }
     const wc = browserView.webContents;
@@ -937,17 +1010,51 @@ export function setupBrowserIpc(): void {
 
   handleValidated(IPC.BROWSER_BACK, ipcSchemas[IPC.BROWSER_BACK], async () => {
     const view = browserView;
-    if (!view) return { success: false };
+    if (!view || !activeTabId) return { success: false };
+    const entry = tabs.get(activeTabId);
+    if (!entry || entry.historyBack.length === 0) return { success: false };
+
+    // Pop from back stack, push current URL onto forward stack
+    const prevUrl = entry.historyBack.pop()!;
+    entry.historyForward.push(entry.url);
+
+    suppressHistoryPush = true;
     mainWindow?.webContents.send(IPC_EVENTS.BROWSER_LOADING, true);
-    view.webContents.goBack();
+    try {
+      await view.webContents.loadURL(prevUrl);
+    } catch {
+      // Restore stacks on failure
+      entry.historyBack.push(prevUrl);
+      entry.historyForward.pop();
+      suppressHistoryPush = false;
+    }
+    updateActiveTab();
+    emitTabState();
     return { success: true };
   });
 
   handleValidated(IPC.BROWSER_FORWARD, ipcSchemas[IPC.BROWSER_FORWARD], async () => {
     const view = browserView;
-    if (!view) return { success: false };
+    if (!view || !activeTabId) return { success: false };
+    const entry = tabs.get(activeTabId);
+    if (!entry || entry.historyForward.length === 0) return { success: false };
+
+    // Pop from forward stack, push current URL onto back stack
+    const nextUrl = entry.historyForward.pop()!;
+    entry.historyBack.push(entry.url);
+
+    suppressHistoryPush = true;
     mainWindow?.webContents.send(IPC_EVENTS.BROWSER_LOADING, true);
-    view.webContents.goForward();
+    try {
+      await view.webContents.loadURL(nextUrl);
+    } catch {
+      // Restore stacks on failure
+      entry.historyForward.push(nextUrl);
+      entry.historyBack.pop();
+      suppressHistoryPush = false;
+    }
+    updateActiveTab();
+    emitTabState();
     return { success: true };
   });
 
@@ -1020,6 +1127,19 @@ export function getActivePage(): Page | null {
   ensurePlaywrightPageBinding();
   touchSession();
   return playwrightPage;
+}
+
+export function getPlaywrightBrowser(): Browser | null {
+  return playwrightBrowser;
+}
+
+export async function executeInBrowserView<T = unknown>(script: string): Promise<T | null> {
+  if (!browserView) return null;
+  try {
+    return await browserView.webContents.executeJavaScript(script, true) as T;
+  } catch {
+    return null;
+  }
 }
 
 export function getAllPages(): Map<string, Page> {

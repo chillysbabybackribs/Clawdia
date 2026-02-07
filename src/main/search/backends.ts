@@ -100,61 +100,6 @@ async function searchSerper(query: string): Promise<SearchResponse> {
   return { results, source: 'serper' };
 }
 
-// --- Brave Search API ---
-
-async function searchBrave(query: string): Promise<SearchResponse> {
-  const apiKey = store.get('brave_api_key') as string;
-  if (!apiKey) throw new Error('No Brave API key configured');
-
-  const params = new URLSearchParams({ q: query, count: '8' });
-
-  const response = await rateLimitedSearchFetch(
-    `https://api.search.brave.com/res/v1/web/search?${params}`,
-    {
-      headers: {
-        Accept: 'application/json',
-        'Accept-Encoding': 'gzip',
-        'X-Subscription-Token': apiKey,
-      },
-    }
-  );
-
-  if (!response.ok) throw new Error(`Brave API error: ${response.status}`);
-
-  const data = await response.json();
-  const results: SearchResult[] = [];
-
-  if (data.infobox) {
-    results.push({
-      title: data.infobox.title || 'Info',
-      url: data.infobox.url || '',
-      snippet: data.infobox.long_desc || data.infobox.description || '',
-    });
-  }
-
-  if (data.faq?.results) {
-    for (const faq of data.faq.results.slice(0, 2)) {
-      results.push({
-        title: `Q: ${faq.question}`,
-        url: faq.url || '',
-        snippet: faq.answer || '',
-      });
-    }
-  }
-
-  if (data.web?.results) {
-    for (const item of data.web.results.slice(0, 6)) {
-      results.push({
-        title: item.title || '',
-        url: item.url || '',
-        snippet: item.description || '',
-      });
-    }
-  }
-
-  return { results, source: 'brave' };
-}
-
 // --- SerpAPI (Fallback) ---
 
 async function searchSerpApi(query: string): Promise<SearchResponse> {
@@ -276,7 +221,6 @@ function setCachedSearch(query: string, result: ConsensusResult): void {
 
 const BACKENDS = [
   { name: 'serper', fn: searchSerper },
-  { name: 'brave', fn: searchBrave },
   { name: 'serpapi', fn: searchSerpApi },
   { name: 'bing', fn: searchBing },
   { name: 'playwright', fn: searchPlaywright },
@@ -294,15 +238,14 @@ export async function search(query: string): Promise<ConsensusResult> {
 
   // Pick a secondary backend to race against the primary
   const backendPairs: Record<string, string> = {
-    serper: 'brave',
-    brave: 'serper',
-    serpapi: 'brave',
+    serper: 'serpapi',
+    serpapi: 'serper',
     bing: 'serper',
     playwright: 'serper',
   };
 
   const primaryBackend = BACKENDS.find((b) => b.name === preferred);
-  const secondaryName = backendPairs[preferred] || 'brave';
+  const secondaryName = backendPairs[preferred] || 'serpapi';
   const secondaryBackend = BACKENDS.find((b) => b.name === secondaryName);
 
   if (!primaryBackend) {
@@ -498,27 +441,14 @@ export interface NewsResult {
 
 export async function searchNews(query: string): Promise<NewsResult[]> {
   const serperKey = store.get('serper_api_key') as string;
-  const braveKey = store.get('brave_api_key') as string;
-  const [serperResult, braveResult] = await Promise.allSettled([
-    serperKey ? searchNewsSerper(query, serperKey) : Promise.resolve([]),
-    braveKey ? searchNewsBrave(query, braveKey) : Promise.resolve([]),
-  ]);
+  if (!serperKey) return [];
 
-  const serperResults = serperResult.status === 'fulfilled' ? serperResult.value : [];
-  const braveResults = braveResult.status === 'fulfilled' ? braveResult.value : [];
-
-  if (serperResult.status === 'rejected') {
-    log.warn('Serper news failed:', serperResult.reason);
-  }
-  if (braveResult.status === 'rejected') {
-    log.warn('Brave news failed:', braveResult.reason);
-  }
-
-  if (serperResults.length === 0 && braveResults.length === 0) {
+  try {
+    return await searchNewsSerper(query, serperKey);
+  } catch (err: any) {
+    log.warn('Serper news failed:', err?.message);
     return [];
   }
-
-  return dedupeNewsResults([...serperResults, ...braveResults]).slice(0, 6);
 }
 
 async function searchNewsSerper(query: string, apiKey: string): Promise<NewsResult[]> {
@@ -541,36 +471,6 @@ async function searchNewsSerper(query: string, apiKey: string): Promise<NewsResu
     snippet: item.snippet || '',
     source: item.source || '',
     date: item.date || '',
-  }));
-}
-
-async function searchNewsBrave(query: string, apiKey: string): Promise<NewsResult[]> {
-  const params = new URLSearchParams({
-    q: query,
-    count: '8',
-    freshness: 'pw',
-  });
-
-  const response = await rateLimitedSearchFetch(
-    `https://api.search.brave.com/res/v1/news/search?${params}`,
-    {
-      headers: {
-        Accept: 'application/json',
-        'X-Subscription-Token': apiKey,
-      },
-    }
-  );
-
-  if (!response.ok) throw new Error(`${response.status}`);
-  const data = await response.json();
-  if (!data.results || data.results.length === 0) return [];
-
-  return data.results.slice(0, 6).map((item: any) => ({
-    title: item.title || '',
-    url: item.url || '',
-    snippet: item.description || '',
-    source: item.meta_url?.hostname || '',
-    date: item.age || '',
   }));
 }
 

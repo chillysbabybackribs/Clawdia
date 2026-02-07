@@ -3,6 +3,9 @@ if (process.platform === 'linux') {
   process.env.ELECTRON_DISABLE_SANDBOX = 'true';
 }
 
+// Log tap — mirrors all stdout/stderr to ~/.clawdia-live.log for AI monitoring
+import './log-tap';
+
 import { app, BrowserWindow, clipboard, dialog, shell } from 'electron';
 import { execSync } from 'child_process';
 import { randomUUID } from 'crypto';
@@ -22,8 +25,10 @@ import { DEFAULT_MODEL } from '../shared/models';
 import { usageTracker } from './usage-tracker';
 import { createLogger, setLogLevel, type LogLevel } from './logger';
 import { handleValidated, ipcSchemas } from './ipc-validator';
+import { initSearchCache, closeSearchCache } from './cache/search-cache';
 
 const log = createLogger('main');
+// TEST FIX: Verifying cascade restart issue is resolved - 2026-02-07 TESTING NOW
 
 // Pick a free CDP port before Electron starts.
 // Must be synchronous because appendSwitch must run at module load time.
@@ -86,7 +91,6 @@ const CHAT_TAB_STATE_KEY: keyof ClawdiaStoreSchema = 'chat_tab_state';
 const CONNECTION_WARMUP_TARGETS = [
   'https://api.anthropic.com/',
   'https://google.serper.dev/',
-  'https://api.search.brave.com/',
 ];
 
 function getAnthropicApiKey(): string {
@@ -124,6 +128,7 @@ async function warmAnthropicMessagesConnection(apiKey: string): Promise<void> {
   const key = apiKey.trim();
   if (!key) return;
   const model = getSelectedModel();
+  log.debug(`[API Request] model=${model} | endpoint=warmup`);
   try {
     await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -145,6 +150,7 @@ async function warmAnthropicMessagesConnection(apiKey: string): Promise<void> {
 }
 
 runMigrations(store);
+log.info(`[STARTUP] storedModel=${(store.get('selectedModel') as string) || '(none)'} | effectiveModel=${getSelectedModel()}`);
 
 async function validateAnthropicApiKey(key: string, model?: string): Promise<{ valid: boolean; error?: string }> {
   const normalized = key.trim();
@@ -153,6 +159,7 @@ async function validateAnthropicApiKey(key: string, model?: string): Promise<{ v
   }
 
   const validationModel = model || getSelectedModel();
+  log.info(`[API Request] model=${validationModel} | endpoint=validateApiKey`);
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -220,6 +227,13 @@ function createWindow(): void {
     },
   });
 
+  // Prevent the native WM system menu on right-click of the title bar drag region.
+  // On Linux this menu's Move/Resize actions enter a modal pointer grab that
+  // freezes all input except the mouse and spins the CPU.
+  mainWindow.on('system-context-menu', (event) => {
+    event.preventDefault();
+  });
+
   mainWindow.webContents.on('before-input-event', (event, input) => {
     if (input.key === 'F12') {
       event.preventDefault();
@@ -255,7 +269,15 @@ function createWindow(): void {
   ].join('; ');
 
   const isDev = process.env.NODE_ENV === 'development';
+  const mainWebContentsId = mainWindow.webContents.id;
   mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    // Only inject CSP for the main renderer window, not the BrowserView panel.
+    // The BrowserView shares the default session but needs to load real websites
+    // without our restrictive CSP blocking their external scripts/styles/fonts.
+    if (details.webContentsId !== mainWebContentsId) {
+      callback({ cancel: false });
+      return;
+    }
     callback({
       responseHeaders: {
         ...details.responseHeaders,
@@ -315,6 +337,7 @@ function setupIpcHandlers(): void {
     }
 
     const model = getSelectedModel();
+    log.info(`[CHAT_SEND] selectedModel=${model} | conversationId=${conversation.id}`);
     const client = getClient(apiKey, model);
     const history = conversation.messages;
     const loop = new ToolLoop(mainWindow, client);
@@ -345,8 +368,8 @@ function setupIpcHandlers(): void {
       }
       mainWindow.webContents.send(IPC_EVENTS.CHAT_STREAM_END, response);
 
-      conversationManager.addMessage(conversation.id, { role: 'user', content: message, images, documents: documentMetas });
-      conversationManager.addMessage(conversation.id, { role: 'assistant', content: response });
+      conversationManager.addMessage(conversation.id, { role: 'user', content: message || '[Empty message]', images, documents: documentMetas });
+      conversationManager.addMessage(conversation.id, { role: 'assistant', content: response || '[No response]' });
 
       return { conversationId: conversation.id };
     } catch (error: any) {
@@ -430,7 +453,9 @@ function setupIpcHandlers(): void {
 
   handleValidated(IPC.MODEL_SET, ipcSchemas[IPC.MODEL_SET], async (_event, payload) => {
     const { model } = payload;
+    const previousModel = (store.get('selectedModel') as string) || DEFAULT_MODEL;
     store.set('selectedModel', model);
+    log.info(`[MODEL_SET] previousModel=${previousModel} | newModel=${model}`);
     // Invalidate cached client so next request uses the new model.
     cachedClient = null;
     cachedClientApiKey = null;
@@ -444,7 +469,6 @@ function setupIpcHandlers(): void {
     has_completed_setup: Boolean(store.get('hasCompletedSetup')),
     selected_model: (store.get('selectedModel') as string) || DEFAULT_MODEL,
     serper_api_key: store.get('serper_api_key') ? '••••••••' : '',
-    brave_api_key: store.get('brave_api_key') ? '••••••••' : '',
     serpapi_api_key: store.get('serpapi_api_key') ? '••••••••' : '',
     bing_api_key: store.get('bing_api_key') ? '••••••••' : '',
     search_backend: store.get('search_backend') || 'serper',
@@ -548,6 +572,7 @@ if (!gotTheLock) {
 
   app.whenReady().then(async () => {
     setCdpPort(REMOTE_DEBUGGING_PORT);
+    initSearchCache();
     setupIpcHandlers();
     setupBrowserIpc();
     createWindow();
@@ -565,6 +590,7 @@ if (!gotTheLock) {
 
 app.on('window-all-closed', () => {
   stopSessionReaper();
+  closeSearchCache();
   if (process.platform !== 'darwin') {
     app.quit();
   }
