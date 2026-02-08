@@ -9,6 +9,7 @@ import './log-tap';
 import { app, BrowserWindow, clipboard, dialog, shell } from 'electron';
 import { execSync } from 'child_process';
 import { randomUUID } from 'crypto';
+import { homedir } from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import { IPC, IPC_EVENTS } from '../shared/ipc-channels';
@@ -20,12 +21,23 @@ import { registerPlaywrightSearchFallback } from './browser/tools';
 import { AnthropicClient } from './llm/client';
 import { ConversationManager } from './llm/conversation';
 import { ToolLoop, clearPrefetchCache } from './llm/tool-loop';
+import { detectFastPathTools } from './llm/tool-bootstrap';
+import { strategyCache } from './llm/strategy-cache';
 import { store, runMigrations, resetStore, type ChatTabState, type ClawdiaStoreSchema } from './store';
 import { DEFAULT_MODEL } from '../shared/models';
 import { usageTracker } from './usage-tracker';
 import { createLogger, setLogLevel, type LogLevel } from './logger';
 import { handleValidated, ipcSchemas } from './ipc-validator';
 import { initSearchCache, closeSearchCache } from './cache/search-cache';
+import { listAccounts, addAccount, removeAccount } from './accounts/account-store';
+import { initLearningSystem, shutdownLearningSystem, siteKnowledge, userMemory, maybeExtractMemories } from './learning';
+import { initVault } from './vault/db';
+import { IngestionManager, ingestionEmitter } from './ingestion/manager';
+import { VaultSearch } from './vault/search';
+import { getIngestionJob } from './vault/documents';
+import { createPlan, addAction, getPlan, getActions } from './actions/ledger';
+import { ActionExecutor } from './actions/executor';
+import { ActionType, IngestionJob } from '../shared/vault-types';
 
 const log = createLogger('main');
 // TEST FIX: Verifying cascade restart issue is resolved - 2026-02-07 TESTING NOW
@@ -310,6 +322,9 @@ function createWindow(): void {
     // Warm DNS + TCP + TLS connections to API endpoints (fire-and-forget).
     // Eliminates cold-start latency on first search/LLM call.
     void warmConnections();
+
+    // Detect fast-path CLI tools (yt-dlp, wget, etc.) in background.
+    void detectFastPathTools();
   });
 
   mainWindow.on('closed', () => {
@@ -370,6 +385,10 @@ function setupIpcHandlers(): void {
 
       conversationManager.addMessage(conversation.id, { role: 'user', content: message || '[Empty message]', images, documents: documentMetas });
       conversationManager.addMessage(conversation.id, { role: 'assistant', content: response || '[No response]' });
+      const updatedConversation = conversationManager.get(conversation.id);
+      if (updatedConversation) {
+        maybeExtractMemories(conversation.id, updatedConversation.messages, client);
+      }
 
       return { conversationId: conversation.id };
     } catch (error: any) {
@@ -394,6 +413,7 @@ function setupIpcHandlers(): void {
 
   handleValidated(IPC.CHAT_NEW, ipcSchemas[IPC.CHAT_NEW], async () => {
     clearPrefetchCache();
+    strategyCache.clear();
     return conversationManager.create();
   });
   handleValidated(IPC.CHAT_LIST, ipcSchemas[IPC.CHAT_LIST], async () => conversationManager.list());
@@ -535,6 +555,27 @@ function setupIpcHandlers(): void {
     return { success: true };
   });
 
+  handleValidated(IPC.FILE_OPEN, ipcSchemas[IPC.FILE_OPEN], async (_event, payload) => {
+    try {
+      let filePath = String(payload.filePath || '').trim();
+      if (filePath.startsWith('~')) {
+        filePath = path.join(homedir(), filePath.slice(1));
+      }
+      filePath = path.resolve(filePath);
+      if (!filePath.startsWith(homedir())) {
+        return { success: false, error: 'Refusing to open files outside the user home directory.' };
+      }
+      const stat = await fs.promises.stat(filePath);
+      if (!stat.isFile()) {
+        return { success: false, error: 'Path is not a file.' };
+      }
+      await shell.openPath(filePath);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to open file.' };
+    }
+  });
+
   handleValidated(IPC.CLIPBOARD_WRITE_TEXT, ipcSchemas[IPC.CLIPBOARD_WRITE_TEXT], async (_event, payload) => {
     const { text } = payload;
     clipboard.writeText(String(text ?? ''));
@@ -552,9 +593,113 @@ function setupIpcHandlers(): void {
     return { success: false, error: `Invalid log level: ${level}` };
   });
 
+  handleValidated(IPC.ACCOUNTS_LIST, ipcSchemas[IPC.ACCOUNTS_LIST], async () => listAccounts());
+
+  handleValidated(IPC.ACCOUNTS_ADD, ipcSchemas[IPC.ACCOUNTS_ADD], async (_event, payload) => {
+    const account = addAccount({ ...payload, isManual: true });
+    mainWindow?.webContents.send(IPC_EVENTS.ACCOUNTS_UPDATED, listAccounts());
+    return account;
+  });
+
+  handleValidated(IPC.ACCOUNTS_REMOVE, ipcSchemas[IPC.ACCOUNTS_REMOVE], async (_event, payload) => {
+    const removed = removeAccount(payload.id);
+    if (removed) {
+      mainWindow?.webContents.send(IPC_EVENTS.ACCOUNTS_UPDATED, listAccounts());
+    }
+    return { removed };
+  });
+
   handleValidated(IPC.STORE_RESET, ipcSchemas[IPC.STORE_RESET], async () => {
     resetStore(store);
     return { success: true };
+  });
+
+  handleValidated(IPC.MEMORY_GET_ALL, ipcSchemas[IPC.MEMORY_GET_ALL], async () => {
+    return userMemory?.recallAll() ?? [];
+  });
+
+  handleValidated(IPC.MEMORY_FORGET, ipcSchemas[IPC.MEMORY_FORGET], async (_event, payload) => {
+    userMemory?.forget(payload.category, payload.key);
+    return { success: true };
+  });
+
+  handleValidated(IPC.MEMORY_RESET, ipcSchemas[IPC.MEMORY_RESET], async () => {
+    userMemory?.reset();
+    return { success: true };
+  });
+
+  handleValidated(IPC.SITE_KNOWLEDGE_GET, ipcSchemas[IPC.SITE_KNOWLEDGE_GET], async (_event, payload) => {
+    return siteKnowledge?.getContextForHostname(payload.hostname) ?? '';
+  });
+
+  handleValidated(IPC.SITE_KNOWLEDGE_RESET, ipcSchemas[IPC.SITE_KNOWLEDGE_RESET], async () => {
+    siteKnowledge?.reset();
+    return { success: true };
+  });
+
+  // Vault Handlers
+  ingestionEmitter.on('job-update', (job: IngestionJob) => {
+    BrowserWindow.getAllWindows().forEach((win) => {
+      win.webContents.send(IPC_EVENTS.VAULT_JOB_UPDATE, job);
+    });
+  });
+
+  handleValidated(IPC.VAULT_INGEST_FILE, ipcSchemas[IPC.VAULT_INGEST_FILE], async (_event, payload) => {
+    try {
+      const docId = await IngestionManager.ingest(payload.filePath);
+      return { success: true, docId };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  handleValidated(IPC.VAULT_SEARCH, ipcSchemas[IPC.VAULT_SEARCH], async (_event, payload) => {
+    const results = await VaultSearch.search(payload.query, payload.limit);
+    return { success: true, results };
+  });
+
+  handleValidated(IPC.VAULT_GET_JOB, ipcSchemas[IPC.VAULT_GET_JOB], async (_event, payload) => {
+    const job = getIngestionJob(payload.id);
+    return { success: true, job };
+  });
+
+  // Action Handlers
+  handleValidated(IPC.ACTION_CREATE_PLAN, ipcSchemas[IPC.ACTION_CREATE_PLAN], async (_event, payload) => {
+    const plan = createPlan(payload.description);
+    return { success: true, plan };
+  });
+
+  handleValidated(IPC.ACTION_ADD_ITEM, ipcSchemas[IPC.ACTION_ADD_ITEM], async (_event, payload) => {
+    const action = addAction(payload.planId, payload.type as ActionType, payload.payload, payload.sequenceOrder);
+    return { success: true, action };
+  });
+
+  handleValidated(IPC.ACTION_EXECUTE_PLAN, ipcSchemas[IPC.ACTION_EXECUTE_PLAN], async (_event, payload) => {
+    try {
+      await ActionExecutor.executePlan(payload.planId);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  handleValidated(IPC.ACTION_UNDO_PLAN, ipcSchemas[IPC.ACTION_UNDO_PLAN], async (_event, payload) => {
+    try {
+      await ActionExecutor.undoPlan(payload.planId);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  handleValidated(IPC.ACTION_GET_PLAN, ipcSchemas[IPC.ACTION_GET_PLAN], async (_event, payload) => {
+    const plan = getPlan(payload.planId);
+    return { success: true, plan };
+  });
+
+  handleValidated(IPC.ACTION_GET_ITEMS, ipcSchemas[IPC.ACTION_GET_ITEMS], async (_event, payload) => {
+    const items = getActions(payload.planId);
+    return { success: true, items };
   });
 }
 
@@ -573,6 +718,8 @@ if (!gotTheLock) {
   app.whenReady().then(async () => {
     setCdpPort(REMOTE_DEBUGGING_PORT);
     initSearchCache();
+    initLearningSystem();
+    initVault();
     setupIpcHandlers();
     setupBrowserIpc();
     createWindow();
@@ -591,6 +738,7 @@ if (!gotTheLock) {
 app.on('window-all-closed', () => {
   stopSessionReaper();
   closeSearchCache();
+  shutdownLearningSystem();
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -619,6 +767,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
   try {
     await closeBrowser();
+    shutdownLearningSystem();
   } catch (err: any) {
     log.warn(`closeBrowser error during shutdown: ${err?.message}`);
   } finally {

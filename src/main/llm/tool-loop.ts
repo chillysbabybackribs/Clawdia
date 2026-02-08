@@ -1,16 +1,30 @@
 import { randomUUID } from 'crypto';
 import { BrowserWindow } from 'electron';
 import { homedir } from 'os';
+import * as fs from 'fs/promises';
 import * as path from 'path';
 import { AnthropicClient } from './client';
-import { Message, ImageAttachment, DocumentAttachment, ToolActivityEntry, ToolActivitySummary } from '../../shared/types';
+import {
+  Message,
+  ImageAttachment,
+  DocumentAttachment,
+  ToolActivityEntry,
+  ToolActivitySummary,
+  ToolExecStartEvent,
+  ToolExecCompleteEvent,
+  ToolStepProgressEvent,
+} from '../../shared/types';
 import { IPC_EVENTS } from '../../shared/ipc-channels';
-import { buildSystemPrompt, type PromptTier } from './system-prompt';
-import { getModelLabel } from '../../shared/models';
+import { buildSystemPrompt, getStaticPrompt, getDynamicPrompt, type PromptTier } from './system-prompt';
+import { getModelLabel, getModelConfig } from '../../shared/models';
 import { BROWSER_TOOL_DEFINITIONS, executeTool as executeBrowserTool } from '../browser/tools';
 import { LOCAL_TOOL_DEFINITIONS, executeLocalTool, type LocalToolExecutionContext } from '../local/tools';
 import { generateSynthesisThought, generateThought } from './thought-generator';
-import { classifyIntent } from './intent-router';
+import { classifyIntent, classifyToolClass, classifyEnriched, type ToolClass } from './intent-router';
+import { strategyCache, type CacheKey } from './strategy-cache';
+import { isToolAvailable } from './tool-bootstrap';
+import { validateAndBuild, FAST_PATH_ENTRIES, findFastPathEntryForUrl } from './fast-path-gate';
+import { buildStrategyHintBlock } from './system-prompt';
 import {
   SEQUENTIAL_THINKING_TOOL_DEFINITION,
   executeSequentialThinking,
@@ -31,13 +45,15 @@ import {
   closeLiveHtml,
   isSessionInvalidated,
   clearSessionInvalidated,
+  getActiveTabUrl,
+  exportCookiesForUrl,
 } from '../browser/manager';
 import { createLogger, perfLog, perfTimer } from '../logger';
 
 const log = createLogger('tool-loop');
 
-const MAX_TOOL_CALLS = 25;
-const MAX_TOOL_ITERATIONS = 25;
+const MAX_TOOL_CALLS = 75;
+const MAX_TOOL_ITERATIONS = 75;
 import { ConversationManager } from './conversation';
 // Dynamically reads from ConversationManager so runtime changes apply everywhere
 const getMaxHistoryMessages = () => ConversationManager.getMaxPersistedMessages();
@@ -46,8 +62,130 @@ const MAX_TOOL_RESULT_IN_HISTORY = 1000; // chars — roughly 250 tokens
 const MAX_TOOL_RESULT_CHARS = 30_000; // hard cap on any single tool result before it enters conversation
 const KEEP_FULL_TOOL_RESULTS = 1; // keep last N tool_result messages uncompressed
 const LOCAL_TOOL_NAMES = new Set(LOCAL_TOOL_DEFINITIONS.map((tool) => tool.name));
-const ALL_TOOLS = [...BROWSER_TOOL_DEFINITIONS, ...LOCAL_TOOL_DEFINITIONS, SEQUENTIAL_THINKING_TOOL_DEFINITION];
+import { VAULT_TOOL_DEFINITIONS, executeVaultTool } from '../vault/tools';
+
+const ALL_TOOLS = [...BROWSER_TOOL_DEFINITIONS, ...LOCAL_TOOL_DEFINITIONS, SEQUENTIAL_THINKING_TOOL_DEFINITION, ...VAULT_TOOL_DEFINITIONS];
+const VAULT_TOOL_NAMES = new Set(VAULT_TOOL_DEFINITIONS.map(t => t.name));
+
 const LOCAL_WRITE_TOOL_NAMES = new Set(['file_write', 'file_edit']);
+
+const MEDIA_EXTRACT_FAST_PATH_MIN_SCORE = 0.8;
+const MEDIA_EXTRACT_CDN_DENY_RE = /(MissingKey|Key-Pair-Id|403\s+Forbidden|HTTP\/?1\.\d\s+403|AccessDenied|Forbidden)/i;
+const MEDIA_EXTRACT_CURL_FFMPEG_RE = /\b(curl|ffmpeg)\b/i;
+const MEDIA_EXTRACT_FFMPEG_RE = /\bffmpeg\b/i;
+const MEDIA_EXTRACT_FORBIDDEN_BROWSER_TOOLS = new Set([
+  'browser_screenshot',
+  'browser_click',
+  'browser_type',
+  'browser_scroll',
+  'browser_interact',
+  'browser_fill_form',
+  'browser_visual_extract',
+]);
+const MEDIA_EXTRACT_ALLOWED_BROWSER_READ = new Set([
+  'browser_navigate',
+  'browser_read_page',
+  'browser_extract',
+  'browser_read_tabs',
+  'browser_batch',
+  'browser_search',
+  'browser_search_rich',
+]);
+const MEDIA_EXTRACT_FORBIDDEN_SHELL_RE = /\b(ffmpeg|curl|wget|xdotool|apt-get|brew|pip|pip3)\b/i;
+
+function isBareHostUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname || '';
+    return path === '/' && !parsed.search;
+  } catch {
+    return false;
+  }
+}
+
+function resolveOutputDir(dirHint?: string): string | undefined {
+  if (!dirHint) return undefined;
+  const lower = dirHint.toLowerCase();
+  if (lower === 'desktop') return path.join(homedir(), 'Desktop');
+  if (lower === 'downloads' || lower === 'download') return path.join(homedir(), 'Downloads');
+  if (lower === 'documents') return path.join(homedir(), 'Documents', 'Clawdia');
+  return undefined;
+}
+
+function buildYtDlpCommand(
+  url: string,
+  preferredTool?: string,
+  outputDirHint?: string,
+): { argv: string[]; timeoutMs: number } | null {
+  if (!isToolAvailable('yt-dlp')) return null;
+  const entry = findFastPathEntryForUrl(url, preferredTool || 'yt-dlp');
+  if (!entry || entry.id !== 'yt-dlp') return null;
+  const outputDir = resolveOutputDir(outputDirHint);
+  return validateAndBuild(entry, { url, outputDir: outputDir || '' });
+}
+
+async function runYtDlpWithCookies(
+  url: string,
+  safeCmd: { argv: string[]; timeoutMs: number },
+): Promise<string> {
+  let cookiesPath: string | null = null;
+  try {
+    cookiesPath = await exportCookiesForUrl(url).catch(() => null);
+    const argv = cookiesPath ? [...safeCmd.argv, '--cookies', cookiesPath] : safeCmd.argv;
+    return await executeLocalTool('shell_exec', {
+      command: argv.join(' '),
+      timeout: safeCmd.timeoutMs / 1000,
+    });
+  } finally {
+    if (cookiesPath) {
+      try { await fs.unlink(cookiesPath); } catch { /* ignore */ }
+    }
+  }
+}
+
+function filterMediaExtractTools(tools: typeof ALL_TOOLS, allowBrowserAuth: boolean): typeof ALL_TOOLS {
+  return tools.filter((t) => {
+    if (!t.name.startsWith('browser_')) return true;
+    if (MEDIA_EXTRACT_FORBIDDEN_BROWSER_TOOLS.has(t.name)) return false;
+    if (allowBrowserAuth) {
+      return MEDIA_EXTRACT_ALLOWED_BROWSER_READ.has(t.name);
+    }
+    return MEDIA_EXTRACT_ALLOWED_BROWSER_READ.has(t.name);
+  });
+}
+
+async function executeTool_deprecated(
+  name: string,
+  input: Record<string, unknown>,
+  context?: LocalToolExecutionContext,
+): Promise<string> {
+  if (name === 'sequential_thinking') {
+    return executeSequentialThinking(input);
+  }
+
+  if (name === 'file_read') {
+    const cached = consumePrefetchedFile(input?.path);
+    if (cached) return cached;
+  }
+
+  if (name === 'browser_navigate') {
+    const cached = consumePrefetchedNavigation(input?.url);
+    if (cached) return cached;
+  }
+
+  if (name.startsWith('browser_')) {
+    return executeBrowserTool(name, input);
+  }
+
+  if (VAULT_TOOL_NAMES.has(name)) {
+    return executeVaultTool(name, input);
+  }
+
+  if (LOCAL_TOOL_NAMES.has(name)) {
+    return executeLocalTool(name, input, context);
+  }
+  return `Unknown tool: ${name}`;
+}
 const EARLY_STREAM_TOOL_NAMES = new Set([
   'file_read',
   'directory_tree',
@@ -73,6 +211,8 @@ const BROWSER_NAVIGATION_TOOL_NAMES = new Set([
   'browser_type',
   'browser_scroll',
   'browser_tab',
+  'browser_interact',
+  'browser_fill_form',
 ]);
 const BROWSER_PAGE_STATE_READ_TOOL_NAMES = new Set([
   'browser_read_page',
@@ -264,12 +404,12 @@ function makeMessage(role: Message['role'], content: string): Message {
  */
 function parseImageResult(
   result: string,
-): Array<{ type: string; [key: string]: unknown }> | null {
+): Array<{ type: string;[key: string]: unknown }> | null {
   if (!result.startsWith('{"__clawdia_image_result__":true')) return null;
   try {
     const parsed = JSON.parse(result);
     if (!parsed.__clawdia_image_result__ || !parsed.image_base64) return null;
-    const blocks: Array<{ type: string; [key: string]: unknown }> = [
+    const blocks: Array<{ type: string;[key: string]: unknown }> = [
       {
         type: 'image',
         source: {
@@ -295,10 +435,14 @@ function parseImageResult(
  */
 function truncateForHistory(result: string): string {
   if (result.length <= MAX_TOOL_RESULT_IN_HISTORY) return result;
-  const head = result.slice(0, 1400);
-  const tail = result.slice(-500);
+  const MAX = MAX_TOOL_RESULT_IN_HISTORY;
+  const SEPARATOR_BUDGET = 60; // room for "[... truncated N chars, ~N lines ...]" line
+  const TAIL_RATIO = 0.3;
+  const tail = Math.floor((MAX - SEPARATOR_BUDGET) * TAIL_RATIO);
+  const head = MAX - SEPARATOR_BUDGET - tail;
   const lineCount = (result.match(/\n/g) || []).length;
-  return `${head}\n\n[... truncated ${result.length - 1900} chars, ~${lineCount} lines ...]\n\n${tail}`;
+  const truncated = result.length - head - tail;
+  return `${result.slice(0, head)}\n\n[... truncated ${truncated} chars, ~${lineCount} lines ...]\n\n${result.slice(-tail)}`;
 }
 
 /**
@@ -384,6 +528,11 @@ async function executeTool(
   if (name.startsWith('browser_')) {
     return executeBrowserTool(name, input);
   }
+
+  if (VAULT_TOOL_NAMES.has(name)) {
+    return executeVaultTool(name, input);
+  }
+
   if (LOCAL_TOOL_NAMES.has(name)) {
     return executeLocalTool(name, input, context);
   }
@@ -496,6 +645,7 @@ export class ToolLoop {
   private window: BrowserWindow;
   private client: AnthropicClient;
   private aborted = false;
+  private abortController: AbortController | null = null;
   /** True if the response was streamed chunk-by-chunk to the renderer. */
   streamed = false;
   /** Promise queue that serializes all async browser writes. */
@@ -511,6 +661,8 @@ export class ToolLoop {
   private documentProgressEnabled = false;
   /** Tracks all tool calls executed in this run for the activity panel. */
   private activityLog: ToolActivityEntry[] = [];
+  /** True if any visible text was streamed to the renderer in this run. */
+  private hasStreamedText = false;
 
   constructor(window: BrowserWindow, client: AnthropicClient) {
     this.window = window;
@@ -519,6 +671,7 @@ export class ToolLoop {
 
   abort(): void {
     this.aborted = true;
+    this.abortController?.abort();
   }
 
   async run(
@@ -538,6 +691,7 @@ export class ToolLoop {
     this.runStartedAt = performance.now();
     this.documentProgressEnabled = looksLikeDocumentRequest(userMessage);
     this.activityLog = [];
+    this.hasStreamedText = false;
     clearSessionInvalidated(); // Clear stale signals from prior runs
     resetSequentialThinking(); // Fresh thinking state per run
     this.emitThinking(generateSynthesisThought(0));
@@ -551,17 +705,24 @@ export class ToolLoop {
     }
 
     const totalStart = performance.now();
+    let toolFailures = 0;
     const modelLabel = getModelLabel(this.client.getModel());
-    
-    // Build both prompt tiers upfront (cheap string ops)
-    // We pick which to use based on intent classification in the loop
-    const minimalPrompt = buildSystemPrompt({ tier: 'minimal', modelLabel });
-    const standardPrompt = buildSystemPrompt({ tier: 'standard', modelLabel });
-    let systemPrompt = standardPrompt; // default, may switch to minimal for chat-only
+    const currentUrl = getActiveTabUrl() || undefined;
+
+    // Build split prompts: static (cached) + dynamic (uncached, small)
+    const minimalStatic = getStaticPrompt('minimal');
+    const standardStatic = getStaticPrompt('standard');
+    const dynamicPrompt = getDynamicPrompt(modelLabel, currentUrl);
+
+    // Combined prompts for backward-compat paths (forceFinalResponse, etc.)
+    const minimalPrompt = minimalStatic + '\n\n' + dynamicPrompt;
+    const standardPrompt = standardStatic + '\n\n' + dynamicPrompt;
+    let systemPrompt = standardStatic; // default static portion, may switch to minimal
+    let systemDynamic = dynamicPrompt; // always passed separately
 
     const histStart = performance.now();
     const messages = this.trimHistory(history);
-    
+
     // Compress old tool results in history BEFORE first API call
     compressOldToolResults(messages);
 
@@ -589,11 +750,136 @@ export class ToolLoop {
     perfLog('tool-loop', 'history-assembly', histMs, { messageCount: messages.length });
     prefetchFromMessage(userMessage);
 
+    // ---- ARCHETYPE CLASSIFICATION + FAST PATH ----
+    const historyForRouter = history.map(m => ({
+      role: m.role,
+      content: typeof m.content === 'string' ? m.content : '',
+    }));
+    const enriched = classifyEnriched(augmentedMessage, historyForRouter, currentUrl);
+    const cacheKey: CacheKey = {
+      archetype: enriched.strategy.archetype,
+      primaryHost: enriched.strategy.extractedParams.url
+        ? (() => { try { return new URL(enriched.strategy.extractedParams.url).hostname.replace(/^www\./, ''); } catch { return null; } })()
+        : null,
+      toolClass: enriched.toolClass,
+    };
+    const mediaExtractUrl = enriched.strategy.extractedParams.url;
+    const mediaExtractPreferredTool = enriched.strategy.extractedParams.fastPathTool;
+    const mediaExtractOutputDir = enriched.strategy.extractedParams.outputDir;
+    const isMediaExtractHighConfidence =
+      enriched.strategy.archetype === 'media-extract' &&
+      enriched.strategy.score >= MEDIA_EXTRACT_FAST_PATH_MIN_SCORE &&
+      !!mediaExtractUrl;
+    let mediaExtractFastPathAttempted = false;
+    let mediaExtractAuthFallbackHint = false;
+    let mediaExtractFallbackUsed = false;
+    let mediaExtractAuthFallbackHintApplied = false;
+    const applyMediaExtractAuthFallbackHint = () => {
+      if (mediaExtractAuthFallbackHintApplied) return;
+      mediaExtractAuthFallbackHintApplied = true;
+      systemDynamic += buildStrategyHintBlock(
+        'Media download failed or yt-dlp unavailable. Do NOT retry curl/ffmpeg variants. Use browser tools to access the authenticated page, extract the media URL, then download. Avoid screenshots unless absolutely necessary.'
+      );
+    };
+
+    // DETERMINISTIC FAST PATH — bypass LLM entirely for known CLI tasks
+    if (isMediaExtractHighConfidence && mediaExtractUrl) {
+      mediaExtractFastPathAttempted = true;
+      if (isBareHostUrl(mediaExtractUrl)) {
+        log.info('[FastPath] media-extract URL is a bare host; skipping yt-dlp and using browser-auth flow');
+        mediaExtractAuthFallbackHint = true;
+        applyMediaExtractAuthFallbackHint();
+      } else {
+      const preExtractorMs = performance.now() - totalStart;
+      perfLog('media-extract', 'pre-extractor-delay', preExtractorMs, {
+        tool: 'yt-dlp',
+        host: (() => { try { return new URL(mediaExtractUrl).hostname.replace(/^www\./, ''); } catch { return null; } })(),
+        confidence: enriched.strategy.score,
+      });
+
+      const safeCmd = buildYtDlpCommand(mediaExtractUrl, mediaExtractPreferredTool, mediaExtractOutputDir);
+      if (safeCmd) {
+        log.info(`[FastPath] media-extract (high confidence) → ${safeCmd.argv.join(' ')}`);
+        this.emitThinking('Executing directly...');
+        try {
+          const result = await runYtDlpWithCookies(mediaExtractUrl, safeCmd);
+          const totalMs = performance.now() - totalStart;
+          perfLog('media-extract', 'total', totalMs, { tool: 'yt-dlp', success: true });
+          strategyCache.record(cacheKey, ['shell_exec'], 0, totalMs, true);
+          this.emitThinking('');
+          this.emitToolLoopComplete(1, totalMs, 0);
+          return result;
+        } catch (err: any) {
+          const totalMs = performance.now() - totalStart;
+          perfLog('media-extract', 'total', totalMs, { tool: 'yt-dlp', success: false });
+          log.warn(`[FastPath] yt-dlp failed: ${err?.message}, falling back to browser-auth`);
+          mediaExtractAuthFallbackHint = true;
+          applyMediaExtractAuthFallbackHint();
+        }
+      } else {
+        log.info('[FastPath] yt-dlp unavailable or not allowed for URL, falling back to browser-auth');
+        mediaExtractAuthFallbackHint = true;
+        applyMediaExtractAuthFallbackHint();
+      }
+      }
+    }
+
+    if (
+      enriched.strategy.tier === 'deterministic' &&
+      enriched.strategy.fastPathCommand &&
+      enriched.strategy.fastPathEntry
+    ) {
+      const isMediaExtractLowConfidence =
+        enriched.strategy.archetype === 'media-extract' &&
+        enriched.strategy.score < MEDIA_EXTRACT_FAST_PATH_MIN_SCORE;
+      if (!mediaExtractFastPathAttempted && !isMediaExtractLowConfidence) {
+        const entry = enriched.strategy.fastPathEntry;
+        const safeCmd = validateAndBuild(entry, {
+          url: enriched.strategy.extractedParams.url || '',
+        });
+        if (safeCmd) {
+          log.info(`[FastPath] ${enriched.strategy.archetype} → ${safeCmd.argv.join(' ')}`);
+          this.emitThinking('Executing directly...');
+          try {
+            const result = await executeLocalTool('shell_exec', {
+              command: safeCmd.argv.join(' '),
+              timeout: safeCmd.timeoutMs / 1000,
+            });
+            const totalMs = performance.now() - totalStart;
+            strategyCache.record(cacheKey, ['shell_exec'], 0, totalMs, true);
+            this.emitThinking('');
+            this.emitToolLoopComplete(1, totalMs, 0);
+            return result;
+          } catch (err: any) {
+            log.warn(`[FastPath] execution failed: ${err?.message}, falling back to LLM loop`);
+            // Fall through to normal LLM loop
+          }
+        } else {
+          log.warn(`[FastPath] safety gate rejected, falling back to LLM loop`);
+        }
+      }
+    }
+
+    // STRATEGY HINT — inject into dynamic prompt for score >= 0.5
+    if (enriched.strategy.score >= 0.5 && enriched.strategy.archetype !== 'unknown') {
+      const hint = enriched.strategy.systemHint;
+      const cachedHint = strategyCache.getHint(cacheKey);
+      const hintBlock = buildStrategyHintBlock(hint + (cachedHint ? '\n' + cachedHint : ''));
+      if (hintBlock) {
+        systemDynamic += hintBlock;
+      }
+    }
+    if (mediaExtractAuthFallbackHint) {
+      applyMediaExtractAuthFallbackHint();
+    }
+
     const searchHistory: SearchEntry[] = [];
     let toolCallCount = 0;
     const finalResponseParts: string[] = [];
     let continuationCount = 0;
     const llmStatsByIteration: IterationLlmStats[] = [];
+    /** Track all tool names used across iterations for strategy cache. */
+    const allToolNamesUsed: string[] = [];
 
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
       if (this.aborted) {
@@ -615,7 +901,7 @@ export class ToolLoop {
       }
 
       if (toolCallCount >= MAX_TOOL_CALLS) {
-        const text = await this.forceFinalResponseAtToolLimit(messages, systemPrompt);
+        const text = await this.forceFinalResponseAtToolLimit(messages, systemPrompt, systemDynamic);
         this.emitThinking('');
         this.emitToolActivitySummary(text);
         const totalMs = performance.now() - totalStart; log.info(`Total wall time: ${totalMs.toFixed(0)}ms, iterations: ${iteration + 1}, toolCalls: ${toolCallCount}`); perfLog("tool-loop", "total-wall-time", totalMs, { iterations: iteration + 1, toolCalls: toolCallCount });
@@ -637,13 +923,45 @@ export class ToolLoop {
       let tools: typeof ALL_TOOLS | [] = [];
       if (toolCallCount >= MAX_TOOL_CALLS) {
         tools = [];
-      } else if (iteration === 0 && classifyIntent(augmentedMessage, history.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : '' }))) === 'chat-only') {
+      } else if (iteration === 0 && enriched.intent === 'chat-only') {
         tools = [];
-        systemPrompt = minimalPrompt; // Use minimal prompt for chat-only (~800 tokens vs ~2K)
+        systemPrompt = minimalStatic; // Use minimal prompt for chat-only (~800 tokens vs ~2K)
         log.info('Intent router: chat-only — using minimal prompt, skipping tool definitions');
         perfLog('intent-router', 'route-chat-only', 0, { message: augmentedMessage.slice(0, 80) });
       } else {
-        tools = ALL_TOOLS;
+        // On first iteration, try to narrow the tool set by intent class.
+        // After iteration 0, always provide all tools (the LLM may need both).
+        if (iteration === 0) {
+          const toolClass = enriched.toolClass;
+          let filteredTools = ALL_TOOLS as typeof ALL_TOOLS;
+          if (toolClass === 'browser') {
+            const ALWAYS_INCLUDE_LOCAL = new Set(['create_document']);
+            filteredTools = ALL_TOOLS.filter(t => !LOCAL_TOOL_NAMES.has(t.name) || t.name === 'shell_exec' || ALWAYS_INCLUDE_LOCAL.has(t.name));
+            log.info(`Intent router: browser-only — ${filteredTools.length} tools (skipped ${ALL_TOOLS.length - filteredTools.length} local, kept 1 local)`);
+          } else if (toolClass === 'local') {
+            filteredTools = ALL_TOOLS.filter(t => LOCAL_TOOL_NAMES.has(t.name) || t.name === 'sequential_thinking');
+            log.info(`Intent router: local-only — ${filteredTools.length} tools (skipped ${ALL_TOOLS.length - filteredTools.length} browser)`);
+          }
+
+          // If archetype says skip browser tools, additionally filter
+          if (enriched.strategy.skipBrowserTools && toolClass !== 'local') {
+            filteredTools = filteredTools.filter(t => !t.name.startsWith('browser_') || t.name === 'browser_search' || t.name === 'browser_search_rich');
+            log.info(`Archetype ${enriched.strategy.archetype}: filtered to ${filteredTools.length} tools (browser tools skipped)`);
+          }
+
+          if (enriched.strategy.archetype === 'media-extract') {
+            filteredTools = filterMediaExtractTools(filteredTools, mediaExtractAuthFallbackHint);
+            log.info(`Archetype media-extract: restricted browser tools to non-visual read/extract (count=${filteredTools.length})`);
+          }
+
+          tools = filteredTools;
+        } else {
+          tools = ALL_TOOLS;
+          if (enriched.strategy.archetype === 'media-extract') {
+            tools = filterMediaExtractTools(tools as typeof ALL_TOOLS, mediaExtractAuthFallbackHint);
+            log.info(`Archetype media-extract: restricted browser tools to non-visual read/extract (count=${tools.length})`);
+          }
+        }
       }
 
       // Set up streaming with HTML interception
@@ -664,32 +982,51 @@ export class ToolLoop {
 
       // First pass keeps a full budget for quality; intermediate tool loops stay small for speed.
       const maxTokens = this.getMaxTokens(tools.length > 0, toolCallCount);
+      this.abortController = new AbortController();
       const apiStart = performance.now();
-      const response = await this.client.chat(messages, tools, systemPrompt, onText, {
-        maxTokens,
-        // Speculative tool execution: start running tools as soon as the model
-        // finishes streaming each tool_use block. By the time the full API
-        // response arrives, fast tools (shell_exec, file_read, etc.) are already
-        // done. The regular tool-loop phase checks earlyToolResults first and
-        // reuses the result instead of re-executing.
-        onToolUse: (toolUse) => {
-          // Only speculatively execute safe, stateless, read-only tools.
-          // Browser nav / clicks / writes could have side effects if the model
-          // later decides to change plan in a subsequent tool_use block.
-          const SPECULATIVE_SAFE = new Set([
-            'shell_exec', 'file_read', 'directory_tree', 'process_manager',
-            'browser_search', 'browser_news', 'browser_shopping',
-            'browser_places', 'browser_images', 'browser_search_rich',
-            'cache_read', 'sequential_thinking',
-          ]);
-          if (SPECULATIVE_SAFE.has(toolUse.name)) {
-            log.debug(`Speculative exec starting: ${toolUse.name} (id=${toolUse.id})`);
-            const promise = this.startEarlyToolExecution(toolUse);
-            return promise;
-          }
-          return undefined;
-        },
-      });
+      let response;
+      try {
+        // Enable compaction and context editing for models that support them
+        const currentModelConfig = getModelConfig(this.client.getModel());
+        const allowContextManagement = Boolean(currentModelConfig?.supportsCompaction && currentModelConfig?.tier !== 'opus');
+        response = await this.client.chat(messages, tools, systemPrompt, onText, {
+          maxTokens,
+          signal: this.abortController.signal,
+          dynamicSystemPrompt: systemDynamic,
+          enableCompaction: allowContextManagement,
+          enableContextEditing: allowContextManagement, // same gate as compaction for now
+          // Speculative tool execution: start running tools as soon as the model
+          // finishes streaming each tool_use block. By the time the full API
+          // response arrives, fast tools (shell_exec, file_read, etc.) are already
+          // done. The regular tool-loop phase checks earlyToolResults first and
+          // reuses the result instead of re-executing.
+          onToolUse: (toolUse) => {
+            // Only speculatively execute safe, stateless, read-only tools.
+            // Browser nav / clicks / writes could have side effects if the model
+            // later decides to change plan in a subsequent tool_use block.
+            const SPECULATIVE_SAFE = new Set([
+              'shell_exec', 'file_read', 'directory_tree', 'process_manager',
+              'browser_search', 'browser_news', 'browser_shopping',
+              'browser_places', 'browser_images', 'browser_search_rich',
+              'cache_read', 'sequential_thinking',
+            ]);
+            if (SPECULATIVE_SAFE.has(toolUse.name)) {
+              log.debug(`Speculative exec starting: ${toolUse.name} (id=${toolUse.id})`);
+              const promise = this.startEarlyToolExecution(toolUse);
+              return promise;
+            }
+            return undefined;
+          },
+        });
+      } catch (err: any) {
+        // AbortError from AbortController — user cancelled
+        if (err?.name === 'AbortError' || err?.name === 'APIUserAbortError' || this.aborted) {
+          log.info('API call aborted by user');
+          this.emitThinking('');
+          return '[Stopped]';
+        }
+        throw err;
+      }
       const apiDurationMs = performance.now() - apiStart;
       const { inputTokens: rIn, outputTokens: rOut, cacheReadInputTokens: cRead, cacheCreationInputTokens: cWrite } = response.usage;
       llmStatsByIteration.push({
@@ -700,6 +1037,25 @@ export class ToolLoop {
         cacheCreationInputTokens: cWrite || 0,
       });
       log.info(`API call #${iteration + 1}: ${apiDurationMs.toFixed(0)}ms, tokens: in=${rIn} out=${rOut} cache_read=${cRead} cache_write=${cWrite}`);
+      // Emit route info to renderer for transparency
+      if (!this.window.isDestroyed()) {
+        this.window.webContents.send(IPC_EVENTS.CHAT_ROUTE_INFO, {
+          model: response.model,
+          iteration: iteration + 1,
+          inputTokens: rIn || 0,
+          outputTokens: rOut || 0,
+          cacheReadTokens: cRead || 0,
+          durationMs: Math.round(apiDurationMs),
+        });
+        this.window.webContents.send(IPC_EVENTS.TOKEN_USAGE_UPDATE, {
+          inputTokens: rIn || 0,
+          outputTokens: rOut || 0,
+          cacheReadTokens: cRead || 0,
+          cacheCreateTokens: cWrite || 0,
+          model: response.model,
+          timestamp: Date.now(),
+        });
+      }
       if ((rIn || 0) > 150_000) {
         log.warn(`High input token count: ${rIn} — approaching context limit`);
       }
@@ -765,10 +1121,20 @@ export class ToolLoop {
         const finalText = finalResponseParts.join('\n').trim();
         this.emitToolActivitySummary(finalText);
         const totalMs = performance.now() - totalStart; log.info(`Total wall time: ${totalMs.toFixed(0)}ms, iterations: ${iteration + 1}, toolCalls: ${toolCallCount}`); perfLog("tool-loop", "total-wall-time", totalMs, { iterations: iteration + 1, toolCalls: toolCallCount });
+        // Record successful strategy for future hint generation
+        strategyCache.record(cacheKey, allToolNamesUsed, iteration + 1, totalMs, true);
+        this.emitToolLoopComplete(toolCallCount, totalMs, toolFailures);
         return finalText;
       }
 
       continuationCount = 0;
+
+      // If tools were requested, discard any speculative stream text emitted
+      // before tool_use blocks to avoid duplicate/plan text in the chat.
+      if (this.hasStreamedText) {
+        this.emitStreamReset();
+        this.hasStreamedText = false;
+      }
 
       // Tool calls found — the LLM sometimes emits text before tool_use blocks.
       // That text was streamed to the renderer; it's harmless but we don't need to act on it.
@@ -784,12 +1150,35 @@ export class ToolLoop {
       const toolResults: Array<{
         type: 'tool_result';
         tool_use_id: string;
-        content: string | Array<{ type: string; [key: string]: unknown }>;
+        content: string | Array<{ type: string;[key: string]: unknown }>;
       }> = [];
 
       // Build execution tasks, handling search dedup inline
       const execTasks: ExecutionTask[] = [];
       for (const toolCall of toolCalls) {
+        if (
+          enriched.strategy.archetype === 'media-extract' &&
+          MEDIA_EXTRACT_FORBIDDEN_BROWSER_TOOLS.has(toolCall.name)
+        ) {
+          execTasks.push({
+            toolCall,
+            skip: 'Visual browser actions are disabled for media extraction. Use read/extract tools or yt-dlp.',
+          });
+          continue;
+        }
+        if (
+          toolCall.name === 'shell_exec' &&
+          enriched.strategy.archetype === 'media-extract'
+        ) {
+          const cmd = String(toolCall.input?.command || '');
+          if (MEDIA_EXTRACT_FORBIDDEN_SHELL_RE.test(cmd)) {
+            execTasks.push({
+              toolCall,
+              skip: 'Direct curl/ffmpeg/install/automation commands are disabled for media extraction. Use yt-dlp.',
+            });
+            continue;
+          }
+        }
         if (SEARCH_TOOL_NAMES.has(toolCall.name)) {
           const query = String(toolCall.input?.query || '');
           if (query && isDuplicateSearch(toolCall.name, query, searchHistory)) {
@@ -834,6 +1223,10 @@ export class ToolLoop {
       // scratchpad with zero side effects and shouldn't eat into MAX_TOOL_CALLS.
       const countableTools = execTasks.filter(t => t.toolCall.name !== 'sequential_thinking').length;
       toolCallCount += countableTools;
+      // Track tool names for strategy cache
+      for (const t of execTasks) {
+        if (!t.skip) allToolNamesUsed.push(t.toolCall.name);
+      }
       if (execTasks.length > 0) {
         this.emitThinking(generateThought(execTasks[0].toolCall.name, execTasks[0].toolCall.input));
       }
@@ -852,7 +1245,59 @@ export class ToolLoop {
       const resultMap = new Map(results.map((r) => [r.id, r.content]));
       for (const toolCall of toolCalls) {
         const rawResult = resultMap.get(toolCall.id);
-        const resultContent = (rawResult && rawResult.trim() !== '') ? rawResult : 'Tool execution failed';
+        let resultContent = (rawResult && rawResult.trim() !== '') ? rawResult : 'Tool execution failed';
+        const recorded = this.activityLog.find((e) => e.id === toolCall.id);
+        if (recorded?.status === 'error') {
+          toolFailures += 1;
+        }
+
+        if (
+          enriched.strategy.archetype === 'media-extract' &&
+          toolCall.name === 'shell_exec'
+        ) {
+          const cmd = String(toolCall.input?.command || '');
+          if (
+            !mediaExtractFallbackUsed &&
+            MEDIA_EXTRACT_CURL_FFMPEG_RE.test(cmd) &&
+            MEDIA_EXTRACT_CDN_DENY_RE.test(resultContent)
+          ) {
+            mediaExtractFallbackUsed = true;
+            if (mediaExtractUrl) {
+              const preExtractorMs = performance.now() - totalStart;
+              perfLog('media-extract', 'pre-extractor-delay', preExtractorMs, { tool: 'yt-dlp', fallback: true });
+              const safeCmd = buildYtDlpCommand(mediaExtractUrl, mediaExtractPreferredTool, mediaExtractOutputDir);
+              if (safeCmd) {
+                log.warn('[MediaExtract] CDN auth error detected — falling back to yt-dlp');
+                try {
+                  const fallbackResult = await runYtDlpWithCookies(mediaExtractUrl, safeCmd);
+                  const totalMs = performance.now() - totalStart;
+                  perfLog('media-extract', 'fallback-total', totalMs, { tool: 'yt-dlp', success: true });
+                  resultContent =
+                    `${resultContent}\n\n[Fast-path fallback via yt-dlp]\n${fallbackResult}`;
+                } catch (err: any) {
+                  const totalMs = performance.now() - totalStart;
+                  perfLog('media-extract', 'fallback-total', totalMs, { tool: 'yt-dlp', success: false });
+                  log.warn(`[MediaExtract] yt-dlp fallback failed: ${err?.message}`);
+                  mediaExtractAuthFallbackHint = true;
+                  applyMediaExtractAuthFallbackHint();
+                  resultContent =
+                    `${resultContent}\n\n[Fast-path fallback failed — use browser-auth capture to extract the media URL]`;
+                }
+              } else {
+                mediaExtractAuthFallbackHint = true;
+                applyMediaExtractAuthFallbackHint();
+                resultContent =
+                  `${resultContent}\n\n[yt-dlp unavailable — use browser-auth capture to extract the media URL]`;
+              }
+            } else {
+              mediaExtractAuthFallbackHint = true;
+              applyMediaExtractAuthFallbackHint();
+              resultContent =
+                `${resultContent}\n\n[Media URL missing — use browser-auth capture to extract the media URL]`;
+            }
+          }
+        }
+
         if (toolCall.name === 'create_document' && resultContent.startsWith('[Error creating document:')) {
           this.emitDocProgress({
             stage: 'error',
@@ -946,7 +1391,10 @@ export class ToolLoop {
 
     this.emitThinking('');
     this.emitToolActivitySummary('');
-    const totalMsMax = performance.now() - totalStart; log.warn(`Total wall time: ${totalMsMax.toFixed(0)}ms, iterations: ${MAX_TOOL_ITERATIONS}, toolCalls: ${toolCallCount} — exceeded max iterations`); perfLog("tool-loop", "total-wall-time-MAX", totalMsMax, { iterations: MAX_TOOL_ITERATIONS, toolCalls: toolCallCount });
+    const totalMsMax = performance.now() - totalStart;
+    log.warn(`Total wall time: ${totalMsMax.toFixed(0)}ms, iterations: ${MAX_TOOL_ITERATIONS}, toolCalls: ${toolCallCount} — exceeded max iterations`);
+    perfLog('tool-loop', 'total-wall-time-MAX', totalMsMax, { iterations: MAX_TOOL_ITERATIONS, toolCalls: toolCallCount });
+    this.emitToolLoopComplete(toolCallCount, totalMsMax, toolFailures);
     throw new Error(
       `Tool loop exceeded ${MAX_TOOL_ITERATIONS} iterations for this message. Please try a narrower request.`
     );
@@ -992,6 +1440,18 @@ export class ToolLoop {
       };
       this.activityLog.push(entry);
       this.emitToolActivity(entry);
+      this.emitToolExecStart({
+        toolId: toolCall.id,
+        toolName: toolCall.name,
+        args: toolCall.input,
+        timestamp: entry.startedAt,
+      });
+      this.emitToolExecComplete({
+        toolId: toolCall.id,
+        status: 'success',
+        duration: 0,
+        summary: 'skipped',
+      });
       return { id: toolCall.id, content: skip };
     }
 
@@ -1005,6 +1465,12 @@ export class ToolLoop {
     };
     this.activityLog.push(entry);
     this.emitToolActivity(entry);
+    this.emitToolExecStart({
+      toolId: toolCall.id,
+      toolName: toolCall.name,
+      args: toolCall.input,
+      timestamp: entry.startedAt,
+    });
 
     try {
       const earlyStarted = this.earlyToolResults.get(toolCall.id);
@@ -1034,6 +1500,12 @@ export class ToolLoop {
       entry.durationMs = Math.round(toolMs);
       entry.resultPreview = result.slice(0, 200);
       this.emitToolActivity(entry);
+      this.emitToolExecComplete({
+        toolId: toolCall.id,
+        status: 'success',
+        duration: entry.durationMs,
+        summary: entry.resultPreview ?? '[Tool completed]',
+      });
 
       return { id: toolCall.id, content: result };
     } catch (error: any) {
@@ -1046,6 +1518,12 @@ export class ToolLoop {
       entry.durationMs = Math.round(toolErrMs);
       entry.error = error?.message || 'unknown error';
       this.emitToolActivity(entry);
+      this.emitToolExecComplete({
+        toolId: toolCall.id,
+        status: 'error',
+        duration: entry.durationMs,
+        summary: entry.error ?? 'unknown error',
+      });
 
       if (toolCall.name === 'create_document') {
         this.emitDocProgress({
@@ -1069,7 +1547,7 @@ export class ToolLoop {
     // Final response after tools: full budget restored (isToolLoopIteration=false).
     if (!isToolLoopIteration) return 4096;
     if (toolCallCount === 0) return 4096; // first call — could be direct response
-    return 2048; // intermediate tool loop — model just emits tool_use blocks
+    return 1536; // intermediate: tool_use blocks + browser_interact steps fit in ~800 tokens
   }
 
   private startEarlyToolExecution(toolCall: ToolCall): Promise<string> {
@@ -1166,6 +1644,14 @@ export class ToolLoop {
       localWriteUnknownPromise,
       browserSequentialPromise,
     ]);
+
+    // Log parallel execution stats
+    const totalTasks = execTasks.length;
+    const parallelCount = localParallel.length;
+    const seqCount = browserSequential.length;
+    if (totalTasks > 1) {
+      log.info(`[Parallel] ${totalTasks} tools: ${parallelCount} parallel, ${seqCount} browser-seq, ${localWriteGroups.size} write-groups, ${localWriteUnknownPath.length} write-unknown`);
+    }
 
     return [
       ...immediate,
@@ -1344,7 +1830,13 @@ export class ToolLoop {
 
   private emitStreamText(text: string): void {
     if (this.window.isDestroyed() || !text) return;
+    this.hasStreamedText = true;
     this.window.webContents.send(IPC_EVENTS.CHAT_STREAM_TEXT, text);
+  }
+
+  private emitStreamReset(): void {
+    if (this.window.isDestroyed()) return;
+    this.window.webContents.send(IPC_EVENTS.CHAT_STREAM_RESET);
   }
 
   private emitLiveHtmlStart(): void {
@@ -1360,6 +1852,26 @@ export class ToolLoop {
   private emitToolActivity(entry: ToolActivityEntry): void {
     if (this.window.isDestroyed()) return;
     this.window.webContents.send(IPC_EVENTS.CHAT_TOOL_ACTIVITY, entry);
+  }
+
+  private emitToolExecStart(payload: ToolExecStartEvent): void {
+    if (this.window.isDestroyed()) return;
+    this.window.webContents.send(IPC_EVENTS.TOOL_EXEC_START, payload);
+  }
+
+  private emitToolExecComplete(payload: ToolExecCompleteEvent): void {
+    if (this.window.isDestroyed()) return;
+    this.window.webContents.send(IPC_EVENTS.TOOL_EXEC_COMPLETE, payload);
+  }
+
+  private emitToolStepProgress(payload: ToolStepProgressEvent): void {
+    if (this.window.isDestroyed()) return;
+    this.window.webContents.send(IPC_EVENTS.TOOL_STEP_PROGRESS, payload);
+  }
+
+  private emitToolLoopComplete(totalTools: number, totalDuration: number, failures: number): void {
+    if (this.window.isDestroyed()) return;
+    this.window.webContents.send(IPC_EVENTS.TOOL_LOOP_COMPLETE, { totalTools, totalDuration, failures });
   }
 
   private emitToolActivitySummary(responseText: string): void {
@@ -1410,10 +1922,10 @@ export class ToolLoop {
 
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
-      const msgChars = typeof msg.content === 'string' 
-        ? msg.content.length 
+      const msgChars = typeof msg.content === 'string'
+        ? msg.content.length
         : JSON.stringify(msg.content).length;
-      
+
       if (totalChars + msgChars > maxChars && result.length > 0) {
         break;
       }
@@ -1428,14 +1940,19 @@ export class ToolLoop {
     return result;
   }
 
-  private async forceFinalResponseAtToolLimit(messages: Message[], systemPrompt: string): Promise<string> {
+  private async forceFinalResponseAtToolLimit(messages: Message[], systemPrompt: string, dynamicPrompt?: string): Promise<string> {
     messages.push(
       makeMessage(
         'user',
         '[SYSTEM: Tool limit reached. Respond now with answers for ALL parts of the user\'s request using information already gathered. Do not mention limits or ask to continue.]'
       )
     );
-    const finalResponse = await this.client.chat(messages, [], systemPrompt, undefined, { maxTokens: 4096 });
+    this.abortController = new AbortController();
+    const finalResponse = await this.client.chat(messages, [], systemPrompt, undefined, {
+      maxTokens: 4096,
+      signal: this.abortController.signal,
+      dynamicSystemPrompt: dynamicPrompt,
+    });
     return this.extractText(finalResponse).trim();
   }
 }

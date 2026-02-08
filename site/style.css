@@ -50,7 +50,7 @@ body {
   background: var(--bg-primary);
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 500;
   line-height: 1.7;
   overflow-x: hidden;
@@ -59,7 +59,7 @@ body {
 a { color: var(--text-secondary); text-decoration: none; transition: color 0.15s; }
 a:hover { color: var(--text-primary); }
 
-.container { max-width: 900px; margin: 0 auto; padding: 0 24px; }
+.container { max-width: 1080px; margin: 0 auto; padding: 0 32px; }
 
 /* ─── Top Bar ─── */
 
@@ -67,7 +67,7 @@ a:hover { color: var(--text-primary); }
   position: fixed;
   top: 0; left: 0; right: 0;
   z-index: 100;
-  padding: 0 24px;
+  padding: 0 32px;
   background: transparent;
   border-bottom: 1px solid transparent;
   transition: background 0.3s, border-color 0.3s, backdrop-filter 0.3s;
@@ -85,26 +85,26 @@ a:hover { color: var(--text-primary); }
 }
 
 .topbar-inner {
-  max-width: 900px;
+  max-width: 1080px;
   margin: 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 52px;
+  height: 56px;
 }
 
 .topbar-brand {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 400;
   color: var(--text-secondary);
   letter-spacing: 0.35em;
 }
 
-.topbar-links { display: flex; gap: 24px; align-items: center; }
+.topbar-links { display: flex; gap: 28px; align-items: center; }
 .topbar-links a {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 400;
   color: var(--text-tertiary);
   transition: color 0.15s;
@@ -114,10 +114,10 @@ a:hover { color: var(--text-primary); }
 .topbar-download {
   background: var(--bg-elevated);
   color: var(--text-secondary) !important;
-  padding: 5px 14px;
+  padding: 6px 16px;
   border-radius: 4px;
   border: 1px solid var(--border);
-  font-size: 12px !important;
+  font-size: 14px !important;
   transition: color 0.15s !important, border-color 0.15s !important;
 }
 .topbar-download:hover {
@@ -132,7 +132,7 @@ a:hover { color: var(--text-primary); }
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 100px 24px 0;
+  padding: 48px 32px 0;
   position: relative;
   text-align: center;
 }
@@ -145,41 +145,41 @@ a:hover { color: var(--text-primary); }
   position: relative;
   z-index: 1;
   width: 100%;
-  max-width: 700px;
+  max-width: 800px;
 }
 
 .hero-title {
   font-family: var(--font-mono);
-  font-size: clamp(1.5rem, 4vw, 2.2rem);
+  font-size: clamp(1.8rem, 4.5vw, 2.8rem);
   font-weight: 400;
   letter-spacing: 0.35em;
   color: var(--text-secondary);
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 
 .hero-tagline {
-  font-size: 13px;
+  font-size: 16px;
   color: var(--text-tertiary);
   line-height: 1.7;
-  margin-bottom: 32px;
+  margin-bottom: 24px;
 }
 
 .hero-actions {
   display: flex;
-  gap: 14px;
+  gap: 16px;
   justify-content: center;
   flex-wrap: wrap;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 .btn {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 24px;
+  gap: 10px;
+  padding: 12px 28px;
   border-radius: 4px;
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 400;
   cursor: pointer;
   transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.1s;
@@ -210,7 +210,7 @@ a:hover { color: var(--text-primary); }
 }
 
 .hero-note {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-tertiary);
   margin-bottom: 4px;
 }
@@ -218,7 +218,7 @@ a:hover { color: var(--text-primary); }
 .hero-note a:hover { color: var(--text-primary); }
 
 .hero-size {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-tertiary);
   font-family: var(--font-mono);
 }
@@ -229,13 +229,23 @@ a:hover { color: var(--text-primary); }
   position: relative;
   z-index: 1;
   width: 100%;
-  max-width: 800px;
+  max-width: 900px;
   aspect-ratio: 16 / 9;
-  margin: 48px auto 0;
+  margin: 32px auto 0;
   border-radius: 6px;
   overflow: hidden;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
+  cursor: pointer;
+  transition: max-width 0.25s ease, box-shadow 0.25s ease, transform 0.25s ease;
+  box-shadow: 0 10px 30px rgba(10, 12, 16, 0.2);
+}
+
+.hero-media.is-expanded {
+  z-index: 10;
+  transform-origin: top left;
+  transform: scale(1.35);
+  box-shadow: 0 20px 50px rgba(10, 12, 16, 0.4);
 }
 
 .hero-media video {
@@ -253,24 +263,24 @@ a:hover { color: var(--text-primary); }
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: 14px;
 }
 
 .fallback-icon {
-  width: 48px;
-  height: 48px;
+  width: 56px;
+  height: 56px;
   border-radius: 50%;
   background: var(--bg-elevated);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
+  font-size: 22px;
   color: var(--text-tertiary);
   opacity: 0.5;
 }
 
 .fallback-text {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-tertiary);
   opacity: 0.5;
 }
@@ -280,11 +290,11 @@ a:hover { color: var(--text-primary); }
   z-index: 1;
   text-align: center;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: 15px;
   line-height: 1.7;
-  max-width: 560px;
+  max-width: 100%;
   margin-top: 16px;
-  margin-bottom: 48px;
+  margin-bottom: 32px;
 }
 
 .hero-caption strong {
@@ -300,7 +310,7 @@ a:hover { color: var(--text-primary); }
 
 .section-title {
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
   letter-spacing: 0.15em;
   text-transform: uppercase;
@@ -318,9 +328,9 @@ a:hover { color: var(--text-primary); }
 .feature-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 48px;
+  gap: 56px;
   align-items: center;
-  margin-bottom: 64px;
+  margin-bottom: 72px;
 }
 
 .feature-row-reverse .feature-text { order: 2; }
@@ -328,17 +338,17 @@ a:hover { color: var(--text-primary); }
 
 .feature-label {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.15em;
   text-transform: uppercase;
   color: var(--text-primary);
-  margin-bottom: 16px;
+  margin-bottom: 18px;
 }
 
 .feature-text p {
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: 15px;
   line-height: 1.8;
 }
 
@@ -352,7 +362,7 @@ a:hover { color: var(--text-primary); }
 .code-header {
   display: flex;
   gap: 6px;
-  padding: 10px 14px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -364,9 +374,9 @@ a:hover { color: var(--text-primary); }
 }
 
 .feature-code pre {
-  padding: 16px 18px;
+  padding: 18px 20px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.9;
   color: var(--text-primary);
   overflow-x: auto;
@@ -381,42 +391,42 @@ a:hover { color: var(--text-primary); }
 
 .feature-punchline {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-tertiary);
   text-align: center;
-  padding: 10px 18px 14px;
+  padding: 12px 20px 16px;
   border-top: 1px solid var(--border);
   margin: 0;
 }
 
 .feature-aside {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-tertiary);
   line-height: 1.7;
-  margin-top: 12px;
+  margin-top: 14px;
 }
 
 /* BYOK visual */
 .feature-code-byok {
-  padding: 28px 24px;
+  padding: 32px 28px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 16px;
+  gap: 18px;
 }
 
 .byok-flow {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 16px;
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 15px;
 }
 
 .byok-node {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  padding: 8px 16px;
+  padding: 10px 20px;
   border-radius: 4px;
   color: var(--text-secondary);
 }
@@ -426,10 +436,10 @@ a:hover { color: var(--text-primary); }
   color: var(--text-primary);
 }
 
-.byok-arrow { color: var(--text-tertiary); font-size: 16px; }
+.byok-arrow { color: var(--text-tertiary); font-size: 18px; }
 
 .byok-note {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-tertiary);
 }
 
@@ -437,15 +447,15 @@ a:hover { color: var(--text-primary); }
 .feature-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  margin-top: 24px;
+  gap: 14px;
+  margin-top: 28px;
 }
 
 .feature-card {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 20px;
+  padding: 24px;
   transition: border-color 0.2s;
 }
 
@@ -455,16 +465,16 @@ a:hover { color: var(--text-primary); }
 
 .feature-card h4 {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--text-primary);
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 
 .feature-card p {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-secondary);
   line-height: 1.7;
 }
@@ -485,36 +495,36 @@ a:hover { color: var(--text-primary); }
 }
 
 .step {
-  flex: 0 1 220px;
+  flex: 0 1 260px;
   text-align: center;
-  padding: 0 16px;
+  padding: 0 20px;
 }
 
 .step-number {
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
   display: flex;
   align-items: center;
   justify-content: center;
-  margin: 0 auto 14px;
+  margin: 0 auto 16px;
 }
 
 .step h4 {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
   color: var(--text-primary);
 }
 
 .step p {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-secondary);
   line-height: 1.7;
 }
@@ -525,7 +535,7 @@ a:hover { color: var(--text-primary); }
   flex: 0 0 48px;
   height: 1px;
   background: var(--border);
-  margin-top: 18px;
+  margin-top: 20px;
 }
 
 .build-source {
@@ -534,26 +544,26 @@ a:hover { color: var(--text-primary); }
 }
 
 .build-source > p {
-  font-size: 13px;
+  font-size: 15px;
   color: var(--text-secondary);
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
 .code-block {
   display: inline-flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
   background: var(--bg-primary);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 12px 16px;
+  padding: 14px 20px;
   max-width: 100%;
   overflow-x: auto;
 }
 
 .code-block code {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-primary);
   white-space: nowrap;
 }
@@ -565,9 +575,9 @@ a:hover { color: var(--text-primary); }
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 3px;
-  padding: 4px 10px;
+  padding: 5px 12px;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 13px;
   font-family: var(--font-mono);
   cursor: pointer;
   transition: color 0.15s, border-color 0.15s;
@@ -577,7 +587,7 @@ a:hover { color: var(--text-primary); }
 .copy-btn:hover { color: var(--text-primary); border-color: var(--text-tertiary); }
 .copy-btn.copied { color: var(--success); border-color: var(--success); }
 
-.copy-text { min-width: 36px; text-align: center; }
+.copy-text { min-width: 40px; text-align: center; }
 
 /* Download Grid */
 .download-all {
@@ -586,31 +596,31 @@ a:hover { color: var(--text-primary); }
 
 .download-all h3 {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.15em;
   text-transform: uppercase;
   color: var(--text-secondary);
-  margin-bottom: 20px;
+  margin-bottom: 24px;
 }
 
 .download-grid {
   display: flex;
-  gap: 12px;
+  gap: 14px;
   justify-content: center;
   flex-wrap: wrap;
-  margin-bottom: 16px;
+  margin-bottom: 18px;
 }
 
 .download-card {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   background: var(--bg-primary);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 20px 32px;
+  padding: 24px 40px;
   color: var(--text-secondary);
   transition: border-color 0.2s, color 0.2s;
 }
@@ -626,18 +636,18 @@ a:hover { color: var(--text-primary); }
 
 .download-os {
   font-weight: 600;
-  font-size: 14px;
+  font-size: 16px;
   color: var(--text-primary);
 }
 
 .download-format {
-  font-size: 11px;
+  font-size: 13px;
   font-family: var(--font-mono);
   color: var(--text-tertiary);
 }
 
 .download-all-note {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-tertiary);
 }
 .download-all-note a { text-decoration: underline; text-underline-offset: 2px; }
@@ -652,23 +662,23 @@ a:hover { color: var(--text-primary); }
 
 .footer-brand {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 400;
   letter-spacing: 0.35em;
   color: var(--text-tertiary);
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
 .footer-author {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-secondary);
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
 .footer-links {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-tertiary);
-  margin-bottom: 16px;
+  margin-bottom: 18px;
 }
 
 .footer-links a { color: var(--text-secondary); }
@@ -676,7 +686,7 @@ a:hover { color: var(--text-primary); }
 .footer-sep { margin: 0 8px; }
 
 .footer-powered {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-tertiary);
 }
 
@@ -715,7 +725,7 @@ a:hover { color: var(--text-primary); }
   .step-connector { width: 1px; height: 24px; flex: 0 0 24px; margin: 0; }
 
   .code-block { flex-direction: column; gap: 8px; }
-  .code-block code { white-space: pre-wrap; word-break: break-all; font-size: 11px; }
+  .code-block code { white-space: pre-wrap; word-break: break-all; font-size: 12px; }
 
   .download-grid { flex-direction: column; align-items: center; }
   .download-card { width: 100%; max-width: 280px; }
@@ -724,7 +734,7 @@ a:hover { color: var(--text-primary); }
 @media (max-width: 480px) {
   .hero-title { font-size: 1.1rem; }
   .section { padding: 56px 0; }
-  .section-title { font-size: 13px; margin-bottom: 40px; }
+  .section-title { font-size: 14px; margin-bottom: 40px; }
 }
 
 @media (min-width: 769px) and (max-width: 1024px) {

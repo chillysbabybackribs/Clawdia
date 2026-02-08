@@ -124,12 +124,8 @@ export function executeSequentialThinking(
   if (!thought || typeof thought !== 'string') {
     return JSON.stringify({ error: 'thought is required and must be a string' });
   }
-  if (typeof thoughtNumber !== 'number' || thoughtNumber < 1) {
-    return JSON.stringify({ error: 'thoughtNumber must be a positive integer' });
-  }
-  if (typeof totalThoughts !== 'number' || totalThoughts < 1) {
-    return JSON.stringify({ error: 'totalThoughts must be a positive integer' });
-  }
+  const safeThoughtNumber = Number.isFinite(thoughtNumber) ? Math.max(1, Math.floor(thoughtNumber)) : 1;
+  const safeTotalThoughts = Number.isFinite(totalThoughts) ? Math.max(1, Math.floor(totalThoughts)) : 1;
 
   // Track branch
   if (branchId && branchFromThought) {
@@ -138,7 +134,7 @@ export function executeSequentialThinking(
 
   // Store thought
   const entry: ThoughtEntry = {
-    thoughtNumber,
+    thoughtNumber: safeThoughtNumber,
     thought,
     isRevision: isRevision ?? false,
     revisesThought,
@@ -154,13 +150,13 @@ export function executeSequentialThinking(
       ? `[branch: ${branchId} from #${branchFromThought}]`
       : '';
   log.debug(
-    `Thought ${thoughtNumber}/${totalThoughts} ${prefix}: ${thought.slice(0, 120)}${thought.length > 120 ? '...' : ''}`,
+    `Thought ${safeThoughtNumber}/${safeTotalThoughts} ${prefix}: ${thought.slice(0, 120)}${thought.length > 120 ? '...' : ''}`,
   );
 
   // Return acknowledgment (matches MCP server response shape)
   return JSON.stringify({
-    thoughtNumber,
-    totalThoughts,
+    thoughtNumber: safeThoughtNumber,
+    totalThoughts: Math.max(safeTotalThoughts, safeThoughtNumber),
     nextThoughtNeeded,
     branches: Array.from(branches),
     thoughtHistoryLength: thoughtHistory.length,

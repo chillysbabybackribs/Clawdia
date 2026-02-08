@@ -12,6 +12,7 @@
  */
 
 import { createLogger, perfLog } from '../logger';
+import { classifyArchetype, type TaskStrategy } from './task-archetype';
 
 const log = createLogger('intent-router');
 
@@ -224,4 +225,67 @@ function logResult(intent: Intent, reason: string, startMs: number): void {
   const elapsed = performance.now() - startMs;
   log.debug(`intent=${intent} reason=${reason} (${elapsed.toFixed(2)}ms)`);
   perfLog('intent-router', `classify-${intent}`, elapsed, { reason });
+}
+
+// ============================================================================
+// TOOL CLASS ROUTER — which tool subset is likely needed?
+// ============================================================================
+
+export type ToolClass = 'browser' | 'local' | 'all';
+
+/**
+ * Classify whether a message needs browser tools, local tools, or both.
+ * Conservative: defaults to 'all' when ambiguous.
+ */
+export function classifyToolClass(message: string): ToolClass {
+  const msg = message.trim();
+  if (!msg) return 'all';
+
+  const hasBrowser = WEB_SIGNALS.test(msg) || URL_PATTERNS.test(msg) ||
+                     SHOPPING_SIGNALS.test(msg) || NOTIFICATION_SIGNALS.test(msg) ||
+                     MEDIA_SIGNALS.test(msg) || DEMONSTRATIVE_SIGNALS.test(msg);
+  const hasLocal = FILE_PATTERNS.test(msg) || SYSTEM_SIGNALS.test(msg) ||
+                   DOCUMENT_SIGNALS.test(msg);
+
+  if (hasBrowser && !hasLocal) return 'browser';
+  if (hasLocal && !hasBrowser) return 'local';
+  return 'all';
+}
+
+// ============================================================================
+// ENRICHED INTENT — combines intent, tool class, and task archetype
+// ============================================================================
+
+export interface EnrichedIntent {
+  intent: Intent;
+  toolClass: ToolClass;
+  strategy: TaskStrategy;
+}
+
+/**
+ * Classify a user message with full archetype enrichment.
+ * Wraps classifyIntent + classifyToolClass + classifyArchetype into one call.
+ */
+export function classifyEnriched(
+  userMessage: string,
+  history: Array<{ role: string; content: string }>,
+  currentUrl?: string,
+): EnrichedIntent {
+  const intent = classifyIntent(userMessage, history);
+  const toolClass = classifyToolClass(userMessage);
+
+  const strategy: TaskStrategy =
+    intent === 'tools'
+      ? classifyArchetype(userMessage, history, currentUrl)
+      : {
+          archetype: 'unknown',
+          tier: 'llm-default',
+          score: 0,
+          steps: [],
+          systemHint: '',
+          extractedParams: {},
+          skipBrowserTools: false,
+        };
+
+  return { intent, toolClass, strategy };
 }

@@ -51,7 +51,11 @@
                     <line x1="1.5" y1="8" x2="14.5" y2="8"/>
                   </svg>
                 </button>
-                <div id="header-clock" class="header-clock">00:00</div>
+                  <div id="vault-status" class="vault-status hidden">
+                    <span class="vault-status-icon">📥</span>
+                    <span class="vault-status-text">Ingesting...</span>
+                  </div>
+                  <div id="header-clock" class="header-clock">00:00</div>
                 <div class="window-controls">
                   <button id="min-btn" class="window-btn" title="Minimize">
                     <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
@@ -77,11 +81,11 @@
             <main class="chat-area">
               <div class="tab-strip chat-tab-strip">
                 <div class="source-tabs chat-tabs" id="chat-tabs" role="tablist" aria-label="Chat conversations"></div>
+                <div id="token-stats" class="token-stats"></div>
               </div>
               <div class="chat-scroll-region">
                 <div id="output" class="output"></div>
               </div>
-              <div class="chat-footer">Built with ❤️</div>
             </main>
 
             <!-- Input Section -->
@@ -359,6 +363,19 @@
                 </div>
                 <input type="password" id="bing-key" placeholder="Bing API key">
               </div>
+
+              <div class="settings-section-label">Linked Accounts</div>
+              <div id="accounts-list" class="accounts-list"></div>
+              <div id="add-account-form" class="hidden" style="margin-top:8px">
+                <input type="text" id="add-account-platform" placeholder="Platform (e.g. Gmail)">
+                <input type="text" id="add-account-username" placeholder="Username or email">
+                <input type="text" id="add-account-domain" placeholder="Domain (e.g. mail.google.com)">
+                <div class="settings-inline-actions" style="margin-top:6px">
+                  <button id="save-account-btn" class="primary" type="button">Save</button>
+                  <button id="cancel-account-btn" class="secondary" type="button">Cancel</button>
+                </div>
+              </div>
+              <button id="add-account-btn" class="secondary" type="button" style="margin-top:6px">+ Add Account</button>
 
               <button id="save-settings" class="primary">Save</button>
             </div>

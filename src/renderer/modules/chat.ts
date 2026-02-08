@@ -1,4 +1,4 @@
-import type { DocumentAttachment, DocumentMeta, ImageAttachment } from '../../shared/types';
+import type { DocumentAttachment, DocumentMeta, ImageAttachment, ToolCall } from '../../shared/types';
 import { hideArcade, resetArcadeDismissed, showArcade } from '../arcade/menu';
 import { clearPendingAttachments, renderMessageImages, showAttachmentError } from './attachments';
 import { closeBrowserMenu, handleOutsideClick, handleSourceLinkClick } from './browser';
@@ -16,7 +16,7 @@ import {
   type ChatTab,
 } from './state';
 import { appendError, handleOutputWheel, hideThinking, isOutputNearBottom, scrollToBottom, setStreaming, showThought, updateOutputAutoFollowState } from './stream';
-import { resetToolActivity } from './tool-activity';
+import { startActivityFeed, renderStaticActivityFeed } from './activity-feed';
 
 // ============================================================
 // STRUCTURAL MAP (from pre-split renderer audit)
@@ -82,6 +82,7 @@ export function initChat(): void {
   });
 
   elements.outputEl.addEventListener('click', handleSourceLinkClick);
+  elements.outputEl.addEventListener('pointerdown', handleFileLinkClick);
   elements.outputEl.addEventListener('click', handleCodeCopyClick);
   elements.outputEl.addEventListener('scroll', updateOutputAutoFollowState, { passive: true });
   elements.outputEl.addEventListener('wheel', handleOutputWheel, { passive: true });
@@ -94,6 +95,24 @@ function updateEmptyState(): void {
     hideArcade();
   } else {
     showArcade(elements.outputEl);
+  }
+}
+
+async function handleFileLinkClick(event: Event): Promise<void> {
+  const target = (event.target as HTMLElement).closest('a.file-link') as HTMLAnchorElement | null;
+  if (!target) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (target.dataset.opening === 'true') return;
+  const filePath = target.dataset.filePath || target.title || target.textContent || '';
+  if (!filePath) return;
+  target.dataset.opening = 'true';
+  target.classList.add('is-opening');
+  const result = await window.api.openFileInApp(filePath);
+  target.classList.remove('is-opening');
+  target.dataset.opening = 'false';
+  if (result?.error) {
+    showAttachmentError(result.error);
   }
 }
 
@@ -330,10 +349,15 @@ function renderChatTabs(): void {
   elements.chatTabsContainer.appendChild(addBtn);
 }
 
-function renderConversationMessages(messages: Array<{ role: string; content: string; images?: ImageAttachment[]; documents?: DocumentMeta[] }>): void {
+function renderConversationMessages(messages: Array<{ role: string; content: string; images?: ImageAttachment[]; documents?: DocumentMeta[]; toolCalls?: ToolCall[] }>): void {
   for (const msg of messages) {
     if (msg.role === 'user') {
-      appendUserMessage(msg.content, false, msg.images, msg.documents);
+      const userEl = appendUserMessage(msg.content, false, msg.images, msg.documents);
+
+      // Hydrate activity feed from toolCalls if present
+      if (msg.toolCalls && msg.toolCalls.length > 0) {
+        renderStaticActivityFeed(msg.toolCalls, userEl);
+      }
       continue;
     }
     if (msg.role === 'assistant') {
@@ -371,6 +395,7 @@ async function switchChatTab(
   setChatTabTitle(conversationId, deriveChatTabTitle(conversation as ChatConversation));
   renderChatTabs();
 
+  document.dispatchEvent(new CustomEvent('clawdia:conversation:reset'));
   elements.outputEl.innerHTML = '';
   renderConversationMessages(conversation.messages);
   updateEmptyState();
@@ -529,26 +554,26 @@ async function sendMessage(): Promise<void> {
 
   const images: ImageAttachment[] | undefined = hasImages
     ? appState.pendingAttachments.map((a) => ({
-        base64: a.base64,
-        mediaType: a.mediaType,
-        width: a.width,
-        height: a.height,
-      }))
+      base64: a.base64,
+      mediaType: a.mediaType,
+      width: a.width,
+      height: a.height,
+    }))
     : undefined;
 
   const documents: DocumentAttachment[] | undefined = hasDocs
     ? appState.pendingDocuments
-        .filter((d) => d.extractionStatus === 'done' && d.extractedText)
-        .map((d) => ({
-          filename: d.filename,
-          originalName: d.filename,
-          mimeType: d.mimeType,
-          sizeBytes: d.sizeBytes,
-          extractedText: d.extractedText!,
-          pageCount: d.pageCount,
-          sheetNames: d.sheetNames,
-          truncated: d.truncated,
-        }))
+      .filter((d) => d.extractionStatus === 'done' && d.extractedText)
+      .map((d) => ({
+        filename: d.filename,
+        originalName: d.filename,
+        mimeType: d.mimeType,
+        sizeBytes: d.sizeBytes,
+        extractedText: d.extractedText!,
+        pageCount: d.pageCount,
+        sheetNames: d.sheetNames,
+        truncated: d.truncated,
+      }))
     : undefined;
 
   const documentMetas: DocumentMeta[] | undefined = documents?.map((d) => ({
@@ -561,8 +586,8 @@ async function sendMessage(): Promise<void> {
     truncated: d.truncated,
   }));
 
-  resetToolActivity();
-  appendUserMessage(content, true, images, documentMetas);
+  const userMessageEl = appendUserMessage(content, true, images, documentMetas);
+  startActivityFeed(userMessageEl);
   showThought('Thinking...');
   elements.promptEl.value = '';
   elements.promptEl.focus();
@@ -613,7 +638,7 @@ async function sendMessage(): Promise<void> {
   await loadConversations();
 }
 
-function appendUserMessage(content: string, shouldScroll: boolean = true, images?: ImageAttachment[], documents?: DocumentMeta[]): void {
+function appendUserMessage(content: string, shouldScroll: boolean = true, images?: ImageAttachment[], documents?: DocumentMeta[]): HTMLDivElement {
   hideArcade();
   const wrapper = document.createElement('div');
   wrapper.className = 'user-message';
@@ -642,6 +667,7 @@ function appendUserMessage(content: string, shouldScroll: boolean = true, images
   if (shouldScroll) {
     scrollToBottom();
   }
+  return wrapper;
 }
 
 async function loadConversations(): Promise<void> {

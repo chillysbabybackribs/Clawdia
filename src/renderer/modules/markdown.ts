@@ -64,6 +64,7 @@ const PURIFY_CONFIG = {
   ALLOWED_ATTR: [
     'href', 'target', 'rel', 'class', 'title', 'type', 'aria-label',
     'data-source-url', 'data-source-title',
+    'data-file-path',
     // SVG attributes for copy-button icon
     'viewBox', 'fill', 'stroke', 'stroke-width', 'stroke-linecap',
     'stroke-linejoin', 'd', 'x1', 'y1', 'x2', 'y2',
@@ -72,7 +73,7 @@ const PURIFY_CONFIG = {
     // inline style (needed for favicon fallback display toggling)
     'style',
   ],
-  ALLOW_DATA_ATTR: false,
+  ALLOW_DATA_ATTR: true,
   ALLOWED_URI_REGEXP: /^(?:https?|mailto):/i,
 };
 
@@ -234,7 +235,70 @@ export function renderMarkdown(text: string, skipCache = false): string {
     )}</a>`;
   });
 
+  html = linkifyFilePaths(html);
+
   const result = sanitizeHtml(`<p>${html}</p>`);
   if (!skipCache) setCachedMarkdown(cacheKey, result);
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// File path linkify — turns file paths into clickable links for openFile
+// ---------------------------------------------------------------------------
+const FILE_PATH_RE = /(?:~\/|\/)(?:[^\s<>"']+\.[A-Za-z0-9]{2,8})|[A-Za-z]:\\(?:[^\\\s<>"']+\\)+[^\\\s<>"']+\.[A-Za-z0-9]{2,8}/g;
+
+function linkifyFilePaths(html: string): string {
+  const container = document.createElement('div');
+  container.innerHTML = html;
+
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  while (walker.nextNode()) {
+    nodes.push(walker.currentNode as Text);
+  }
+
+  for (const node of nodes) {
+    const text = node.nodeValue;
+    if (!text || !FILE_PATH_RE.test(text)) {
+      FILE_PATH_RE.lastIndex = 0;
+      continue;
+    }
+    FILE_PATH_RE.lastIndex = 0;
+    const parentEl = node.parentElement;
+    if (parentEl && (parentEl.closest('pre') || parentEl.closest('a'))) {
+      continue;
+    }
+    const isInlineCode = Boolean(parentEl?.closest('code'));
+
+    const frag = document.createDocumentFragment();
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = FILE_PATH_RE.exec(text)) !== null) {
+      const filePath = match[0];
+      const start = match.index;
+      if (start > lastIndex) {
+        frag.appendChild(document.createTextNode(text.slice(lastIndex, start)));
+      }
+
+      const link = document.createElement('a');
+      link.className = isInlineCode ? 'file-link code-link' : 'file-link';
+      link.dataset.filePath = filePath;
+      link.setAttribute('href', '#');
+      link.setAttribute('aria-label', `Open ${filePath}`);
+      link.title = filePath;
+      const parts = filePath.split(/[\\/]/);
+      link.textContent = parts[parts.length - 1] || filePath;
+      frag.appendChild(link);
+
+      lastIndex = start + filePath.length;
+    }
+
+    if (lastIndex < text.length) {
+      frag.appendChild(document.createTextNode(text.slice(lastIndex)));
+    }
+
+    node.parentNode?.replaceChild(frag, node);
+  }
+
+  return container.innerHTML;
 }

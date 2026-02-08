@@ -4,8 +4,10 @@ import { escapeHtml } from './markdown';
 import { appState, elements } from './state';
 import { hideThinking, setStreaming } from './stream';
 import { setSetupMode } from './setup';
+import { initAccountsUI, loadAccountsList } from './accounts-ui';
 
 export function initSettings(): void {
+  initAccountsUI();
   elements.readmeToggle.addEventListener('click', toggleReadme);
   elements.readmeClose.addEventListener('click', () => setReadmeVisible(false));
   elements.readmeView.addEventListener('click', (e) => {
@@ -29,6 +31,7 @@ export function initSettings(): void {
       elements.changeApiKeyInput.type = 'password';
       setVisibilityToggleState(elements.changeApiKeyVisibilityBtn, false);
       setChangeKeyError(null);
+      void loadAccountsList();
     } catch {
       // Ignore settings load failures.
     }

@@ -7,8 +7,10 @@ import { initSettings, syncAllModelSelects } from './modules/settings';
 import { initSetup, setSetupMode } from './modules/setup';
 import { appState, initElements } from './modules/state';
 import { initStream } from './modules/stream';
-import { initToolActivity } from './modules/tool-activity';
 import { initAffirmationWidget } from './modules/affirmation-widget';
+import { initActivityFeed } from './modules/activity-feed';
+import { initTokenStats } from './modules/token-stats';
+import { initVaultUI } from './modules/vault-ui';
 
 function initClock(): void {
   const clockElement = document.getElementById('header-clock');
@@ -35,12 +37,15 @@ async function init(): Promise<void> {
   initDocuments();
   initAttachments();
   initStream();
-  initToolActivity();
+  initActivityFeed();
+  initTokenStats();
   initBrowser();
   initSettings();
   initSetup();
   initChat();
   initAffirmationWidget();
+  initAffirmationWidget();
+  initVaultUI();
   initClock();
 
   requestAnimationFrame(() => syncBrowserBounds());

@@ -162,8 +162,11 @@
 
   var video = document.getElementById('hero-video');
   var fallback = document.getElementById('video-fallback');
+  var heroMedia = document.getElementById('hero-media');
 
   if (video && fallback) {
+    video.playbackRate = 2;
+
     video.addEventListener('canplay', function () {
       fallback.style.display = 'none';
       video.style.opacity = '1';
@@ -180,6 +183,26 @@
     video.addEventListener('error', function () {
       video.style.display = 'none';
       fallback.style.display = 'flex';
+    });
+  }
+
+  if (heroMedia) {
+    var toggleHeroMedia = function () {
+      heroMedia.classList.toggle('is-expanded');
+      var isExpanded = heroMedia.classList.contains('is-expanded');
+      heroMedia.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+
+      if (isExpanded) {
+        // No auto-scroll when expanded; it floats above the layout.
+      }
+    };
+
+    heroMedia.addEventListener('click', toggleHeroMedia);
+    heroMedia.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        toggleHeroMedia();
+      }
     });
   }
 

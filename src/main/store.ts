@@ -1,6 +1,7 @@
 import Store from 'electron-store';
 import * as fs from 'fs';
 import { DEFAULT_MODEL } from '../shared/models';
+import type { UserAccount } from '../shared/accounts';
 import { createLogger } from './logger';
 
 const log = createLogger('store');
@@ -33,6 +34,9 @@ export interface ClawdiaStoreSchema {
   conversations?: unknown[];
   chat_tab_state?: ChatTabState;
   browserHistory?: BrowserHistoryEntry[];
+  userAccounts?: UserAccount[];
+  /** Cached fast-path tool availability results (yt-dlp, wget, etc.) */
+  fastPathToolStatus?: Record<string, unknown>;
 
   // Legacy key used by older builds before BYOK migration.
   anthropic_api_key?: string;
@@ -43,7 +47,7 @@ export interface ClawdiaStoreSchema {
 // ============================================================================
 
 /** Increment this every time the store schema changes. */
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 
 export interface Migration {
   version: number;
@@ -77,8 +81,15 @@ export const migrations: Migration[] = [
       }
     },
   },
-  // Future migrations:
-  // { version: 2, description: '...', migrate: (s) => { ... } },
+  {
+    version: 2,
+    description: 'Initialize userAccounts',
+    migrate: (s) => {
+      if (!s.get('userAccounts')) {
+        s.set('userAccounts', []);
+      }
+    },
+  },
 ];
 
 // ============================================================================

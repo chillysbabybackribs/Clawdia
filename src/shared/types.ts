@@ -70,6 +70,52 @@ export interface ToolCall {
   result?: string;
 }
 
+// ---------------------------------------------------------------------------
+// TOOL EXECUTION EVENT TYPES (live activity feed)
+// ---------------------------------------------------------------------------
+
+export interface ToolExecStartEvent {
+  toolName: string;
+  toolId: string;
+  args: Record<string, unknown>;
+  timestamp: number;
+}
+
+export interface ToolExecCompleteEvent {
+  toolId: string;
+  status: 'success' | 'error';
+  duration: number;
+  summary: string;
+}
+
+export interface ToolStepProgressEvent {
+  toolId: string;
+  stepIndex: number;
+  totalSteps: number;
+  action: string;
+  status: 'success' | 'error' | 'skipped';
+  duration: number;
+}
+
+export interface ToolLoopCompleteEvent {
+  totalTools: number;
+  totalDuration: number;
+  failures: number;
+}
+
+// ---------------------------------------------------------------------------
+// TOKEN USAGE EVENTS
+// ---------------------------------------------------------------------------
+
+export interface TokenUsageUpdateEvent {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
+  model: string;
+  timestamp: number;
+}
+
 // ============================================================================
 // TOOL ACTIVITY TYPES (anti-fabrication tracking)
 // ============================================================================
@@ -163,6 +209,12 @@ export interface ToolResult<T = unknown> {
 // ============================================================================
 // LLM TYPES
 // ============================================================================
+
+export interface Tool {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+}
 
 export interface LLMConfig {
   provider: 'anthropic' | 'openai';

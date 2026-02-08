@@ -1,11 +1,54 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { Message } from '../../shared/types';
-import { DEFAULT_MODEL } from '../../shared/models';
+import { DEFAULT_MODEL, getModelConfig } from '../../shared/models';
 import { RateLimiter } from '../rate-limiter';
 import { usageTracker } from '../usage-tracker';
 import { createLogger } from '../logger';
 
 const log = createLogger('llm-client');
+
+// ============================================================================
+// CACHE METRICS
+// ============================================================================
+
+export interface CacheMetrics {
+  /** Total input tokens (fresh + cache_read + cache_creation) */
+  totalInputTokens: number;
+  /** Cache hit rate as a percentage [0, 100] */
+  hitRate: number;
+  /** Formatted hit rate string with one decimal */
+  hitRateStr: string;
+}
+
+/**
+ * Compute prompt-caching metrics from Anthropic API usage fields.
+ *
+ * Anthropic docs: "Total input tokens is the summation of input_tokens,
+ * cache_creation_input_tokens, and cache_read_input_tokens."
+ *
+ * `input_tokens` is the fresh (non-cached) portion, NOT the total.
+ */
+export function computeCacheMetrics(
+  freshTokens: number,
+  cacheReadTokens: number,
+  cacheCreateTokens: number
+): CacheMetrics {
+  // Clamp inputs to non-negative to prevent impossible values
+  const f = Math.max(0, freshTokens);
+  const r = Math.max(0, cacheReadTokens);
+  const c = Math.max(0, cacheCreateTokens);
+
+  const totalInputTokens = f + r + c;
+  const hitRate = totalInputTokens > 0 ? (r / totalInputTokens) * 100 : 0;
+  // Clamp to [0, 100] as a safety net
+  const clampedHitRate = Math.min(100, Math.max(0, hitRate));
+
+  return {
+    totalInputTokens,
+    hitRate: clampedHitRate,
+    hitRateStr: clampedHitRate.toFixed(1),
+  };
+}
 
 // ============================================================================
 // TYPES
@@ -68,6 +111,11 @@ export class AnthropicClient {
     options?: {
       maxTokens?: number;
       onToolUse?: (toolUse: ToolUse) => Promise<string> | string | undefined;
+      model?: string;
+      signal?: AbortSignal;
+      dynamicSystemPrompt?: string;
+      enableCompaction?: boolean;
+      enableContextEditing?: boolean;
     }
   ): Promise<LLMResponse> {
     // Convert messages to Anthropic format
@@ -108,22 +156,74 @@ export class AnthropicClient {
       }
     }
 
-    log.info(`[API Request] model=${this.model} | endpoint=messages.create | stream=true | maxTokens=${options?.maxTokens ?? 4096} | msgCount=${anthropicMessages.length} | toolCount=${toolsWithCaching.length}`);
+    const requestModel = options?.model ?? this.model;
+    log.info(`[API Request] model=${requestModel} | endpoint=messages.create | stream=true | maxTokens=${options?.maxTokens ?? 4096} | msgCount=${anthropicMessages.length} | toolCount=${toolsWithCaching.length}`);
 
-    const response = await this.client.messages.create({
-      model: this.model,
+    // Build system blocks: static prompt gets cache_control for reuse across calls;
+    // dynamic prompt (date, accounts, model label) is small and uncached.
+    // Skip empty blocks — Anthropic rejects cache_control on empty text.
+    const systemBlocks: Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }> = [];
+    if (systemPrompt) {
+      systemBlocks.push({
+        type: 'text' as const,
+        text: systemPrompt,
+        cache_control: { type: 'ephemeral' as const },
+      });
+    }
+    if (options?.dynamicSystemPrompt) {
+      systemBlocks.push({
+        type: 'text' as const,
+        text: options.dynamicSystemPrompt,
+      });
+    }
+
+    // Build beta headers and context management edits for supported models
+    const modelConfig = getModelConfig(requestModel);
+    const betas: string[] = [];
+    const contextEdits: any[] = [];
+
+    const allowContextManagement = Boolean(modelConfig?.supportsCompaction && modelConfig?.tier !== 'opus');
+
+    if (options?.enableCompaction && allowContextManagement) {
+      betas.push('compact-2026-01-12');
+      contextEdits.push({
+        type: 'compact_20260112',
+        trigger: { type: 'input_tokens', value: 100_000 },
+        instructions: 'Preserve: current task state, tool results from the last 2 iterations, file paths and code snippets being worked on, user\'s original request. Summarize: earlier tool results, completed sub-tasks, exploration that led to dead ends.',
+      });
+    }
+
+    if (options?.enableContextEditing && allowContextManagement) {
+      betas.push('context-management-2025-06-27');
+      contextEdits.push({ type: 'clear_tool_uses_20250919' });
+    }
+
+    const createParams: Record<string, unknown> = {
+      model: requestModel,
       max_tokens: options?.maxTokens ?? 4096,
-      system: [
-        {
-          type: 'text' as const,
-          text: systemPrompt,
-          cache_control: { type: 'ephemeral' as const },
-        },
-      ],
       messages: anthropicMessages,
-      tools: toolsWithCaching,
-      stream: true,
-    });
+      stream: true as const,
+    };
+    if (systemBlocks.length > 0) {
+      createParams.system = systemBlocks;
+    }
+    if (toolsWithCaching.length > 0) {
+      createParams.tools = toolsWithCaching;
+    }
+
+    if (betas.length > 0) {
+      createParams.betas = betas;
+    }
+    if (contextEdits.length > 0) {
+      createParams.context_management = { edits: contextEdits };
+    }
+    if (modelConfig?.tier === 'opus') {
+      delete createParams.context_management;
+    }
+
+    const response = await (this.client.messages.create as any)(createParams, {
+      signal: options?.signal,
+    }) as AsyncIterable<any>;
 
     // Accumulate streamed response
     const contentBlocks: ContentBlock[] = [];
@@ -206,6 +306,10 @@ export class AnthropicClient {
       }
     }
 
+    // Log prompt caching metrics for observability.
+    const cm = computeCacheMetrics(inputTokens, cacheReadInputTokens, cacheCreationInputTokens);
+    log.info(`[Cache] hitRate=${cm.hitRateStr}% | freshTokens=${inputTokens} cacheRead=${cacheReadInputTokens} cacheCreate=${cacheCreationInputTokens} totalInput=${cm.totalInputTokens} outputTokens=${outputTokens}`);
+
     return {
       content: contentBlocks,
       stopReason,
@@ -217,6 +321,54 @@ export class AnthropicClient {
         cacheCreationInputTokens,
       },
     };
+  }
+
+  /**
+   * Non-streaming completion for lightweight extraction calls.
+   * Goes through the shared rate limiter and usage tracker.
+   */
+  async complete(
+    messages: Anthropic.MessageParam[],
+    options?: {
+      maxTokens?: number;
+      model?: string;
+      signal?: AbortSignal;
+    }
+  ): Promise<{ text: string; usage: LLMResponse['usage'] }> {
+    const anthropicLimiter = RateLimiter.getInstance('anthropic', {
+      maxTokens: 20,
+      refillRate: 10,
+      maxQueueDepth: 10,
+      maxWaitMs: 10_000,
+    });
+    await anthropicLimiter.acquire();
+    usageTracker.trackApiCall('anthropic');
+
+    const requestModel = options?.model ?? this.model;
+    log.info(`[API Request] model=${requestModel} | endpoint=complete | stream=false | maxTokens=${options?.maxTokens ?? 1024}`);
+
+    const response = await this.client.messages.create({
+      model: requestModel,
+      max_tokens: options?.maxTokens ?? 1024,
+      messages,
+    }, {
+      signal: options?.signal,
+    });
+
+    const text = response.content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map((b) => b.text)
+      .join('\n');
+
+    const usage: LLMResponse['usage'] = {
+      inputTokens: response.usage?.input_tokens || 0,
+      outputTokens: response.usage?.output_tokens || 0,
+      cacheReadInputTokens: (response.usage as any)?.cache_read_input_tokens || 0,
+      cacheCreationInputTokens: (response.usage as any)?.cache_creation_input_tokens || 0,
+    };
+
+    log.info(`[Complete] model=${requestModel} | input=${usage.inputTokens} output=${usage.outputTokens}`);
+    return { text, usage };
   }
 
   /**

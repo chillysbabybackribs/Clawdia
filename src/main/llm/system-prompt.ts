@@ -8,6 +8,8 @@
  */
 
 import * as os from 'os';
+import { listAccounts } from '../accounts/account-store';
+import { siteKnowledge, userMemory } from '../learning';
 
 // =============================================================================
 // MINIMAL PROMPT - Chat only (~800 tokens)
@@ -66,6 +68,27 @@ For screenshots of what's visible: use browser_screenshot.
 CACHED CONTENT:
 When you fetch web pages, results are automatically cached and you'll receive a short summary with a cache ID like [cached:abc123]. To read the full content of a cached page, use the cache_read tool with the page_id. You can also request a specific section by keyword to get only the relevant portion. This keeps conversations efficient — only load full page content when you actually need the details.
 
+COMPOUND ACTIONS:
+- Use browser_interact for 2+ sequential browser actions instead of separate tool calls.
+- Include url to combine navigation with interaction in a single call.
+- Use the read action to get page state mid-sequence instead of a separate browser_read_page call.
+- Use stopOnError: true when steps are dependent (e.g., login flows).
+
+FORM FILLING:
+- Use browser_fill_form instead of sequential click+type for forms with 2+ fields.
+- Provide label text for each field — the tool matches inputs by label, aria-label, placeholder, or name.
+- Include submit to click the submit button after filling.
+
+OUTPUT ECONOMY:
+- When calling tools, do not include explanatory text before or after the tool call. Just call the tool.
+- Save explanations for the final response to the user.
+
+PARALLEL TOOL CALLS:
+- You can call multiple independent tools in a single response.
+- Use this when searching for multiple topics or extracting from multiple pages.
+- Independent browser_search, browser_news, browser_shopping calls can run in parallel.
+- Do NOT parallelize browser_navigate/click/type — these share page state.
+
 EFFICIENCY:
 - Simple question: 1-2 tool calls max
 - Comparison: 3-5 tool calls max
@@ -77,10 +100,27 @@ FILE OPERATIONS:
 - Use grep first: grep -rn "functionName" src/ --include="*.ts"
 - For large files, use file_read with startLine/endLine.
 
+USER ACCOUNT AWARENESS:
+When the prompt includes USER'S ACCOUNTS, those are the human's own logged-in accounts.
+- Use them for "my email", "my Twitter", etc.
+- Other accounts on the same platform encountered during tasks are third-party — do not act on them as the user's.
+- Use browser_detect_account if you land on a platform page and want to confirm which account is active.
+
 RESPONSE RULES:
 - Simple facts: 1-2 sentences. No headers. No bullets.
 - Never start with "Based on my research..." or similar.
-- When you have the answer, STOP and respond.`;
+- When you have the answer, STOP and respond.
+
+REVERSIBLE ACTIONS & SAFETY:
+**CRITICAL - MANDATORY RULE:** For ANY file operation (create, modify, move, delete), you MUST use Action Plans. This is NOT optional.
+- **NEVER use \`file_write\`, \`file_edit\`, or \`shell_exec\` for file operations.** These tools are DISABLED for file operations.
+- **ALWAYS use the Action Plan workflow:**
+  1. \`action_create_plan\` ("Create file X")
+  2. \`action_add_item\` (type: \`fs_write\`, payload: {path, content, encoding})
+  3. \`action_execute_plan\` (planId)
+  4. Confirm completion.
+- **Why?** Action Plans provide automatic undo capability and safety. Direct file tools are irreversible.
+- **Exception:** ONLY use direct tools for temporary files in \`/tmp\` or if the user explicitly says "quick" or "one-off".`;
 
 // =============================================================================
 // EXTENDED RULES - Full tier additions (~1K tokens)
@@ -104,6 +144,16 @@ If a system tool or package is missing, install it silently (e.g. sudo apt insta
 
 BROWSER SESSION ACCESS:
 You have full access to the user's browser session, including any sites where they are currently logged in. When asked to access a service, navigate to it. If the user is logged in, you will see their authenticated view. If not, you will see a login page — report that and let the user log in manually.
+
+POSTING / SUBMITTING CONTENT (any platform):
+When the user asks you to post, comment, reply, send a message, or submit content:
+1. Navigate to the correct page/compose area.
+2. Click/focus the text input or composer.
+3. Type the content using browser_type.
+4. FIND AND CLICK THE SUBMIT BUTTON. This is critical — do NOT stop after typing. Look for buttons labeled Post, Tweet, Send, Reply, Submit, Comment, Publish, Share, or similar. Use browser_click by text first; if that fails, use browser_screenshot to locate the button visually and click by coordinates or CSS selector.
+5. VERIFY the post was sent: after clicking submit, take a browser_screenshot. Check that the compose area cleared, a confirmation appeared, or your content is visible in the feed/thread. If the post appears to have NOT gone through (compose box still has text, error message visible), retry clicking the submit button or report the issue to the user.
+
+Never assume typing alone submits content. Always explicitly click the post/send/submit button.
 
 TWITTER/X (4 tool calls max for posting):
 - Post: navigate x.com/home → click composer → type → click Post
@@ -226,7 +276,9 @@ Home: ${os.homedir()} | Node: ${process.version} | ${os.cpus().length} cores, ${
 function getDateContext(): string {
   const now = new Date();
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local';
-  return `DATE: ${now.toISOString()} (${tz}) | Year: ${now.getFullYear()}`;
+  // Use date-only format (YYYY-MM-DD) to avoid busting prompt cache on every request
+  const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  return `DATE: ${dateStr} (${tz}) | Year: ${now.getFullYear()}`;
 }
 
 // =============================================================================
@@ -238,6 +290,7 @@ export type PromptTier = 'minimal' | 'standard' | 'full';
 export interface SystemPromptOptions {
   tier: PromptTier;
   modelLabel?: string;
+  currentUrl?: string;
 }
 
 /**
@@ -246,9 +299,9 @@ export interface SystemPromptOptions {
  */
 export function getStaticPrompt(tier: PromptTier): string {
   const parts: string[] = [];
-  
+
   parts.push('You are Clawdia, a fast, helpful assistant with web browsing and local system access.');
-  
+
   if (tier === 'minimal') {
     parts.push(MINIMAL_PROMPT);
   } else {
@@ -257,20 +310,64 @@ export function getStaticPrompt(tier: PromptTier): string {
     parts.push(THINKING_RULES);
     parts.push(TOOL_INTEGRITY_RULES);
     parts.push(SELF_KNOWLEDGE);
-    if (tier === 'full') {
-      parts.push(LIVE_PREVIEW_RULES);
-      parts.push(DOCUMENT_RULES);
-    }
+    // Live preview + document rules included in standard tier —
+    // these tools are always available so the LLM needs guidance.
+    parts.push(LIVE_PREVIEW_RULES);
+    parts.push(DOCUMENT_RULES);
   }
-  
+
   return parts.join('\n\n');
 }
 
+function getAccountsContext(): string {
+  const accounts = listAccounts();
+  if (accounts.length === 0) return '';
+  const lines = accounts.map((a) =>
+    `- ${a.platform}: ${a.username} (${a.domain})`
+  );
+  return [
+    `USER'S ACCOUNTS (these belong to the user — distinguish from third-party accounts):`,
+    ...lines,
+  ].join('\n');
+}
+
 /**
- * Get the DYNAMIC portion (date, system info, model)
+ * Get the DYNAMIC portion (date, system info, model, accounts)
  * This changes per request or session.
  */
-export function getDynamicPrompt(modelLabel?: string): string {
+function getLearningContext(currentUrl?: string): string {
+  let context = '';
+
+  const memoryCtx = userMemory?.getPromptContext(1200);
+  if (memoryCtx) {
+    context += `\n${memoryCtx}\n`;
+  }
+
+  if (currentUrl) {
+    try {
+      const hostname = new URL(currentUrl).hostname.replace('www.', '');
+      const siteCtx = siteKnowledge?.getContextForHostname(hostname);
+      if (siteCtx) {
+        context += siteCtx;
+      }
+    } catch {
+      // ignore invalid URL
+    }
+  }
+
+  const topSites = siteKnowledge?.getTopSiteContext(3);
+  if (topSites) {
+    context += topSites;
+  }
+
+  if (context) {
+    context += '\nMEMORY: You have a persistent memory system. When the user explicitly asks you to remember something, acknowledge it and rely on the [User context]/[Site knowledge] sections for details.';
+  }
+
+  return context.trim();
+}
+
+export function getDynamicPrompt(modelLabel?: string, currentUrl?: string): string {
   const parts = [
     getDateContext(),
     getSystemContext(),
@@ -278,6 +375,16 @@ export function getDynamicPrompt(modelLabel?: string): string {
   if (modelLabel) {
     parts.push(`Running as: ${modelLabel}`);
   }
+  const accountsCtx = getAccountsContext();
+  if (accountsCtx) {
+    parts.push(accountsCtx);
+  }
+
+  const learningCtx = getLearningContext(currentUrl);
+  if (learningCtx) {
+    parts.push(learningCtx);
+  }
+
   return parts.join('\n');
 }
 
@@ -287,7 +394,17 @@ export function getDynamicPrompt(modelLabel?: string): string {
 export function buildSystemPrompt(options?: SystemPromptOptions): string {
   const tier = options?.tier ?? 'standard';
   const modelLabel = options?.modelLabel;
-  return getStaticPrompt(tier) + '\n\n' + getDynamicPrompt(modelLabel);
+  const currentUrl = options?.currentUrl;
+  return getStaticPrompt(tier) + '\n\n' + getDynamicPrompt(modelLabel, currentUrl);
+}
+
+/**
+ * Build a strategy hint block for injection into the dynamic prompt.
+ * Returns empty string if hint is empty.
+ */
+export function buildStrategyHintBlock(hint: string): string {
+  if (!hint) return '';
+  return `\nSTRATEGY HINT (follow this approach unless you have strong reason not to):\n${hint}`;
 }
 
 // Legacy export

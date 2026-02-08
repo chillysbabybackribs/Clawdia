@@ -42,6 +42,9 @@ const TOOL_ICONS: Record<string, string> = {
   process_manager: '⚙️',
   create_document: '📝',
   sequential_thinking: '🧠',
+  vault_search: '🔍',
+  vault_ingest: '📥',
+  action_plan: '📋',
 };
 
 function getToolIcon(name: string): string {
@@ -148,9 +151,9 @@ function renderEntries(): void {
 
     const statusIndicator =
       entry.status === 'running' ? '<span class="tool-activity-spinner"></span>' :
-      entry.status === 'success' ? '<span class="tool-activity-check">✓</span>' :
-      entry.status === 'error' ? '<span class="tool-activity-error-icon">✗</span>' :
-      '<span class="tool-activity-skip">—</span>';
+        entry.status === 'success' ? '<span class="tool-activity-check">✓</span>' :
+          entry.status === 'error' ? '<span class="tool-activity-error-icon">✗</span>' :
+            '<span class="tool-activity-skip">—</span>';
 
     item.innerHTML = `
       <div class="tool-activity-item-header">
@@ -163,6 +166,27 @@ function renderEntries(): void {
       ${entry.error ? `<div class="tool-activity-error">${escapeText(entry.error)}</div>` : ''}
       ${entry.resultPreview && entry.status === 'success' ? `<div class="tool-activity-result">${escapeText(entry.resultPreview.slice(0, 150))}${entry.resultPreview.length > 150 ? '...' : ''}</div>` : ''}
     `;
+
+    if ((entry.name === 'execute_plan' || entry.name.includes('action_execute')) && entry.status === 'success') {
+      const undoBtn = document.createElement('button');
+      undoBtn.className = 'tool-activity-undo-btn';
+      undoBtn.textContent = 'Undo';
+      undoBtn.onclick = (e) => {
+        e.stopPropagation();
+        const planId = (entry.input as any).planId;
+        if (planId) {
+          undoBtn.disabled = true;
+          undoBtn.textContent = 'Undoing...';
+          window.api.actionUndoPlan(planId).then(() => {
+            undoBtn.textContent = 'Undone';
+          }).catch(err => {
+            undoBtn.textContent = 'Failed';
+            console.error(err);
+          });
+        }
+      };
+      item.appendChild(undoBtn);
+    }
 
     listEl.appendChild(item);
   }

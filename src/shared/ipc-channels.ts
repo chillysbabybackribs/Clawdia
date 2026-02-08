@@ -56,6 +56,8 @@ export const IPC = {
   DOCUMENT_EXTRACT: 'document:extract',
   DOCUMENT_SAVE: 'document:save',
   DOCUMENT_OPEN_FOLDER: 'document:open-folder',
+  FILE_OPEN: 'file:open',
+  FILE_OPEN_IN_APP: 'file:open-in-app',
 
   // Utilities
   CLIPBOARD_WRITE_TEXT: 'clipboard:write-text',
@@ -63,8 +65,34 @@ export const IPC = {
   // Logging
   LOG_LEVEL_SET: 'log:level:set',
 
+  // Accounts
+  ACCOUNTS_LIST: 'accounts:list',
+  ACCOUNTS_ADD: 'accounts:add',
+  ACCOUNTS_REMOVE: 'accounts:remove',
+
   // Store management
   STORE_RESET: 'store:reset',
+
+  // Learning / memory
+  MEMORY_GET_ALL: 'memory:get-all',
+  MEMORY_FORGET: 'memory:forget',
+  MEMORY_RESET: 'memory:reset',
+  SITE_KNOWLEDGE_GET: 'site-knowledge:get',
+  SITE_KNOWLEDGE_RESET: 'site-knowledge:reset',
+
+  // Vault
+  VAULT_INGEST_FILE: 'vault:ingest:file',
+  VAULT_SEARCH: 'vault:search',
+  VAULT_GET_JOB: 'vault:get-job',
+  VAULT_GET_DOC: 'vault:get-doc',
+
+  // Actions
+  ACTION_CREATE_PLAN: 'action:create-plan',
+  ACTION_ADD_ITEM: 'action:add-item',
+  ACTION_EXECUTE_PLAN: 'action:execute-plan',
+  ACTION_UNDO_PLAN: 'action:undo-plan',
+  ACTION_GET_PLAN: 'action:get-plan',
+  ACTION_GET_ITEMS: 'action:get-items',
 } as const;
 
 // Main → Renderer (send)
@@ -72,15 +100,22 @@ export const IPC_EVENTS = {
   // Chat streaming
   CHAT_STREAM_TEXT: 'chat:stream:text',
   CHAT_STREAM_END: 'chat:stream:end',
+  CHAT_STREAM_RESET: 'chat:stream:reset',
   CHAT_THINKING: 'chat:thinking',
   CHAT_TOOL_START: 'chat:tool:start',
   CHAT_TOOL_RESULT: 'chat:tool:result',
+  TOOL_EXEC_START: 'chat:tool-exec:start',
+  TOOL_EXEC_COMPLETE: 'chat:tool-exec:complete',
+  TOOL_STEP_PROGRESS: 'chat:tool-exec:step-progress',
+  TOOL_LOOP_COMPLETE: 'chat:tool-exec:loop-complete',
+  TOKEN_USAGE_UPDATE: 'chat:token-usage:update',
   CHAT_ERROR: 'chat:error',
   CHAT_LIVE_HTML_START: 'chat:live-html:start',
   CHAT_LIVE_HTML_END: 'chat:live-html:end',
   CHAT_TOOL_ACTIVITY: 'chat:tool:activity',
   CHAT_TOOL_ACTIVITY_SUMMARY: 'chat:tool:activity:summary',
   API_USAGE_WARNING: 'api:usage:warning',
+  CHAT_ROUTE_INFO: 'chat:route:info',
 
   // Browser state
   BROWSER_NAVIGATED: 'browser:navigated',
@@ -94,4 +129,8 @@ export const IPC_EVENTS = {
   // Documents
   DOC_PROGRESS: 'doc:progress',
   CHAT_DOCUMENT_CREATED: 'chat:document:created',
+
+  // Accounts
+  ACCOUNTS_UPDATED: 'accounts:updated',
+  VAULT_JOB_UPDATE: 'vault:job:update',
 } as const;

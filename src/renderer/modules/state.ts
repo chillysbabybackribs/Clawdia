@@ -165,6 +165,7 @@ export const elements = {} as {
   sendBtn: HTMLButtonElement;
   cancelBtn: HTMLButtonElement;
   chatAppShell: HTMLDivElement;
+  tokenStatsEl: HTMLDivElement;
   setupView: HTMLDivElement;
   setupApiKeyInput: HTMLInputElement;
   setupToggleVisibilityBtn: HTMLButtonElement;
@@ -226,6 +227,14 @@ export const elements = {} as {
   browserMenuDropdown: HTMLDivElement;
   browserMenuBody: HTMLDivElement;
   browserHiddenQuote: HTMLParagraphElement;
+  accountsList: HTMLDivElement;
+  addAccountForm: HTMLDivElement;
+  addAccountPlatform: HTMLInputElement;
+  addAccountUsername: HTMLInputElement;
+  addAccountDomain: HTMLInputElement;
+  saveAccountBtn: HTMLButtonElement;
+  cancelAccountBtn: HTMLButtonElement;
+  addAccountBtn: HTMLButtonElement;
   minBtn: HTMLElement | null;
   maxBtn: HTMLElement | null;
   closeBtn: HTMLElement | null;
@@ -254,6 +263,7 @@ export function initElements(): void {
   elements.sendBtn = required<HTMLButtonElement>('send');
   elements.cancelBtn = required<HTMLButtonElement>('cancel');
   elements.chatAppShell = required<HTMLDivElement>('chat-app-shell');
+  elements.tokenStatsEl = required<HTMLDivElement>('token-stats');
   elements.setupView = required<HTMLDivElement>('setup-view');
   elements.setupApiKeyInput = required<HTMLInputElement>('setup-api-key-input');
   elements.setupToggleVisibilityBtn = required<HTMLButtonElement>('setup-toggle-visibility');
@@ -315,6 +325,14 @@ export function initElements(): void {
   elements.browserMenuDropdown = required<HTMLDivElement>('browser-menu-dropdown');
   elements.browserMenuBody = required<HTMLDivElement>('browser-menu-body');
   elements.browserHiddenQuote = required<HTMLParagraphElement>('browser-hidden-quote');
+  elements.accountsList = required<HTMLDivElement>('accounts-list');
+  elements.addAccountForm = required<HTMLDivElement>('add-account-form');
+  elements.addAccountPlatform = required<HTMLInputElement>('add-account-platform');
+  elements.addAccountUsername = required<HTMLInputElement>('add-account-username');
+  elements.addAccountDomain = required<HTMLInputElement>('add-account-domain');
+  elements.saveAccountBtn = required<HTMLButtonElement>('save-account-btn');
+  elements.cancelAccountBtn = required<HTMLButtonElement>('cancel-account-btn');
+  elements.addAccountBtn = required<HTMLButtonElement>('add-account-btn');
   elements.minBtn = document.getElementById('min-btn');
   elements.maxBtn = document.getElementById('max-btn');
   elements.closeBtn = document.getElementById('close-btn');

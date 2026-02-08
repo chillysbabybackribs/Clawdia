@@ -1,7 +1,18 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC, IPC_EVENTS } from '../shared/ipc-channels';
 import { DEFAULT_MODEL } from '../shared/models';
-import { BrowserTabInfo, ImageAttachment, DocumentAttachment, DocProgressEvent, ToolActivityEntry, ToolActivitySummary } from '../shared/types';
+import {
+  BrowserTabInfo,
+  ImageAttachment,
+  DocumentAttachment,
+  DocProgressEvent,
+  ToolActivityEntry,
+  ToolActivitySummary,
+  ToolExecStartEvent,
+  ToolExecCompleteEvent,
+  ToolStepProgressEvent,
+  ToolLoopCompleteEvent,
+} from '../shared/types';
 import { createLogger } from './logger';
 
 const log = createLogger('preload');
@@ -14,10 +25,10 @@ type InvalidPayloadResponse = {
 function isInvalidPayloadResponse(value: unknown): value is InvalidPayloadResponse {
   return Boolean(
     value &&
-      typeof value === 'object' &&
-      'code' in (value as Record<string, unknown>) &&
-      'error' in (value as Record<string, unknown>) &&
-      (value as Record<string, unknown>).code === 'INVALID_PAYLOAD'
+    typeof value === 'object' &&
+    'code' in (value as Record<string, unknown>) &&
+    'error' in (value as Record<string, unknown>) &&
+    (value as Record<string, unknown>).code === 'INVALID_PAYLOAD'
   );
 }
 
@@ -82,6 +93,12 @@ const api = {
     return () => ipcRenderer.removeListener(IPC_EVENTS.CHAT_STREAM_END, handler);
   },
 
+  onStreamReset: (callback: () => void) => {
+    const handler = () => callback();
+    ipcRenderer.on(IPC_EVENTS.CHAT_STREAM_RESET, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.CHAT_STREAM_RESET, handler);
+  },
+
   onThinking: (callback: (thought: string) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, thought: string) => callback(thought);
     ipcRenderer.on(IPC_EVENTS.CHAT_THINKING, handler);
@@ -116,6 +133,42 @@ const api = {
     const handler = (_event: Electron.IpcRendererEvent, summary: ToolActivitySummary) => callback(summary);
     ipcRenderer.on(IPC_EVENTS.CHAT_TOOL_ACTIVITY_SUMMARY, handler);
     return () => ipcRenderer.removeListener(IPC_EVENTS.CHAT_TOOL_ACTIVITY_SUMMARY, handler);
+  },
+
+  // Live tool execution feed
+  onToolExecStart: (callback: (payload: ToolExecStartEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: ToolExecStartEvent) => callback(payload);
+    ipcRenderer.on(IPC_EVENTS.TOOL_EXEC_START, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.TOOL_EXEC_START, handler);
+  },
+
+  onToolExecComplete: (callback: (payload: ToolExecCompleteEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: ToolExecCompleteEvent) => callback(payload);
+    ipcRenderer.on(IPC_EVENTS.TOOL_EXEC_COMPLETE, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.TOOL_EXEC_COMPLETE, handler);
+  },
+
+  onToolStepProgress: (callback: (payload: ToolStepProgressEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: ToolStepProgressEvent) => callback(payload);
+    ipcRenderer.on(IPC_EVENTS.TOOL_STEP_PROGRESS, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.TOOL_STEP_PROGRESS, handler);
+  },
+
+  onToolLoopComplete: (callback: (payload: ToolLoopCompleteEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: ToolLoopCompleteEvent) => callback(payload);
+    ipcRenderer.on(IPC_EVENTS.TOOL_LOOP_COMPLETE, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.TOOL_LOOP_COMPLETE, handler);
+  },
+
+  onTokenUsageUpdate: (callback: (payload: import('../shared/types').TokenUsageUpdateEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: import('../shared/types').TokenUsageUpdateEvent) => callback(payload);
+    ipcRenderer.on(IPC_EVENTS.TOKEN_USAGE_UPDATE, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.TOKEN_USAGE_UPDATE, handler);
+  },
+  onRouteInfo: (callback: (info: { model: string; iteration: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; durationMs: number }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, info: any) => callback(info);
+    ipcRenderer.on(IPC_EVENTS.CHAT_ROUTE_INFO, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.CHAT_ROUTE_INFO, handler);
   },
 
   onLiveHtmlStart: (callback: () => void) => {
@@ -251,6 +304,12 @@ const api = {
   openDocumentFolder: (filePath: string) =>
     invokeChecked(IPC.DOCUMENT_OPEN_FOLDER, { filePath }),
 
+  openFile: (filePath: string) =>
+    invokeChecked(IPC.FILE_OPEN, { filePath }),
+
+  openFileInApp: (filePath: string) =>
+    invokeChecked(IPC.FILE_OPEN_IN_APP, { filePath }),
+
   onDocumentCreated: (callback: (data: { filePath: string; filename: string; sizeBytes: number; format: string }) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: any) => callback(data);
     ipcRenderer.on(IPC_EVENTS.CHAT_DOCUMENT_CREATED, handler);
@@ -258,9 +317,60 @@ const api = {
   },
 
   // -------------------------------------------------------------------------
+  // Accounts
+  // -------------------------------------------------------------------------
+  listAccounts: () => invokeChecked(IPC.ACCOUNTS_LIST),
+  addAccount: (data: { domain: string; platform: string; username: string; profileUrl: string }) =>
+    invokeChecked(IPC.ACCOUNTS_ADD, data),
+  removeAccount: (id: string) => invokeChecked(IPC.ACCOUNTS_REMOVE, { id }),
+  onAccountsUpdated: (cb: (accounts: any[]) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, accounts: any[]) => cb(accounts);
+    ipcRenderer.on(IPC_EVENTS.ACCOUNTS_UPDATED, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.ACCOUNTS_UPDATED, handler);
+  },
+
+  // -------------------------------------------------------------------------
   // Store management
   // -------------------------------------------------------------------------
   resetStore: () => invokeChecked(IPC.STORE_RESET),
+
+  // Learning / memory
+  memoryGetAll: () => invokeChecked(IPC.MEMORY_GET_ALL),
+  memoryForget: (category: string, key: string) => invokeChecked(IPC.MEMORY_FORGET, { category, key }),
+  memoryReset: () => invokeChecked(IPC.MEMORY_RESET),
+  siteKnowledgeGet: (hostname: string) => invokeChecked(IPC.SITE_KNOWLEDGE_GET, { hostname }),
+  siteKnowledgeReset: () => invokeChecked(IPC.SITE_KNOWLEDGE_RESET),
+
+  // -------------------------------------------------------------------------
+  // Vault
+  // -------------------------------------------------------------------------
+  vaultIngest: (filePath: string) => invokeChecked(IPC.VAULT_INGEST_FILE, { filePath }),
+
+  vaultSearch: (query: string, limit?: number) => invokeChecked(IPC.VAULT_SEARCH, { query, limit }),
+
+  vaultGetJob: (id: string) => invokeChecked(IPC.VAULT_GET_JOB, { id }),
+
+  onVaultJobUpdate: (callback: (job: import('../shared/vault-types').IngestionJob) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, job: any) => callback(job);
+    ipcRenderer.on(IPC_EVENTS.VAULT_JOB_UPDATE, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.VAULT_JOB_UPDATE, handler);
+  },
+
+  // -------------------------------------------------------------------------
+  // Actions
+  // -------------------------------------------------------------------------
+  actionCreatePlan: (description: string) => invokeChecked(IPC.ACTION_CREATE_PLAN, { description }),
+
+  actionAddItem: (planId: string, type: import('../shared/vault-types').ActionType, payload: any, sequenceOrder: number) =>
+    invokeChecked(IPC.ACTION_ADD_ITEM, { planId, type, payload, sequenceOrder }),
+
+  actionExecutePlan: (planId: string) => invokeChecked(IPC.ACTION_EXECUTE_PLAN, { planId }),
+
+  actionUndoPlan: (planId: string) => invokeChecked(IPC.ACTION_UNDO_PLAN, { planId }),
+
+  actionGetPlan: (planId: string) => invokeChecked(IPC.ACTION_GET_PLAN, { planId }),
+
+  actionGetItems: (planId: string) => invokeChecked(IPC.ACTION_GET_ITEMS, { planId }),
 };
 
 // Expose to renderer

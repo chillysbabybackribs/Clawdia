@@ -1,5 +1,6 @@
 import { Page } from 'playwright';
 import Anthropic from '@anthropic-ai/sdk';
+import { AnthropicClient } from '../llm/client';
 import {
   createTab,
   switchTab,
@@ -36,6 +37,9 @@ import {
   isCacheAvailable,
   CACHE_MAX_AGE,
 } from '../cache/search-cache';
+import { detectAccountOnPage } from '../accounts/detector';
+import { findAccount, addAccount, touchAccount } from '../accounts/account-store';
+import { siteKnowledge } from '../learning';
 
 const toolsLog = createLogger('browser-tools');
 
@@ -304,6 +308,83 @@ export const BROWSER_TOOL_DEFINITIONS: BrowserToolDefinition[] = [
       required: ['page_id'],
     },
   },
+  {
+    name: 'browser_detect_account',
+    description: 'Detect the logged-in user account on the current page and save it to the account registry. Use this when you want to confirm which account is active on the current site.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'browser_interact',
+    description: 'Execute a sequence of browser actions in one call. Prefer this over separate browser_click/browser_type/browser_scroll calls for 2+ sequential actions. Use url to combine navigation with interaction.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        url: {
+          type: 'string',
+          description: 'Optional: navigate to this URL before executing steps',
+        },
+        steps: {
+          type: 'array',
+          maxItems: 8,
+          items: {
+            type: 'object',
+            properties: {
+              action: { type: 'string', enum: ['click', 'type', 'scroll', 'wait', 'screenshot', 'read'] },
+              ref: { type: 'string', description: 'Text/accessible name for click, or input label for type' },
+              text: { type: 'string', description: 'Text to type (for type action)' },
+              x: { type: 'number', description: 'X coordinate (for click)' },
+              y: { type: 'number', description: 'Y coordinate (for click)' },
+              selector: { type: 'string', description: 'CSS selector (for click)' },
+              enter: { type: 'boolean', description: 'Press Enter after typing' },
+              dir: { type: 'string', enum: ['up', 'down'], description: 'Scroll direction' },
+              amount: { type: 'number', description: 'Scroll pixels' },
+              ms: { type: 'number', description: 'Wait duration in ms (max 3000)' },
+            },
+            required: ['action'],
+          },
+        },
+        stopOnError: {
+          type: 'boolean',
+          description: 'Stop after first failure. Default: false.',
+        },
+      },
+      required: ['steps'],
+    },
+  },
+  {
+    name: 'browser_fill_form',
+    description: 'Fill multiple form fields at once by label or selector, and optionally submit. More reliable than sequential click+type for forms.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        fields: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              label: { type: 'string', description: 'Input label, placeholder, or name attribute' },
+              selector: { type: 'string', description: 'CSS selector fallback' },
+              value: { type: 'string', description: 'Value to fill. For selects, option text or value.' },
+              type: { type: 'string', enum: ['text', 'select', 'checkbox', 'radio', 'textarea'], description: 'Input type hint. Default: text.' },
+            },
+            required: ['value'],
+          },
+        },
+        submit: {
+          type: 'object',
+          properties: {
+            ref: { type: 'string', description: 'Button label to click after filling' },
+            selector: { type: 'string', description: 'CSS selector for submit button' },
+          },
+          description: 'Optional: click this element after filling all fields',
+        },
+      },
+      required: ['fields'],
+    },
+  },
 ];
 
 function withProtocol(url: string): string {
@@ -371,39 +452,35 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
   }
 }
 
-async function llmExtract(pageData: Record<string, unknown>, schema: Record<string, string>): Promise<Record<string, unknown>> {
+function getSharedClient(): AnthropicClient | null {
   const apiKey = getAnthropicApiKey();
-  if (!apiKey) {
+  if (!apiKey) return null;
+  const model = getSelectedModel();
+  return new AnthropicClient(apiKey, model);
+}
+
+async function llmExtract(pageData: Record<string, unknown>, schema: Record<string, string>): Promise<Record<string, unknown>> {
+  const client = getSharedClient();
+  if (!client) {
     return {
       _error: 'Missing Anthropic API key for extraction.',
       _raw: pageData,
     };
   }
 
-  const client = new Anthropic({ apiKey });
-  const model = getSelectedModel();
-  toolsLog.info(`[API Request] model=${model} | endpoint=llmExtract`);
   const schemaJson = JSON.stringify(schema, null, 2);
   const pageJson = clampText(JSON.stringify(pageData, null, 2));
 
-  const response = await client.messages.create({
-    model,
-    max_tokens: 700,
-    messages: [
-      {
-        role: 'user',
-        content:
-          `Extract data into JSON using this schema (field -> requirement):\n${schemaJson}\n\n` +
-          `Source page data:\n${pageJson}\n\n` +
-          'Return only a valid JSON object with exactly the schema keys. Use null for unknown values.',
-      },
-    ],
-  });
+  const { text } = await client.complete([
+    {
+      role: 'user',
+      content:
+        `Extract data into JSON using this schema (field -> requirement):\n${schemaJson}\n\n` +
+        `Source page data:\n${pageJson}\n\n` +
+        'Return only a valid JSON object with exactly the schema keys. Use null for unknown values.',
+    },
+  ], { maxTokens: 700 });
 
-  const text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n');
   const parsed = parseJsonObject(text);
   if (parsed) return parsed;
 
@@ -415,42 +492,30 @@ async function llmExtract(pageData: Record<string, unknown>, schema: Record<stri
 }
 
 async function llmVisionExtractText(screenshotBase64: string): Promise<string> {
-  const apiKey = getAnthropicApiKey();
-  if (!apiKey) return 'Missing Anthropic API key for visual extraction.';
+  const client = getSharedClient();
+  if (!client) return 'Missing Anthropic API key for visual extraction.';
 
-  const client = new Anthropic({ apiKey });
-  const model = getSelectedModel();
-  toolsLog.info(`[API Request] model=${model} | endpoint=llmVisionExtractText`);
-
-  const response = await client.messages.create({
-    model,
-    max_tokens: 2_000,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: 'image/png',
-              data: screenshotBase64,
-            },
+  const { text } = await client.complete([
+    {
+      role: 'user',
+      content: [
+        {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: 'image/png',
+            data: screenshotBase64,
           },
-          {
-            type: 'text',
-            text: 'Extract all visible text from this screenshot. Preserve reading order and structure. Return plain text.',
-          },
-        ],
-      },
-    ],
-  });
+        },
+        {
+          type: 'text',
+          text: 'Extract all visible text from this screenshot. Preserve reading order and structure. Return plain text.',
+        },
+      ],
+    },
+  ], { maxTokens: 2_000 });
 
-  return response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n')
-    .trim();
+  return text.trim();
 }
 
 async function llmExtractFromText(
@@ -458,37 +523,25 @@ async function llmExtractFromText(
   schema: Record<string, string>,
   extraInstructions?: string,
 ): Promise<Record<string, unknown>> {
-  const apiKey = getAnthropicApiKey();
-  if (!apiKey) {
+  const client = getSharedClient();
+  if (!client) {
     return {
       _error: 'Missing Anthropic API key for extraction.',
       _raw_text: clampText(sourceText),
     };
   }
 
-  const client = new Anthropic({ apiKey });
-  const model = getSelectedModel();
-  toolsLog.info(`[API Request] model=${model} | endpoint=llmExtractFromText`);
+  const { text } = await client.complete([
+    {
+      role: 'user',
+      content:
+        `Extract JSON using this schema (field -> requirement):\n${JSON.stringify(schema, null, 2)}\n\n` +
+        `${extraInstructions ? `${extraInstructions}\n\n` : ''}` +
+        `Source text:\n${clampText(sourceText)}\n\n` +
+        'Return only one valid JSON object. Use null for unknown fields.',
+    },
+  ], { maxTokens: 900 });
 
-  const response = await client.messages.create({
-    model,
-    max_tokens: 900,
-    messages: [
-      {
-        role: 'user',
-        content:
-          `Extract JSON using this schema (field -> requirement):\n${JSON.stringify(schema, null, 2)}\n\n` +
-          `${extraInstructions ? `${extraInstructions}\n\n` : ''}` +
-          `Source text:\n${clampText(sourceText)}\n\n` +
-          'Return only one valid JSON object. Use null for unknown fields.',
-      },
-    ],
-  });
-
-  const text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n');
   const parsed = parseJsonObject(text);
   if (parsed) return parsed;
 
@@ -560,6 +613,12 @@ export async function executeTool(name: string, input: any): Promise<string> {
       result = await toolSearchRich(String(input?.query || ''), input?.entity_type, input?.extract); break;
     case 'cache_read':
       result = toolCacheRead(String(input?.page_id || ''), input?.section); break;
+    case 'browser_detect_account':
+      result = await toolDetectAccount(); break;
+    case 'browser_interact':
+      result = await toolInteract(input?.url, input?.steps, Boolean(input?.stopOnError)); break;
+    case 'browser_fill_form':
+      result = await toolFillForm(input?.fields || [], input?.submit); break;
     default:
       result = `Unknown tool: ${name}`;
   }
@@ -606,15 +665,9 @@ export function registerPlaywrightSearchFallback(): void {
 async function toolSearch(query: string): Promise<string> {
   if (!query.trim()) return 'Missing query.';
 
-  // Keep BrowserView in sync with search activity so the browser panel reflects
-  // what the agent is doing, even when result ranking comes from API backends.
+  // Fire-and-forget visual sync — show SERP in browser panel without blocking.
   const serpUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
-  try {
-    await managerNavigate(serpUrl);
-    await waitForLoad(2000);
-  } catch {
-    // Best effort only — search results can still be returned from API backends.
-  }
+  void managerNavigate(serpUrl).catch(() => {});
 
   const response: ConsensusResult = await apiSearch(query);
 
@@ -638,7 +691,7 @@ async function toolSearch(query: string): Promise<string> {
     output += `${response.consensus}\n\n`;
   }
 
-  output += `Search results for "${query}" (via ${response.source}):\n\n`;
+  output += `"${query}" results (${response.source}):\n\n`;
   for (const [index, result] of filtered.slice(0, 5).entries()) {
     output += `${index + 1}. ${result.title}\n   ${result.url}\n`;
     if (result.snippet) {
@@ -790,6 +843,35 @@ async function toolClick(ref: string, x?: unknown, y?: unknown, selector?: unkno
 
   let clicked = false;
   let clickLabel = '';
+  let usedMethod = '';
+  let usedSelector: string | undefined;
+  let usedCoordinates: string | undefined;
+  const targetRef = typeof ref === 'string' ? ref.trim() : '';
+
+  let hostname = '';
+  try {
+    hostname = new URL(page.url()).hostname.replace('www.', '');
+  } catch {
+    hostname = '';
+  }
+
+  // If we know a working approach for this action, try it first.
+  if (siteKnowledge && targetRef && !selector && typeof x !== 'number' && typeof y !== 'number' && hostname) {
+    const known = siteKnowledge.getKnownApproach(hostname, 'click', targetRef);
+    if (known) {
+      if (known.working_method === 'selector' && known.working_selector) {
+        selector = known.working_selector;
+        console.log(`[Learning] Using learned selector for "${targetRef}" on ${hostname}: ${selector}`);
+      } else if (known.working_method === 'coordinates' && known.working_coordinates) {
+        const [cx, cy] = known.working_coordinates.split(',').map(Number);
+        if (Number.isFinite(cx) && Number.isFinite(cy)) {
+          x = cx;
+          y = cy;
+          console.log(`[Learning] Using learned coordinates for "${targetRef}" on ${hostname}: ${x},${y}`);
+        }
+      }
+    }
+  }
 
   // Strategy 1: Coordinate-based click (from screenshot)
   if (typeof x === 'number' && typeof y === 'number') {
@@ -797,6 +879,8 @@ async function toolClick(ref: string, x?: unknown, y?: unknown, selector?: unkno
       await page.mouse.click(x, y);
       clicked = true;
       clickLabel = `coordinates (${x}, ${y})`;
+      usedMethod = 'coordinates';
+      usedCoordinates = `${x},${y}`;
     } catch (err: any) {
       return `Failed to click at (${x}, ${y}): ${err?.message || 'unknown error'}`;
     }
@@ -810,6 +894,8 @@ async function toolClick(ref: string, x?: unknown, y?: unknown, selector?: unkno
       await locator.click({ timeout: 4000 });
       clicked = true;
       clickLabel = `selector "${selector}"`;
+      usedMethod = 'selector';
+      usedSelector = selector.trim();
     } catch {
       // Fall through to text-based matching
     }
@@ -822,19 +908,84 @@ async function toolClick(ref: string, x?: unknown, y?: unknown, selector?: unkno
       clicked = await tryTwitterClickFallback(page, ref);
     }
     clickLabel = `"${ref}"`;
+    if (clicked) {
+      usedMethod = 'ref';
+    }
   }
 
   if (!clicked) {
-    const hint = ref.trim()
-      ? `Could not click "${ref}". Try browser_screenshot to see the page, then click with x/y coordinates.`
-      : 'No click target specified. Provide ref (text), x+y (coordinates), or selector (CSS).';
-    return hint;
+    if (ref.trim()) {
+      // Auto-screenshot to save a round trip — LLM can click by coordinates directly
+      try {
+        const screenshot = await toolScreenshot();
+        const parsed = JSON.parse(screenshot);
+        if (hostname && siteKnowledge) {
+          siteKnowledge.recordOutcome({
+            hostname,
+            action: 'click',
+            targetRef: targetRef,
+            success: false,
+            method: typeof selector === 'string' && selector.trim() ? 'selector' : 'ref',
+          });
+        }
+        return JSON.stringify({
+          __clawdia_image_result__: true,
+          image_base64: parsed.image_base64,
+          media_type: 'image/jpeg',
+          text: `Could not click "${ref}". Here is the current page — use x,y coordinates to click the element.`,
+        });
+      } catch {
+        if (hostname && siteKnowledge) {
+          siteKnowledge.recordOutcome({
+            hostname,
+            action: 'click',
+            targetRef: targetRef,
+            success: false,
+            method: typeof selector === 'string' && selector.trim() ? 'selector' : 'ref',
+          });
+        }
+        return `Could not click "${ref}". Try browser_screenshot to see the page, then click with x/y coordinates.`;
+      }
+    }
+    if (hostname && siteKnowledge) {
+      siteKnowledge.recordOutcome({
+        hostname,
+        action: 'click',
+        targetRef: targetRef || (typeof selector === 'string' ? selector : ''),
+        success: false,
+        method: typeof selector === 'string' && selector.trim() ? 'selector' : 'unknown',
+      });
+    }
+    return 'No click target specified. Provide ref (text), x+y (coordinates), or selector (CSS).';
   }
 
-  await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => null);
-  await dismissPopups(page);
+  // Event-driven stabilization — wait for any SPA navigation the click might trigger.
+  // Do NOT call dismissPopups here: clicks are in-page interactions, not navigations.
+  await page.waitForLoadState('domcontentloaded', { timeout: 800 }).catch(() => null);
   const title = await page.title().catch(() => '');
-  return `Clicked ${clickLabel}. Page: ${title} — ${page.url()}`;
+
+  if (hostname && siteKnowledge) {
+    const attemptedMethod =
+      usedMethod ||
+      (typeof x === 'number' && typeof y === 'number'
+        ? 'coordinates'
+        : typeof selector === 'string' && selector.trim()
+        ? 'selector'
+        : targetRef
+        ? 'ref'
+        : 'unknown');
+    siteKnowledge.recordOutcome({
+      hostname,
+      action: 'click',
+      targetRef: targetRef || (typeof selector === 'string' ? selector : ''),
+      success: true,
+      method: attemptedMethod,
+      selector: usedSelector,
+      coordinates: usedCoordinates,
+    });
+  }
+
+  return `Clicked ${clickLabel}. → ${title} (${page.url()})`;
 }
 
 async function toolType(text: string, ref: unknown, pressEnter: boolean): Promise<string> {
@@ -842,24 +993,48 @@ async function toolType(text: string, ref: unknown, pressEnter: boolean): Promis
   const page = getActivePage();
   if (!page) return 'No active page.';
 
+  let hostname = '';
+  try {
+    hostname = new URL(page.url()).hostname.replace('www.', '');
+  } catch {
+    hostname = '';
+  }
+
+  let usedMethod = '';
+  let usedSelector: string | undefined;
+  const targetRef = typeof ref === 'string' ? ref.trim() : '';
+
   try {
     if (typeof ref === 'string' && ref.trim()) {
       const key = ref.trim();
-      const locators = [
-        page.getByRole('textbox', { name: key, exact: false }).first(),
-        page.getByPlaceholder(key).first(),
-        page.locator(`[name="${key}"]`).first(),
-        page.locator(`[aria-label="${key}"]`).first(),
+      const locators: Array<{ locator: any; method: string }> = [
+        { locator: page.getByRole('textbox', { name: key, exact: false }).first(), method: 'role' },
+        { locator: page.getByPlaceholder(key).first(), method: 'placeholder' },
+        { locator: page.locator(`[name="${key}"]`).first(), method: 'name' },
+        { locator: page.locator(`[aria-label="${key}"]`).first(), method: 'aria-label' },
       ];
 
+      if (hostname && siteKnowledge) {
+        const known = siteKnowledge.getKnownApproach(hostname, 'type', key);
+        if (known?.working_method === 'selector' && known.working_selector) {
+          locators.unshift({
+            locator: page.locator(known.working_selector).first(),
+            method: 'selector',
+          });
+          console.log(`[Learning] Using learned selector for input "${key}" on ${hostname}: ${known.working_selector}`);
+        }
+      }
+
       let filled = false;
-      for (const locator of locators) {
+      for (const { locator, method } of locators) {
         try {
           await locator.fill(text, { timeout: 4000 });
           if (pressEnter) {
             await locator.press('Enter', { timeout: 2000 }).catch(() => null);
           }
           filled = true;
+          usedMethod = method;
+          usedSelector = method === 'selector' ? locator.toString?.() : undefined;
           break;
         } catch {
           // Try the next locator.
@@ -874,10 +1049,20 @@ async function toolType(text: string, ref: unknown, pressEnter: boolean): Promis
             await page.keyboard.press('Enter');
           }
           filled = true;
+          usedMethod = 'twitter-composer';
         }
       }
 
       if (!filled) {
+        if (hostname && siteKnowledge) {
+          siteKnowledge.recordOutcome({
+            hostname,
+            action: 'type',
+            targetRef: key,
+            success: false,
+            method: usedMethod || 'ref',
+          });
+        }
         return `Could not find input "${key}".`;
       }
     } else {
@@ -888,12 +1073,24 @@ async function toolType(text: string, ref: unknown, pressEnter: boolean): Promis
       if (pressEnter) {
         await page.keyboard.press('Enter');
       }
+      usedMethod = 'keyboard';
     }
   } catch (error: any) {
     return `Failed to type: ${error?.message || 'unknown error'}`;
   }
 
-  return `Typed "${text}"${pressEnter ? ' and pressed Enter' : ''}.`;
+  if (hostname && siteKnowledge) {
+    siteKnowledge.recordOutcome({
+      hostname,
+      action: 'type',
+      targetRef: targetRef || '[focused]',
+      success: true,
+      method: usedMethod || 'ref',
+      selector: usedSelector,
+    });
+  }
+
+  return `Typed "${text}"${pressEnter ? ' +Enter' : ''}.`;
 }
 
 async function toolScroll(directionInput: unknown, amountInput: unknown): Promise<string> {
@@ -907,7 +1104,7 @@ async function toolScroll(directionInput: unknown, amountInput: unknown): Promis
 
   try {
     await page.mouse.wheel(0, deltaY);
-    return `Scrolled ${direction} by ${amount}px.`;
+    return `Scrolled ${direction} ${amount}px.`;
   } catch (error: any) {
     return `Failed to scroll: ${error?.message || 'unknown error'}`;
   }
@@ -917,7 +1114,7 @@ async function toolTab(action: string, tabId?: string, url?: string): Promise<st
   switch (action) {
     case 'new': {
       const id = await createTab(url ? withProtocol(url) : 'about:blank');
-      return `Opened tab ${id}${url ? ` at ${url}` : ''}.`;
+      return `Tab ${id}${url ? ` → ${url}` : ''}`;
     }
     case 'list': {
       const tabs = listTabs();
@@ -933,12 +1130,12 @@ async function toolTab(action: string, tabId?: string, url?: string): Promise<st
     case 'switch': {
       if (!tabId) return 'Missing tabId for switch.';
       await switchTab(tabId);
-      return `Switched to ${tabId}.`;
+      return `Switched → ${tabId}.`;
     }
     case 'close': {
       if (!tabId) return 'Missing tabId for close.';
       await closeTab(tabId);
-      return `Closed ${tabId}.`;
+      return `Closed ${tabId}`;
     }
     default:
       return `Unknown tab action: ${action}`;
@@ -1769,9 +1966,9 @@ function getDefaultEntitySchema(entityType: string): Record<string, string> {
 async function toolSearchRich(query: string, entityTypeInput: unknown, extractInput: unknown): Promise<string> {
   if (!query.trim()) return 'Missing query.';
 
-  // Visual sync: show Google search in the browser panel.
+  // Fire-and-forget visual sync.
   const serpUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
-  try { await managerNavigate(serpUrl); await waitForLoad(2000); } catch { /* best effort */ }
+  void managerNavigate(serpUrl).catch(() => {});
 
   const entityType = typeof entityTypeInput === 'string' && entityTypeInput.trim()
     ? entityTypeInput.trim().toLowerCase()
@@ -1833,24 +2030,44 @@ async function getPageSnapshot(page: Page): Promise<string> {
   const title = await page.title().catch(() => '');
   const url = page.url() || 'about:blank';
 
-  let content = '';
-  try {
-    const ariaSnapshot = await page.locator('body').ariaSnapshot({ timeout: 1500 });
-    if (ariaSnapshot && ariaSnapshot.trim()) {
-      const compressed = compressPageContent(ariaSnapshot, { maxChars: 6_000 });
-      content = compressed.text;
-    }
-  } catch {
-    // Fallback to text extraction if ARIA snapshot is unavailable or timed out.
-  }
+  // Classify page type: content pages get direct text extraction (less noise),
+  // interactive pages get ARIA snapshot (preserves element roles for clicking).
+  const pageType = await page.evaluate(() => {
+    const main = document.querySelector('article, main, [role="main"]');
+    const inputs = document.querySelectorAll('input, select, textarea').length;
+    const buttons = document.querySelectorAll('button, [role="button"]').length;
+    const contentLen = main?.textContent?.trim().length || 0;
+    if (contentLen > 3000 && inputs < 5 && buttons < 10) return 'content';
+    return 'interactive';
+  }).catch(() => 'interactive' as const);
 
-  if (!content) {
+  let content = '';
+
+  if (pageType === 'content') {
+    // Content pages: direct text extraction is more token-efficient than ARIA
     const rawText = await page.evaluate(() => {
       const main = document.querySelector('article, main, [role="main"]') || document.body;
       return (main?.textContent || '').trim().substring(0, 30_000);
     });
-    const compressed = compressPageContent(rawText, { maxChars: 6_000 });
-    content = compressed.text;
+    content = compressPageContent(rawText, { maxChars: 6_000 }).text;
+  } else {
+    // Interactive pages: ARIA snapshot preserves roles/labels for element targeting
+    try {
+      const ariaSnapshot = await page.locator('body').ariaSnapshot({ timeout: 1500 });
+      if (ariaSnapshot && ariaSnapshot.trim()) {
+        content = compressPageContent(ariaSnapshot, { maxChars: 6_000 }).text;
+      }
+    } catch {
+      // Fallback to text extraction if ARIA snapshot is unavailable or timed out.
+    }
+
+    if (!content) {
+      const rawText = await page.evaluate(() => {
+        const main = document.querySelector('article, main, [role="main"]') || document.body;
+        return (main?.textContent || '').trim().substring(0, 30_000);
+      });
+      content = compressPageContent(rawText, { maxChars: 6_000 }).text;
+    }
   }
 
   // Store in cache for later retrieval via cache_read
@@ -1865,7 +2082,7 @@ async function getPageSnapshot(page: Page): Promise<string> {
     }
   }
 
-  return `Page: ${title}\nURL: ${url}\n\n${content}`;
+  return `${title} (${url})\n\n${content}`;
 }
 
 // --- Specialized search tool implementations ---
@@ -1873,9 +2090,9 @@ async function getPageSnapshot(page: Page): Promise<string> {
 async function toolNews(query: string): Promise<string> {
   if (!query.trim()) return 'Missing query.';
 
-  // Visual sync: show Google News in the browser panel.
+  // Fire-and-forget visual sync.
   const newsUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&tbm=nws`;
-  try { await managerNavigate(newsUrl); await waitForLoad(2000); } catch { /* best effort */ }
+  void managerNavigate(newsUrl).catch(() => {});
 
   const results = await searchNews(query);
 
@@ -1897,9 +2114,9 @@ async function toolNews(query: string): Promise<string> {
 async function toolShopping(query: string): Promise<string> {
   if (!query.trim()) return 'Missing query.';
 
-  // Visual sync: show Google Shopping in the browser panel.
+  // Fire-and-forget visual sync.
   const shopUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&tbm=shop`;
-  try { await managerNavigate(shopUrl); await waitForLoad(2000); } catch { /* best effort */ }
+  void managerNavigate(shopUrl).catch(() => {});
 
   const results = await searchShopping(query);
 
@@ -1921,9 +2138,9 @@ async function toolShopping(query: string): Promise<string> {
 async function toolPlaces(query: string): Promise<string> {
   if (!query.trim()) return 'Missing query.';
 
-  // Visual sync: show Google Maps results in the browser panel.
+  // Fire-and-forget visual sync.
   const mapsUrl = `https://www.google.com/maps/search/${encodeURIComponent(query)}`;
-  try { await managerNavigate(mapsUrl); await waitForLoad(2000); } catch { /* best effort */ }
+  void managerNavigate(mapsUrl).catch(() => {});
 
   const results = await searchPlaces(query);
 
@@ -1947,9 +2164,9 @@ async function toolPlaces(query: string): Promise<string> {
 async function toolImages(query: string): Promise<string> {
   if (!query.trim()) return 'Missing query.';
 
-  // Visual sync: show Google Images in the browser panel.
+  // Fire-and-forget visual sync.
   const imgUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&tbm=isch`;
-  try { await managerNavigate(imgUrl); await waitForLoad(2000); } catch { /* best effort */ }
+  void managerNavigate(imgUrl).catch(() => {});
 
   const results = await searchImages(query);
 
@@ -1965,6 +2182,219 @@ async function toolImages(query: string): Promise<string> {
   });
 
   return output;
+}
+
+// --- Compound action tools ---
+
+async function toolInteract(
+  url: string | undefined,
+  steps: Array<{
+    action: string;
+    ref?: string;
+    text?: string;
+    x?: number;
+    y?: number;
+    selector?: string;
+    enter?: boolean;
+    dir?: string;
+    amount?: number;
+    ms?: number;
+  }>,
+  stopOnError = false,
+): Promise<string> {
+  if (!steps || steps.length === 0) return 'No steps provided.';
+
+  // Optional: navigate before executing steps
+  if (url && url.trim()) {
+    const navResult = await managerNavigate(withProtocol(url));
+    if (!navResult.success) return `Navigation failed: ${navResult.error || 'unknown'}`;
+    await waitForLoad(3000);
+  }
+
+  const page = getActivePage();
+  if (!page) return 'No active page.';
+
+  const results: string[] = [];
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    let result: string;
+    try {
+      switch (step.action) {
+        case 'click':
+          result = await toolClick(step.ref || '', step.x, step.y, step.selector);
+          break;
+        case 'type':
+          result = await toolType(step.text || '', step.ref, Boolean(step.enter));
+          break;
+        case 'scroll':
+          result = await toolScroll(step.dir, step.amount);
+          break;
+        case 'wait': {
+          const ms = Math.min(Number(step.ms) || 500, 3000);
+          await page.waitForTimeout(ms);
+          result = `wait:${ms}ms`;
+          break;
+        }
+        case 'screenshot':
+          result = await toolScreenshot();
+          break;
+        case 'read':
+          result = await getPageSnapshot(page);
+          break;
+        default:
+          result = `Unknown action: ${step.action}`;
+      }
+    } catch (err: any) {
+      result = `Step ${i + 1} error: ${err?.message || 'unknown'}`;
+    }
+    results.push(`[${i + 1}] ${result}`);
+
+    // Abort remaining steps if this one failed and stopOnError is true
+    if (stopOnError && /could not|failed|error/i.test(result)) {
+      const skipped = steps.length - i - 1;
+      if (skipped > 0) results.push(`Stopped: step ${i + 1} failed. ${skipped} step(s) skipped.`);
+      break;
+    }
+  }
+
+  const title = await page.title().catch(() => '');
+  const finalUrl = page.url();
+  results.push(`→ ${title} (${finalUrl})`);
+
+  return results.join('\n');
+}
+
+interface FormField {
+  label?: string;
+  selector?: string;
+  value: string;
+  type?: string;
+}
+
+interface SubmitTarget {
+  ref?: string;
+  selector?: string;
+}
+
+async function resolveFormLocator(page: Page, field: FormField) {
+  const label = field.label?.trim();
+  if (label) {
+    // Try matching strategies in order of preference
+    const strategies = [
+      // 1. label[for] association
+      () => page.locator(`label:has-text("${label}") + input, label:has-text("${label}") + select, label:has-text("${label}") + textarea`).first(),
+      // 2. aria-label
+      () => page.locator(`[aria-label="${label}"]`).first(),
+      // 3. placeholder
+      () => page.locator(`[placeholder="${label}"]`).first(),
+      // 4. name attribute
+      () => page.locator(`[name="${label}"]`).first(),
+      // 5. Playwright getByLabel
+      () => page.getByLabel(label).first(),
+    ];
+
+    for (const strategy of strategies) {
+      const locator = strategy();
+      try {
+        await locator.waitFor({ timeout: 1500, state: 'attached' });
+        return locator;
+      } catch {
+        // Try next strategy
+      }
+    }
+  }
+
+  // Fallback: CSS selector
+  if (field.selector?.trim()) {
+    return page.locator(field.selector.trim()).first();
+  }
+
+  return null;
+}
+
+async function toolFillForm(fields: FormField[], submit?: SubmitTarget): Promise<string> {
+  const page = getActivePage();
+  if (!page) return 'No active page.';
+
+  const results: string[] = [];
+  for (const field of fields) {
+    const locator = await resolveFormLocator(page, field);
+    const fieldLabel = field.label || field.selector || '(unknown)';
+    if (!locator) {
+      results.push(`${fieldLabel}: FAILED — no matching element`);
+      continue;
+    }
+    try {
+      const inputType = (field.type || 'text').toLowerCase();
+      switch (inputType) {
+        case 'select':
+          await locator.selectOption(field.value, { timeout: 3000 });
+          break;
+        case 'checkbox':
+        case 'radio':
+          if (field.value === 'true' || field.value === '1' || field.value === 'yes') {
+            await locator.check({ timeout: 3000 });
+          } else {
+            await locator.uncheck({ timeout: 3000 });
+          }
+          break;
+        default:
+          await locator.fill(field.value, { timeout: 3000 });
+      }
+      results.push(`${fieldLabel}: ok`);
+    } catch (e: any) {
+      results.push(`${fieldLabel}: FAILED — ${e?.message || 'unknown'}`);
+    }
+  }
+
+  if (submit) {
+    try {
+      if (submit.selector) {
+        await page.locator(submit.selector).first().click({ timeout: 4000 });
+      } else if (submit.ref) {
+        const clicked = await tryClickRef(page, submit.ref);
+        if (!clicked) {
+          results.push(`Submit "${submit.ref}": FAILED — button not found`);
+        }
+      }
+      if (!results[results.length - 1]?.includes('FAILED')) {
+        results.push(`Submitted via "${submit.ref || submit.selector}".`);
+      }
+    } catch (e: any) {
+      results.push(`Submit: FAILED — ${e?.message || 'unknown'}`);
+    }
+  }
+
+  return results.join('\n');
+}
+
+// --- Account detection tool ---
+
+async function toolDetectAccount(): Promise<string> {
+  const page = getActivePage();
+  if (!page) return 'No active page.';
+
+  const url = page.url();
+  if (!url || url === 'about:blank') return 'No URL loaded.';
+
+  const detected = await detectAccountOnPage(url);
+  if (!detected) return `No account detected on ${url}. This site may not be supported or no user is logged in.`;
+
+  const existing = findAccount(detected.domain, detected.username);
+  if (existing) {
+    touchAccount(existing.id);
+    return `Account already registered: ${detected.platform} — ${detected.username} (${detected.domain})`;
+  }
+
+  const account = addAccount({
+    domain: detected.domain,
+    platform: detected.platform,
+    username: detected.username,
+    profileUrl: detected.profileUrl,
+    isManual: false,
+  });
+
+  return `Account detected and saved: ${account.platform} — ${account.username} (${account.domain})`;
 }
 
 // --- Cache read tool ---

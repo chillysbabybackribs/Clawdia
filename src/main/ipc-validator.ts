@@ -41,6 +41,7 @@ export type SettingsKey =
   | 'schemaVersion'
   | 'chat_tab_state'
   | 'browserHistory'
+  | 'userAccounts'
   | 'conversations';
 export type SettingsValue =
   | string
@@ -128,8 +129,48 @@ export interface ClipboardWriteTextPayload {
   text: string;
 }
 
+export interface AccountAddPayload {
+  domain: string;
+  platform: string;
+  username: string;
+  profileUrl: string;
+}
+
+export interface AccountRemovePayload {
+  id: string;
+}
+
 export interface LogLevelSetPayload {
   level: string;
+}
+
+export interface MemoryForgetPayload {
+  category: string;
+  key: string;
+}
+
+export interface SiteKnowledgePayload {
+  hostname: string;
+}
+
+export interface VaultIngestPayload {
+  filePath: string;
+}
+
+export interface VaultSearchPayload {
+  query: string;
+  limit?: number;
+}
+
+export interface ActionPlanCreatePayload {
+  description: string;
+}
+
+export interface ActionAddItemPayload {
+  planId: string;
+  type: string;
+  payload: any;
+  sequenceOrder: number;
 }
 
 function ok<T>(data: T): ValidationSuccess<T> {
@@ -417,6 +458,7 @@ const settingsKeyValidator = isStringOneOf<SettingsKey>('key', [
   'schemaVersion',
   'chat_tab_state',
   'browserHistory',
+  'userAccounts',
   'conversations',
 ] as const);
 
@@ -432,6 +474,7 @@ const settingsValueValidatorByKey: Record<SettingsKey, Validator<unknown>> = {
   schemaVersion: isNumberAtLeast('value', 0),
   chat_tab_state: chatTabStateValidator as Validator<unknown>,
   browserHistory: isArrayOf('value', browserHistoryEntryValidator as Validator<{ id: string; url: string; title: string; timestamp: number }>),
+  userAccounts: isArrayOf('value', passthroughValidator),
   conversations: isArrayOf('value', passthroughValidator),
 };
 
@@ -527,12 +570,64 @@ export const documentOpenFolderSchema = isObject<DocumentOpenFolderPayload>({
   filePath: isNonEmptyString('filePath'),
 });
 
+export const fileOpenSchema = isObject<{ filePath: string }>({
+  filePath: isNonEmptyString('filePath'),
+});
+
+export const fileOpenInAppSchema = isObject<{ filePath: string }>({
+  filePath: isNonEmptyString('filePath'),
+});
+
 export const clipboardWriteTextSchema = isObject<ClipboardWriteTextPayload>({
   text: isString('text'),
 });
 
+export const accountAddSchema = isObject<AccountAddPayload>({
+  domain: isNonEmptyString('domain'),
+  platform: isNonEmptyString('platform'),
+  username: isNonEmptyString('username'),
+  profileUrl: isString('profileUrl'),
+});
+
+export const accountRemoveSchema = isObject<AccountRemovePayload>({
+  id: isNonEmptyString('id'),
+});
+
 export const logLevelSetSchema = isObject<LogLevelSetPayload>({
   level: isStringOneOf('level', LOG_LEVELS),
+});
+
+export const memoryForgetSchema = isObject<MemoryForgetPayload>({
+  category: isNonEmptyString('category'),
+  key: isNonEmptyString('key'),
+});
+
+export const siteKnowledgeSchema = isObject<SiteKnowledgePayload>({
+  hostname: isNonEmptyString('hostname'),
+});
+
+export const vaultIngestSchema = isObject<VaultIngestPayload>({
+  filePath: isNonEmptyString('filePath'),
+});
+
+export const vaultSearchSchema = isObject<VaultSearchPayload>({
+  query: isNonEmptyString('query'),
+  limit: isOptional(isNumberAtLeast('limit', 1)),
+});
+
+export const actionCreatePlanSchema = isObject<ActionPlanCreatePayload>({
+  description: isNonEmptyString('description'),
+});
+
+export const actionAddItemSchema = isObject<ActionAddItemPayload>({
+  planId: isNonEmptyString('planId'),
+  type: isStringOneOf('type', ['fs_write', 'fs_delete', 'fs_move', 'db_insert']),
+  payload: passthroughValidator,
+  sequenceOrder: isNumberAtLeast('sequenceOrder', 0),
+});
+
+export const actionIdSchema = isObject<{ planId: string }>({
+  planId: isNonEmptyString('planId'),
 });
 
 export function validate<T>(input: unknown, validator: Validator<T>): T {
@@ -587,6 +682,8 @@ export const ipcSchemas = {
   [IPC.DOCUMENT_EXTRACT]: documentExtractSchema,
   [IPC.DOCUMENT_SAVE]: documentSaveSchema,
   [IPC.DOCUMENT_OPEN_FOLDER]: documentOpenFolderSchema,
+  [IPC.FILE_OPEN]: fileOpenSchema,
+  [IPC.FILE_OPEN_IN_APP]: fileOpenInAppSchema,
   [IPC.CLIPBOARD_WRITE_TEXT]: clipboardWriteTextSchema,
   [IPC.LOG_LEVEL_SET]: logLevelSetSchema,
   [IPC.STORE_RESET]: noPayload,
@@ -603,5 +700,22 @@ export const ipcSchemas = {
   [IPC.BROWSER_HISTORY_CLEAR]: noPayload,
   [IPC.BROWSER_COOKIES_CLEAR]: noPayload,
   [IPC.BROWSER_CLEAR_ALL]: noPayload,
+  [IPC.ACCOUNTS_LIST]: noPayload,
+  [IPC.ACCOUNTS_ADD]: accountAddSchema,
+  [IPC.ACCOUNTS_REMOVE]: accountRemoveSchema,
+  [IPC.MEMORY_GET_ALL]: noPayload,
+  [IPC.MEMORY_FORGET]: memoryForgetSchema,
+  [IPC.MEMORY_RESET]: noPayload,
+  [IPC.SITE_KNOWLEDGE_GET]: siteKnowledgeSchema,
+  [IPC.SITE_KNOWLEDGE_RESET]: noPayload,
+  [IPC.VAULT_INGEST_FILE]: vaultIngestSchema,
+  [IPC.VAULT_SEARCH]: vaultSearchSchema,
+  [IPC.VAULT_GET_JOB]: idSchema,
+  [IPC.VAULT_GET_DOC]: idSchema,
+  [IPC.ACTION_CREATE_PLAN]: actionCreatePlanSchema,
+  [IPC.ACTION_ADD_ITEM]: actionAddItemSchema,
+  [IPC.ACTION_EXECUTE_PLAN]: actionIdSchema,
+  [IPC.ACTION_UNDO_PLAN]: actionIdSchema,
+  [IPC.ACTION_GET_PLAN]: actionIdSchema,
+  [IPC.ACTION_GET_ITEMS]: actionIdSchema,
 } as const;
-

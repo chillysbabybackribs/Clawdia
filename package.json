@@ -37,7 +37,13 @@
     "dist:all": "npm run build && electron-builder --linux --mac --win",
     "start": "electron .",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "site:check": "node scripts/site-check.mjs",
+    "artifacts:check": "node scripts/artifacts-check.mjs",
+    "checksums:gen": "node scripts/checksums-gen.mjs",
+    "secrets:scan": "node scripts/secrets-scan.mjs",
+    "smoke:electron": "node scripts/smoke-electron.mjs",
+    "release:check": "node scripts/release-check.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

@@ -4,12 +4,42 @@ import { IPC, IPC_EVENTS } from '../../shared/ipc-channels';
 import { BrowserTabInfo } from '../../shared/types';
 import { wireUniversalPopupDismissal } from './popup-dismissal';
 import { store, BrowserHistoryEntry } from '../store';
+import { tryDetectAndMerge } from '../accounts/detector';
 import { randomUUID } from 'crypto';
+import { pathToFileURL } from 'url';
+import { homedir } from 'os';
+import * as path from 'path';
+import * as fs from 'fs/promises';
 import { execSync } from 'child_process';
 import { createLogger } from '../logger';
 import { handleValidated, ipcSchemas } from '../ipc-validator';
 
 const log = createLogger('browser-manager');
+
+export async function exportCookiesForUrl(url: string): Promise<string | null> {
+  try {
+    const parsed = new URL(url);
+    const cookies = await session.defaultSession.cookies.get({ url: parsed.origin });
+    if (!cookies || cookies.length === 0) return null;
+    const lines: string[] = ['# Netscape HTTP Cookie File'];
+    for (const c of cookies) {
+      const rawDomain = c.domain || parsed.hostname;
+      const domain = rawDomain.startsWith('.') ? rawDomain : rawDomain;
+      const includeSub = rawDomain.startsWith('.') ? 'TRUE' : 'FALSE';
+      const pathValue = c.path || '/';
+      const secure = c.secure ? 'TRUE' : 'FALSE';
+      const expires = typeof c.expirationDate === 'number' ? Math.floor(c.expirationDate) : 0;
+      lines.push([domain, includeSub, pathValue, secure, expires, c.name, c.value].join('\t'));
+    }
+    const filename = `clawdia-cookies-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`;
+    const filePath = path.join('/tmp', filename);
+    await fs.writeFile(filePath, lines.join('\n'), 'utf-8');
+    return filePath;
+  } catch (err: any) {
+    log.warn(`Failed to export cookies: ${err?.message || err}`);
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Playwright session tracking — detect and clean up leaked resources
@@ -276,6 +306,10 @@ function wireAuthPopup(popup: BrowserWindow, initialUrl: string): void {
   });
 }
 
+function isBlankPopupUrl(url: string): boolean {
+  return url === 'about:blank' || url === '';
+}
+
 // ---------------------------------------------------------------------------
 // BrowserView — the real, visible browser inside the app
 // ---------------------------------------------------------------------------
@@ -311,6 +345,7 @@ function ensureBrowserView(): BrowserView {
       updateActiveTab();
       emitTabState();
       recordHistoryEntry(url, browserView!.webContents.getTitle() || '');
+      void tryDetectAndMerge(url);
     });
 
     browserView.webContents.on('did-navigate-in-page', (_event, url) => {
@@ -319,6 +354,7 @@ function ensureBrowserView(): BrowserView {
       updateActiveTab();
       emitTabState();
       recordHistoryEntry(url, browserView!.webContents.getTitle() || '');
+      void tryDetectAndMerge(url);
     });
 
     browserView.webContents.on('page-title-updated', (_event, title) => {
@@ -364,13 +400,18 @@ function ensureBrowserView(): BrowserView {
     });
 
     browserView.webContents.on('did-create-window', (popup, details) => {
-      if (!isAuthUrl(details.url)) return;
+      if (!isAuthUrl(details.url) && !isBlankPopupUrl(details.url)) return;
       wireAuthPopup(popup, details.url);
     });
 
-    browserView.webContents.setWindowOpenHandler(({ url }) => {
-      if (isAuthUrl(url)) {
-        log.info(`Allowing auth popup for: ${url}`);
+    browserView.webContents.setWindowOpenHandler((details) => {
+      const { url } = details;
+      const hasUserGesture = 'userGesture' in details;
+      const userGesture = hasUserGesture ? Boolean(details.userGesture) : true;
+      const allowBlankPopup = isBlankPopupUrl(url) && userGesture;
+
+      if (isAuthUrl(url) || allowBlankPopup) {
+        log.info(`Allowing auth popup for: ${url || 'about:blank'}`);
         return {
           action: 'allow',
           overrideBrowserWindowOptions: {
@@ -1079,6 +1120,28 @@ export function setupBrowserIpc(): void {
     return { success: true, tabId };
   });
 
+  handleValidated(IPC.FILE_OPEN_IN_APP, ipcSchemas[IPC.FILE_OPEN_IN_APP], async (_event, payload) => {
+    try {
+      let filePath = String(payload.filePath || '').trim();
+      if (filePath.startsWith('~')) {
+        filePath = path.join(homedir(), filePath.slice(1));
+      }
+      filePath = path.resolve(filePath);
+      if (!filePath.startsWith(homedir())) {
+        return { success: false, error: 'Refusing to open files outside the user home directory.' };
+      }
+      const stat = await fs.stat(filePath);
+      if (!stat.isFile()) {
+        return { success: false, error: 'Path is not a file.' };
+      }
+      const fileUrl = pathToFileURL(filePath).toString();
+      const tabId = await createTab(fileUrl);
+      return { success: true, tabId };
+    } catch (error: any) {
+      return { success: false, error: error?.message || 'Failed to open file in app.' };
+    }
+  });
+
   handleValidated(IPC.BROWSER_TAB_LIST, ipcSchemas[IPC.BROWSER_TAB_LIST], async () => ({
     success: true,
     tabs: getTabsSnapshot(),
@@ -1154,6 +1217,12 @@ export function getAllPages(): Map<string, Page> {
 
 export function getActiveTabId(): string | null {
   return activeTabId;
+}
+
+export function getActiveTabUrl(): string | null {
+  if (!activeTabId) return null;
+  const entry = tabs.get(activeTabId);
+  return entry?.url ?? null;
 }
 
 export function listTabs(): BrowserTabInfo[] {

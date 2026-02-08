@@ -20,6 +20,10 @@ export function initStream(): void {
     setStreaming(false);
   });
 
+  window.api.onStreamReset(() => {
+    resetStreamOutput();
+  });
+
   window.api.onChatError((error) => {
     hideThinking();
     appendError(error.error);
@@ -200,6 +204,21 @@ let streamVisibleEmitted = 0;
 
 function resetStreamFilter(): void {
   streamVisibleEmitted = 0;
+}
+
+function resetStreamOutput(): void {
+  if (appState.streamFlushRafId !== null) {
+    window.cancelAnimationFrame(appState.streamFlushRafId);
+    appState.streamFlushRafId = null;
+  }
+  if (appState.streamingContainer?.parentElement) {
+    appState.streamingContainer.remove();
+  }
+  appState.streamingContainer = null;
+  appState.currentTextChunk = null;
+  appState.pendingStreamTextChunks = [];
+  appState.fullStreamBuffer = '';
+  resetStreamFilter();
 }
 
 /**
