@@ -1,8 +1,7 @@
 {
-  "rootDirectory": "site",
-  "buildCommand": "",
-  "installCommand": "",
-  "outputDirectory": ".",
+  "installCommand": "echo skip",
+  "buildCommand": "echo skip",
+  "outputDirectory": "site",
   "framework": null,
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
