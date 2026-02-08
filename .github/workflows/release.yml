@@ -19,7 +19,7 @@ jobs:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
       - run: npm run dist:linux
       - name: SHA256
-        run: sha256sum release/*
+        run: find release -maxdepth 1 -type f -exec sha256sum {} +
       - uses: actions/upload-artifact@v4
         with:
           name: linux-builds
@@ -40,7 +40,7 @@ jobs:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
       - run: npm run dist:mac
       - name: SHA256
-        run: shasum -a 256 release/*
+        run: find release -maxdepth 1 -type f -exec shasum -a 256 {} +
       - uses: actions/upload-artifact@v4
         with:
           name: mac-builds
@@ -60,7 +60,7 @@ jobs:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
       - run: npm run dist:win
       - name: SHA256
-        run: Get-FileHash release\* -Algorithm SHA256 | Format-Table -AutoSize
+        run: Get-ChildItem release -File | Get-FileHash -Algorithm SHA256 | Format-Table -AutoSize
         shell: pwsh
       - uses: actions/upload-artifact@v4
         with:
