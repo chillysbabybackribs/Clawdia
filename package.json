@@ -101,13 +101,15 @@
           "target": "AppImage",
           "arch": [
             "x64"
-          ]
+          ],
+          "artifactName": "Clawdia.AppImage"
         },
         {
           "target": "deb",
           "arch": [
             "x64"
-          ]
+          ],
+          "artifactName": "Clawdia.deb"
         }
       ],
       "category": "Development",
@@ -136,7 +138,8 @@
           "arch": [
             "x64",
             "arm64"
-          ]
+          ],
+          "artifactName": "Clawdia.dmg"
         }
       ],
       "category": "public.app-category.developer-tools",
@@ -159,7 +162,8 @@
           "target": "portable",
           "arch": [
             "x64"
-          ]
+          ],
+          "artifactName": "Clawdia-portable.exe"
         }
       ],
       "icon": "build/icon.ico"
@@ -173,9 +177,11 @@
       "installerHeaderIcon": "build/icon.ico",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Clawdia"
+      "shortcutName": "Clawdia",
+      "artifactName": "Clawdia-setup.exe"
     },
     "dmg": {
+      "artifactName": "Clawdia.dmg",
       "contents": [
         {
           "x": 130,
