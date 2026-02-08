@@ -365,17 +365,26 @@
               </div>
 
               <div class="settings-section-label">Linked Accounts</div>
+              <p class="accounts-description">Accounts are auto-detected when you browse authenticated sites. Claude uses your active sessions — no passwords are stored.</p>
               <div id="accounts-list" class="accounts-list"></div>
-              <div id="add-account-form" class="hidden" style="margin-top:8px">
-                <input type="text" id="add-account-platform" placeholder="Platform (e.g. Gmail)">
-                <input type="text" id="add-account-username" placeholder="Username or email">
-                <input type="text" id="add-account-domain" placeholder="Domain (e.g. mail.google.com)">
-                <div class="settings-inline-actions" style="margin-top:6px">
-                  <button id="save-account-btn" class="primary" type="button">Save</button>
+              <div id="add-account-form" class="accounts-add-form hidden">
+                <div class="accounts-add-fields">
+                  <div class="accounts-field">
+                    <label for="add-account-domain">Domain</label>
+                    <input type="text" id="add-account-domain" placeholder="e.g. mail.google.com" autocomplete="off" spellcheck="false">
+                  </div>
+                  <div class="accounts-field">
+                    <label for="add-account-username">Username</label>
+                    <input type="text" id="add-account-username" placeholder="e.g. you@gmail.com" autocomplete="off" spellcheck="false">
+                  </div>
+                  <input type="hidden" id="add-account-platform" value="">
+                </div>
+                <div class="accounts-add-actions">
+                  <button id="save-account-btn" class="primary" type="button">Add</button>
                   <button id="cancel-account-btn" class="secondary" type="button">Cancel</button>
                 </div>
               </div>
-              <button id="add-account-btn" class="secondary" type="button" style="margin-top:6px">+ Add Account</button>
+              <button id="add-account-btn" class="accounts-add-btn" type="button">+ Add account manually</button>
 
               <button id="save-settings" class="primary">Save</button>
             </div>

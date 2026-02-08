@@ -10,11 +10,39 @@ interface AccountEntry {
   isManual: boolean;
 }
 
+const DOMAIN_PLATFORM_MAP: Record<string, string> = {
+  'mail.google.com': 'Gmail',
+  'gmail.com': 'Gmail',
+  'github.com': 'GitHub',
+  'twitter.com': 'Twitter/X',
+  'x.com': 'Twitter/X',
+  'reddit.com': 'Reddit',
+  'youtube.com': 'YouTube',
+  'linkedin.com': 'LinkedIn',
+  'facebook.com': 'Facebook',
+  'instagram.com': 'Instagram',
+  'discord.com': 'Discord',
+  'outlook.live.com': 'Outlook',
+  'outlook.com': 'Outlook',
+  'yahoo.com': 'Yahoo',
+  'console.aws.amazon.com': 'AWS',
+  'portal.azure.com': 'Azure',
+  'cloud.google.com': 'Google Cloud',
+  'app.slack.com': 'Slack',
+  'notion.so': 'Notion',
+  'trello.com': 'Trello',
+  'atlassian.net': 'Jira',
+  'figma.com': 'Figma',
+  'vercel.com': 'Vercel',
+  'netlify.com': 'Netlify',
+  'shopify.com': 'Shopify',
+};
+
 export function initAccountsUI(): void {
   elements.addAccountBtn.addEventListener('click', () => {
     elements.addAccountForm.classList.remove('hidden');
     elements.addAccountBtn.classList.add('hidden');
-    elements.addAccountPlatform.focus();
+    elements.addAccountDomain.focus();
   });
 
   elements.cancelAccountBtn.addEventListener('click', () => {
@@ -23,17 +51,27 @@ export function initAccountsUI(): void {
     clearAddForm();
   });
 
-  elements.saveAccountBtn.addEventListener('click', async () => {
-    const platform = elements.addAccountPlatform.value.trim();
-    const username = elements.addAccountUsername.value.trim();
-    const domain = elements.addAccountDomain.value.trim();
+  // Auto-fill platform from domain
+  elements.addAccountDomain.addEventListener('input', () => {
+    const domain = elements.addAccountDomain.value.trim().toLowerCase();
+    const matched = DOMAIN_PLATFORM_MAP[domain] || '';
+    elements.addAccountPlatform.value = matched;
+  });
 
-    if (!platform || !username) return;
+  elements.saveAccountBtn.addEventListener('click', async () => {
+    const domain = elements.addAccountDomain.value.trim();
+    const username = elements.addAccountUsername.value.trim();
+
+    if (!domain || !username) return;
+
+    const platform = elements.addAccountPlatform.value.trim() ||
+      domain.replace(/^(www\.)?/, '').split('.')[0].charAt(0).toUpperCase() +
+      domain.replace(/^(www\.)?/, '').split('.')[0].slice(1);
 
     await window.api.addAccount({
       platform,
       username,
-      domain: domain || platform.toLowerCase().replace(/[^a-z0-9]/g, '') + '.com',
+      domain,
       profileUrl: '',
     });
 
@@ -41,6 +79,14 @@ export function initAccountsUI(): void {
     elements.addAccountForm.classList.add('hidden');
     elements.addAccountBtn.classList.remove('hidden');
     await loadAccountsList();
+  });
+
+  // Enter key in username field triggers save
+  elements.addAccountUsername.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      elements.saveAccountBtn.click();
+    }
   });
 
   // Listen for real-time updates from main process (auto-detection)
@@ -63,7 +109,7 @@ export async function loadAccountsList(): Promise<void> {
 function renderAccountsList(accounts: AccountEntry[]): void {
   const container = elements.accountsList;
   if (accounts.length === 0) {
-    container.innerHTML = '<div class="accounts-empty">No linked accounts. Accounts are auto-detected when you visit sites like Gmail, GitHub, Twitter, etc.</div>';
+    container.innerHTML = '<div class="accounts-empty">No linked accounts yet. Browse authenticated sites and they\'ll appear here automatically.</div>';
     return;
   }
 
@@ -73,7 +119,6 @@ function renderAccountsList(accounts: AccountEntry[]): void {
         <span class="account-platform">${escapeHtml(a.platform)}</span>
         <span class="account-username">${escapeHtml(a.username)}</span>
         <span class="account-domain">${escapeHtml(a.domain)}</span>
-        ${a.isManual ? '<span class="account-badge">manual</span>' : ''}
       </div>
       <button class="account-remove-btn" type="button" title="Remove account">&times;</button>
     </div>

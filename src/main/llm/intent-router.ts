@@ -23,7 +23,7 @@ export type Intent = 'tools' | 'chat-only';
 // ============================================================================
 
 /** Direct action verbs that almost always need tools */
-const ACTION_VERBS = /\b(search|find|look\s+up|google|browse|navigate|go\s+to|open|visit|check|read|write|create|edit|delete|remove|install|run|execute|build|compile|deploy|push|pull|commit|clone|download|upload|post|tweet|send|reply|like|repost|subscribe|unsubscribe|grep|cat|ls|cd|mkdir|mv|cp|rm|pip|npm|apt|brew|curl|wget|ssh|scp|git|docker|make|kill|restart|start|stop|monitor|close|dismiss|click|scroll|type|press|clear|shut|hide|show|minimize|maximize|resize|refresh|reload|select|hover|drag|drop|focus|tap|swipe)\b/i;
+const ACTION_VERBS = /\b(search|find|look\s+up|google|browse|navigate|go\s+to|open|visit|check|read|write|create|edit|delete|remove|install|run|execute|launch|build|compile|deploy|push|pull|commit|clone|download|upload|post|tweet|send|reply|like|repost|subscribe|unsubscribe|grep|cat|ls|cd|mkdir|mv|cp|rm|pip|npm|apt|brew|curl|wget|ssh|scp|git|docker|make|kill|restart|start|stop|monitor|close|dismiss|click|scroll|type|press|clear|shut|hide|show|minimize|maximize|resize|refresh|reload|select|hover|drag|drop|focus|tap|swipe|play|spawn|boot|reboot|power|connect|disconnect|mount|unmount|eject|print|scan|update|upgrade|uninstall|configure|setup|set\s+up|log\s+in|log\s+out|sign\s+in|sign\s+out)\b/i;
 
 /** File/path references */
 const FILE_PATTERNS = /(?:~\/|\.\/|\/home\/|\/tmp\/|\/etc\/|\/usr\/|\/var\/|\/opt\/|[a-zA-Z]:\\)[\w./-]+|\b[\w-]+\.(?:ts|js|py|rs|go|java|cpp|c|h|css|html|json|yaml|yml|toml|md|txt|csv|xml|sql|sh|bash|zsh|log|conf|cfg|env|lock|dockerfile|makefile)\b/i;

@@ -187,7 +187,7 @@ export const LOCAL_TOOL_DEFINITIONS: LocalToolDefinition[] = [
   {
     name: 'shell_exec',
     description:
-      'Execute a shell command on the local system. Has full access to filesystem, network, installed programs, and system utilities.',
+      'Execute a shell command on the local system. Has full access to filesystem, network, installed programs, system utilities, and can launch GUI desktop applications (use & to background them). Examples: open files with xdg-open, launch apps like firefox, code, gimp, or any installed program.',
     input_schema: {
       type: 'object',
       properties: {
