@@ -26,7 +26,7 @@
     "dev:renderer": "vite",
     "dev:electron": "wait-on http://localhost:5173 && wait-on dist/main/main.js && cross-env NODE_ENV=development electron . --no-sandbox",
     "build": "npm run build:main && npm run build:renderer",
-    "build:main": "tsc -p tsconfig.main.json",
+    "build:main": "tsc -p tsconfig.main.json && node -e \"require('fs').cpSync('src/main/vault/schema.sql','dist/main/vault/schema.sql')\"",
     "build:renderer": "vite build",
     "postinstall": "cross-env PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 electron-rebuild -f -w better-sqlite3",
     "pack": "npm run build && electron-builder --dir",
