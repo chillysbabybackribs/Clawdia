@@ -10,12 +10,11 @@
   var GITHUB_REPO = 'chillysbabybackribs/Clawdia';
   var GITHUB_API = 'https://api.github.com/repos/' + GITHUB_REPO + '/releases/latest';
 
-  var FALLBACK_VERSION = '1.0.0';
-  var FALLBACK_BASE = 'https://github.com/' + GITHUB_REPO + '/releases/download/v' + FALLBACK_VERSION;
+  var FALLBACK_BASE = 'https://github.com/' + GITHUB_REPO + '/releases/latest/download';
   var FALLBACK_DOWNLOADS = {
-    linux: { url: FALLBACK_BASE + '/Clawdia-' + FALLBACK_VERSION + '.AppImage', filename: 'Clawdia-' + FALLBACK_VERSION + '.AppImage' },
-    mac: { url: FALLBACK_BASE + '/Clawdia-' + FALLBACK_VERSION + '.dmg', filename: 'Clawdia-' + FALLBACK_VERSION + '.dmg' },
-    windows: { url: FALLBACK_BASE + '/Clawdia-Setup-' + FALLBACK_VERSION + '.exe', filename: 'Clawdia-Setup-' + FALLBACK_VERSION + '.exe' }
+    linux: { url: FALLBACK_BASE + '/Clawdia.AppImage', filename: 'Clawdia.AppImage' },
+    mac: { url: FALLBACK_BASE + '/Clawdia.dmg', filename: 'Clawdia.dmg' },
+    windows: { url: FALLBACK_BASE + '/Clawdia-setup.exe', filename: 'Clawdia-setup.exe' }
   };
 
   function getLatestRelease() {
@@ -25,15 +24,13 @@
         return response.json();
       })
       .then(function (release) {
-        var version = release.tag_name.replace(/^v/, '');
         var assets = release.assets || [];
 
-        var linux = assets.find(function (a) { return /\.AppImage$/i.test(a.name); });
-        var mac = assets.find(function (a) { return /\.dmg$/i.test(a.name); });
-        var windows = assets.find(function (a) { return /Setup.*\.exe$/i.test(a.name) || /\.exe$/i.test(a.name); });
+        var linux = assets.find(function (a) { return a.name === 'Clawdia.AppImage'; }) || assets.find(function (a) { return /\.AppImage$/i.test(a.name); });
+        var mac = assets.find(function (a) { return a.name === 'Clawdia.dmg'; }) || assets.find(function (a) { return /\.dmg$/i.test(a.name); });
+        var windows = assets.find(function (a) { return a.name === 'Clawdia-setup.exe'; }) || assets.find(function (a) { return /setup.*\.exe$/i.test(a.name) || /\.exe$/i.test(a.name); });
 
         return {
-          version: version,
           linux: linux ? { url: linux.browser_download_url, filename: linux.name, size: linux.size } : FALLBACK_DOWNLOADS.linux,
           mac: mac ? { url: mac.browser_download_url, filename: mac.name, size: mac.size } : FALLBACK_DOWNLOADS.mac,
           windows: windows ? { url: windows.browser_download_url, filename: windows.name, size: windows.size } : FALLBACK_DOWNLOADS.windows
@@ -41,7 +38,7 @@
       })
       .catch(function (err) {
         console.warn('Failed to fetch latest release, using fallback:', err);
-        return { version: FALLBACK_VERSION, linux: FALLBACK_DOWNLOADS.linux, mac: FALLBACK_DOWNLOADS.mac, windows: FALLBACK_DOWNLOADS.windows };
+        return { linux: FALLBACK_DOWNLOADS.linux, mac: FALLBACK_DOWNLOADS.mac, windows: FALLBACK_DOWNLOADS.windows };
       });
   }
 
@@ -81,7 +78,7 @@
   }
   if (downloadNote) {
     var others = osOthers[os] || osOthers.linux;
-    downloadNote.innerHTML = 'Also available for <a href="https://github.com/' + GITHUB_REPO + '/releases" target="_blank" rel="noopener">' + others + '</a>';
+    downloadNote.innerHTML = 'Also available for <a href="https://github.com/' + GITHUB_REPO + '/releases/latest" target="_blank" rel="noopener">' + others + '</a>';
   }
   if (downloadSize) {
     downloadSize.textContent = osFormats[os] || osFormats.linux;
