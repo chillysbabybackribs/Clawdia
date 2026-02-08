@@ -5,52 +5,96 @@ on:
     tags:
       - 'v*.*.*'
 
-permissions:
-  contents: write
-
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  build-linux:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Build (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: npm run dist:linux
-
-      - name: Build (Windows)
-        if: matrix.os == 'windows-latest'
-        run: npm run dist:win
-
-      - name: Build (macOS)
-        if: matrix.os == 'macos-latest'
-        run: npm run dist:mac
-
+      - run: rm -rf release dist
+      - run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - run: npm run dist:linux
       - name: SHA256
-        run: |
-          shasum -a 256 release/* || sha256sum release/*
+        run: sha256sum release/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-builds
+          path: |
+            release/*.AppImage
+            release/*.deb
 
-      - name: Upload Release Assets
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: rm -rf release dist
+      - run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - run: npm run dist:mac
+      - name: SHA256
+        run: shasum -a 256 release/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-builds
+          path: release/*.dmg
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: if (Test-Path release) { Remove-Item -Recurse -Force release }; if (Test-Path dist) { Remove-Item -Recurse -Force dist }
+        shell: pwsh
+      - run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - run: npm run dist:win
+      - name: SHA256
+        run: Get-FileHash release\* -Algorithm SHA256 | Format-Table -AutoSize
+        shell: pwsh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-builds
+          path: |
+            release/*-setup.exe
+            release/*-portable.exe
+
+  release:
+    needs: [build-linux, build-mac, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: artifacts
+
+      - name: List artifacts
+        run: ls -lh artifacts/
+
+      - name: SHA256 all release assets
+        run: sha256sum artifacts/*
+
+      - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release/*.AppImage
-            release/*.deb
-            release/*-setup.exe
-            release/*-portable.exe
-            release/*.dmg
+            artifacts/*.AppImage
+            artifacts/*.deb
+            artifacts/*-setup.exe
+            artifacts/*-portable.exe
+            artifacts/*.dmg
+          draft: false
+          generate_release_notes: true
           fail_on_unmatched_files: false

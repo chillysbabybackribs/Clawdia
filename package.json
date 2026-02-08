@@ -1,6 +1,6 @@
 {
   "name": "clawdia",
-  "version": "1.0.0",
+  "version": "1.0.3",
   "description": "A local-first AI workspace for browser, code, and task automation.",
   "author": "Daniel Parker",
   "license": "MIT",
@@ -101,17 +101,16 @@
           "target": "AppImage",
           "arch": [
             "x64"
-          ],
-          "artifactName": "Clawdia.AppImage"
+          ]
         },
         {
           "target": "deb",
           "arch": [
             "x64"
-          ],
-          "artifactName": "Clawdia.deb"
+          ]
         }
       ],
+      "artifactName": "Clawdia.${ext}",
       "category": "Development",
       "maintainer": "Daniel Parker <dparker918@yahoo.com>",
       "executableArgs": [
@@ -138,10 +137,10 @@
           "arch": [
             "x64",
             "arm64"
-          ],
-          "artifactName": "Clawdia.dmg"
+          ]
         }
       ],
+      "artifactName": "Clawdia-${arch}.${ext}",
       "category": "public.app-category.developer-tools",
       "icon": "build/icon.icns",
       "darkModeSupport": true,
@@ -162,8 +161,7 @@
           "target": "portable",
           "arch": [
             "x64"
-          ],
-          "artifactName": "Clawdia-portable.exe"
+          ]
         }
       ],
       "icon": "build/icon.ico"
@@ -181,7 +179,7 @@
       "artifactName": "Clawdia-setup.exe"
     },
     "dmg": {
-      "artifactName": "Clawdia.dmg",
+      "artifactName": "Clawdia-${arch}.dmg",
       "contents": [
         {
           "x": 130,
@@ -200,7 +198,14 @@
       }
     },
     "appImage": {
+      "artifactName": "Clawdia.AppImage",
       "license": null
+    },
+    "deb": {
+      "artifactName": "Clawdia.deb"
+    },
+    "portable": {
+      "artifactName": "Clawdia-portable.exe"
     },
     "publish": null
   }
