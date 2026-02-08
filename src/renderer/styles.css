@@ -352,12 +352,14 @@ body {
    ============================================================================ */
 
 .setup-view {
-  flex: 1;
-  min-height: 0;
+  position: absolute;
+  inset: 0;
+  z-index: 100;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 20px;
+  background: var(--bg-primary);
 }
 
 .setup-card {
