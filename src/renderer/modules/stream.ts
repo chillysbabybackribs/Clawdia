@@ -215,10 +215,12 @@ function resetStreamOutput(): void {
     window.cancelAnimationFrame(appState.streamFlushRafId);
     appState.streamFlushRafId = null;
   }
-  if (appState.streamingContainer?.parentElement) {
-    appState.streamingContainer.remove();
+  // Clear the text content but keep the container in the DOM so the chat
+  // bubble stays visible during multi-iteration tool loops. Removing the
+  // element entirely caused the in-progress response to vanish mid-stream.
+  if (appState.streamingContainer) {
+    appState.streamingContainer.innerHTML = '';
   }
-  appState.streamingContainer = null;
   appState.currentTextChunk = null;
   appState.pendingStreamTextChunks = [];
   appState.fullStreamBuffer = '';

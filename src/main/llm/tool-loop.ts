@@ -1163,12 +1163,12 @@ export class ToolLoop {
 
       continuationCount = 0;
 
-      // If tools were requested, discard any speculative stream text emitted
-      // before tool_use blocks to avoid duplicate/plan text in the chat.
-      if (this.hasStreamedText) {
-        this.emitStreamReset();
-        this.hasStreamedText = false;
-      }
+      // Tool calls found — reset the streamed-text flag for the next iteration
+      // but do NOT emit a stream reset to the renderer. The old emitStreamReset()
+      // cleared the chat bubble between iterations, causing visible flickering.
+      // The final response replaces all streamed content anyway via
+      // finalizeAssistantMessage(), so intermediate text is harmless.
+      this.hasStreamedText = false;
 
       // Tool calls found — the LLM sometimes emits text before tool_use blocks.
       // That text was streamed to the renderer; it's harmless but we don't need to act on it.
