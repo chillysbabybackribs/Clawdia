@@ -100,6 +100,13 @@ function generateFriendlyUrlDisplay(urlString: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Initialization (called from main.ts at startup)
+// ---------------------------------------------------------------------------
+export function initMarkdown(): void {
+  // No initialization required — cache and DOMPurify are ready at import time.
+}
+
+// ---------------------------------------------------------------------------
 // Markdown rendering with link shortening
 // ---------------------------------------------------------------------------
 export function renderMarkdown(text: string, skipCache: boolean = false): string {
@@ -112,7 +119,16 @@ export function renderMarkdown(text: string, skipCache: boolean = false): string
   const cached = getCachedMarkdown(cacheKey);
   if (cached) return cached;
 
-  let html = escapeHtml(text);
+  // Extract URLs from raw text BEFORE escaping so they aren't mangled
+  // (escapeHtml turns & → &amp; which breaks query strings)
+  const urlPlaceholders: { placeholder: string; url: string }[] = [];
+  let textWithPlaceholders = text.replace(/(https?:\/\/[^\s<]+)/g, (match, _p1, offset) => {
+    const placeholder = `\x00URL${offset}\x00`;
+    urlPlaceholders.push({ placeholder, url: match });
+    return placeholder;
+  });
+
+  let html = escapeHtml(textWithPlaceholders);
 
   // Basic markdown
   html = html
@@ -128,13 +144,12 @@ export function renderMarkdown(text: string, skipCache: boolean = false): string
     .replace(/\n\n/g, '</p><p>')
     .replace(/\n/g, '<br>');
 
-  // Linkify with friendly URL display text
-  html = html.replace(/(https?:\/\/[^\s<]+)/g, (match) => {
-    const display = generateFriendlyUrlDisplay(match);
-    return `<a href="${match}" class="source-link" data-source-url="${match}" data-source-title="${escapeHtml(display)}" title="${escapeHtml(match)}" target="_blank" rel="noreferrer">${escapeHtml(
-      display
-    )}</a>`;
-  });
+  // Restore URLs as proper link elements with clean (un-escaped) href/data attrs
+  for (const { placeholder, url } of urlPlaceholders) {
+    const display = generateFriendlyUrlDisplay(url);
+    const link = `<a href="${escapeHtml(url)}" class="source-link" data-source-url="${escapeHtml(url)}" data-source-title="${escapeHtml(display)}" title="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(display)}</a>`;
+    html = html.replace(placeholder, link);
+  }
 
   html = linkifyFilePaths(html);
 

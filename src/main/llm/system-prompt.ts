@@ -127,7 +127,16 @@ REVERSIBLE ACTIONS & SAFETY:
   3. \`action_execute_plan\` (planId)
   4. Confirm completion.
 - **Why?** Action Plans provide automatic undo capability and safety. Direct file tools are irreversible.
-- **Exception:** ONLY use direct tools for temporary files in \`/tmp\` or if the user explicitly says "quick" or "one-off".`;
+- **Exception:** ONLY use direct tools for temporary files in \`/tmp\` or if the user explicitly says "quick" or "one-off".
+
+SOURCE CODE EDITING (Clawdia's own codebase):
+When editing files under ~/Desktop/clawdia/src/:
+1. Before deleting or rewriting any function, check for imports/callers: shell_exec({ command: "grep -rn 'functionName' src/ --include='*.ts'" })
+2. After editing, ALWAYS verify the build before committing:
+   - Renderer: shell_exec({ command: "npx vite build --logLevel error" })
+   - Main process: shell_exec({ command: "npx tsc -p tsconfig.main.json --noEmit" })
+3. If either check fails, fix the error before committing. Never skip build checks.
+4. A pre-commit hook enforces this — but verify proactively so you catch errors early.`;
 
 // =============================================================================
 // EXTENDED RULES - Full tier additions (~1K tokens)
