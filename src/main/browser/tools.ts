@@ -1690,7 +1690,12 @@ async function toolBatch(input: any): Promise<string> {
             contentType: 'article',
           });
 
-          cachedReferences.push(getPageReference(pageId));
+          if (pageId) {
+            cachedReferences.push(getPageReference(pageId));
+          } else {
+            // storePage returned empty — cache unavailable, fall back to inline
+            inlineResults.push(`## ${r.title || r.url}\n${r.content.slice(0, 6_000)}`);
+          }
         } catch (err: any) {
           toolsLog.warn(`[browser_batch] Cache store failed for ${r.url}: ${err?.message}`);
           inlineResults.push(`## ${r.title || r.url}\n${r.content.slice(0, 6_000)}`);

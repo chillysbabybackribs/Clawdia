@@ -9,7 +9,7 @@ const EXTRACTION_MODEL = 'claude-haiku-4-5-20251001';
 
 let siteKnowledge: SiteKnowledgeBase | null = null;
 let userMemory: UserMemory | null = null;
-const extractedConversations = new Set<string>();
+const extractionCounts = new Map<string, number>();
 
 function initLearningSystem(): void {
   if (siteKnowledge && userMemory) return;
@@ -44,11 +44,12 @@ function maybeExtractMemories(
   client: AnthropicClient
 ): void {
   if (!userMemory) return;
-  if (extractedConversations.has(conversationId)) return;
+  const lastExtractedAt = extractionCounts.get(conversationId) ?? 0;
+  if (conversationMessages.length - lastExtractedAt < 10) return;
   const userMessages = conversationMessages.filter((m) => m.role === 'user');
   if (userMessages.length < 2) return;
 
-  extractedConversations.add(conversationId);
+  extractionCounts.set(conversationId, conversationMessages.length);
   const recent = conversationMessages.slice(-10);
   const existingContext = userMemory.getPromptContext(800) || 'Nothing yet.';
 
@@ -101,12 +102,73 @@ IMPORTANT: Only extract information the user explicitly stated or clearly implie
   })();
 }
 
+/**
+ * Fire-and-forget: extract memories from messages about to be pruned.
+ * Called before autoPrune slices old messages so facts aren't lost.
+ */
+async function flushBeforePrune(
+  conversationId: string,
+  doomedMessages: Message[],
+  client: AnthropicClient
+): Promise<void> {
+  try {
+    if (!userMemory) return;
+
+    const content = doomedMessages
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .map((m) => `${m.role}: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`)
+      .join('\n')
+      .slice(0, 8000);
+
+    if (content.length < 200) return;
+
+    const extractionPrompt = `You are a memory extraction system. The following conversation messages are about to be deleted from history. Extract any factual information about the user that should be preserved for future conversations.
+
+Extract ONLY concrete facts the user explicitly stated or clearly implied. Focus on:
+- Account names, preferences, workflows, professional context, personal context
+
+Respond with lines in this format:
+REMEMBER:category:key:value
+SUPERSEDE:category:key (if a fact contradicts an existing one)
+
+Categories: preference, account, workflow, fact, context
+If nothing to extract, respond with NOTHING.
+
+Messages:
+${content}`;
+
+    const response = await client.complete([
+      { role: 'user', content: extractionPrompt },
+    ], { maxTokens: 1024, model: EXTRACTION_MODEL });
+
+    const text = response.text;
+
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim();
+      const rememberMatch = trimmed.match(/^REMEMBER:(\w+):([^:]+):(.+)$/);
+      if (rememberMatch) {
+        userMemory.remember(rememberMatch[1], rememberMatch[2].trim(), rememberMatch[3].trim(), 'flush');
+        continue;
+      }
+      const supersedeMatch = trimmed.match(/^SUPERSEDE:(\w+):(.+)$/);
+      if (supersedeMatch) {
+        userMemory.contradict(supersedeMatch[1], supersedeMatch[2].trim());
+      }
+    }
+
+    log.info(`[Memory] Flushed memories from ${doomedMessages.length} doomed messages in conversation ${conversationId}`);
+  } catch (err: any) {
+    log.warn('[Memory] flushBeforePrune failed', { err: err?.message || err });
+  }
+}
+
 export {
   initLearningSystem,
   shutdownLearningSystem,
   getSiteKnowledge,
   getUserMemory,
   maybeExtractMemories,
+  flushBeforePrune,
   siteKnowledge,
   userMemory,
 };

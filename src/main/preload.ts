@@ -123,6 +123,16 @@ const api = {
     return () => ipcRenderer.removeListener(IPC_EVENTS.CHAT_ERROR, handler);
   },
 
+  onToolLimitReached: (callback: (data: { toolCallCount: number; maxToolCalls: number }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on(IPC_EVENTS.CHAT_TOOL_LIMIT_REACHED, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.CHAT_TOOL_LIMIT_REACHED, handler);
+  },
+
+  respondToToolLimit: (shouldContinue: boolean) => {
+    return ipcRenderer.invoke(IPC.CHAT_CONTINUE_RESPONSE, { continue: shouldContinue });
+  },
+
   onToolActivity: (callback: (entry: ToolActivityEntry) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, entry: ToolActivityEntry) => callback(entry);
     ipcRenderer.on(IPC_EVENTS.CHAT_TOOL_ACTIVITY, handler);
@@ -371,6 +381,23 @@ const api = {
   actionGetPlan: (planId: string) => invokeChecked(IPC.ACTION_GET_PLAN, { planId }),
 
   actionGetItems: (planId: string) => invokeChecked(IPC.ACTION_GET_ITEMS, { planId }),
+
+  // -------------------------------------------------------------------------
+  // Dashboard
+  // -------------------------------------------------------------------------
+  getDashboard: () => invokeChecked(IPC.DASHBOARD_GET),
+
+  dismissDashboardRule: (ruleId: string) =>
+    invokeChecked(IPC.DASHBOARD_DISMISS_RULE, { ruleId }),
+
+  setDashboardVisible: (visible: boolean) =>
+    invokeChecked(IPC.DASHBOARD_SET_VISIBLE, { visible }),
+
+  onDashboardUpdate: (callback: (state: any) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: any) => callback(state);
+    ipcRenderer.on(IPC_EVENTS.DASHBOARD_UPDATE, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.DASHBOARD_UPDATE, handler);
+  },
 };
 
 // Expose to renderer

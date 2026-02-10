@@ -350,10 +350,10 @@ function getAccountsContext(): string {
  * Get the DYNAMIC portion (date, system info, model, accounts)
  * This changes per request or session.
  */
-function getLearningContext(currentUrl?: string): string {
+function getLearningContext(currentUrl?: string, currentMessage?: string): string {
   let context = '';
 
-  const memoryCtx = userMemory?.getPromptContext(1200);
+  const memoryCtx = userMemory?.getPromptContext(1200, currentMessage);
   if (memoryCtx) {
     context += `\n${memoryCtx}\n`;
   }
@@ -382,7 +382,7 @@ function getLearningContext(currentUrl?: string): string {
   return context.trim();
 }
 
-export function getDynamicPrompt(modelLabel?: string, currentUrl?: string): string {
+export function getDynamicPrompt(modelLabel?: string, currentUrl?: string, currentMessage?: string): string {
   const parts = [
     getDateContext(),
     getSystemContext(),
@@ -395,7 +395,7 @@ export function getDynamicPrompt(modelLabel?: string, currentUrl?: string): stri
     parts.push(accountsCtx);
   }
 
-  const learningCtx = getLearningContext(currentUrl);
+  const learningCtx = getLearningContext(currentUrl, currentMessage);
   if (learningCtx) {
     parts.push(learningCtx);
   }

@@ -30,7 +30,7 @@ import { createLogger, setLogLevel, type LogLevel } from './logger';
 import { handleValidated, ipcSchemas } from './ipc-validator';
 import { initSearchCache, closeSearchCache } from './cache/search-cache';
 import { listAccounts, addAccount, removeAccount } from './accounts/account-store';
-import { initLearningSystem, shutdownLearningSystem, siteKnowledge, userMemory, maybeExtractMemories } from './learning';
+import { initLearningSystem, shutdownLearningSystem, siteKnowledge, userMemory, maybeExtractMemories, flushBeforePrune } from './learning';
 import { initVault } from './vault/db';
 import { IngestionManager, ingestionEmitter } from './ingestion/manager';
 import { VaultSearch } from './vault/search';
@@ -38,6 +38,10 @@ import { getIngestionJob } from './vault/documents';
 import { createPlan, addAction, getPlan, getActions } from './actions/ledger';
 import { ActionExecutor } from './actions/executor';
 import { ActionType, IngestionJob } from '../shared/vault-types';
+import { generateDashboardRules } from './dashboard/suggestions';
+import { DashboardExecutor } from './dashboard/executor';
+import { setTokenUsageCallback } from './llm/tool-loop';
+import { getBrowserStatus } from './browser/manager';
 
 const log = createLogger('main');
 // TEST FIX: Verifying cascade restart issue is resolved - 2026-02-07 TESTING NOW
@@ -69,6 +73,10 @@ app.commandLine.appendSwitch('remote-debugging-port', String(REMOTE_DEBUGGING_PO
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('no-sandbox');
   app.commandLine.appendSwitch('disable-setuid-sandbox');
+  // GPU stability: prevent GPU process crashes that kill the app on Linux/NVIDIA
+  app.commandLine.appendSwitch('disable-gpu-compositing');
+  app.commandLine.appendSwitch('disable-gpu-sandbox');
+  app.commandLine.appendSwitch('in-process-gpu');
 }
 // FedCM is currently flaky in embedded Chromium flows (e.g., Google sign-in on claude.ai).
 // Force classic OAuth popup/redirect fallback instead of navigator.credentials.get().
@@ -82,6 +90,7 @@ if (process.env.NODE_ENV !== 'production') {
 let mainWindow: BrowserWindow | null = null;
 let conversationManager: ConversationManager;
 let activeToolLoop: ToolLoop | null = null;
+let dashboardExecutor: DashboardExecutor | null = null;
 
 // Cache the AnthropicClient to reuse HTTP connection pooling.
 let cachedClient: AnthropicClient | null = null;
@@ -325,6 +334,101 @@ function createWindow(): void {
 
     // Detect fast-path CLI tools (yt-dlp, wget, etc.) in background.
     void detectFastPathTools();
+
+    // Dashboard executor — starts immediately (static layer works without rules).
+    // Haiku rules generation is async and loaded when ready.
+    let lastMessageTimestamp: number | null = null;
+    dashboardExecutor = new DashboardExecutor({
+      getSelectedModel,
+      storeGet: (key: string) => store.get(key as any),
+      getBrowserStatus,
+      lastMessageGetter: () => lastMessageTimestamp,
+    });
+
+    dashboardExecutor.setUpdateEmitter((state) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(IPC_EVENTS.DASHBOARD_UPDATE, state);
+      }
+    });
+
+    // Forward token usage from tool-loop to executor
+    setTokenUsageCallback((data) => dashboardExecutor?.addTokenUsage(data));
+
+    dashboardExecutor.start();
+
+    // Async: generate rules via Haiku
+    const dashApiKey = getAnthropicApiKey();
+    if (dashApiKey) {
+      void (async () => {
+        try {
+          const dashClient = getClient(dashApiKey, getSelectedModel());
+          let memCtx = '';
+          try { memCtx = userMemory?.getPromptContext(600) || ''; } catch { /* db may not be ready */ }
+
+          let topSites = '';
+          try {
+            const sk = siteKnowledge;
+            if (sk) {
+              const sites = (sk as any).db
+                .prepare(`SELECT hostname, SUM(success_count) AS total FROM site_knowledge GROUP BY hostname ORDER BY total DESC LIMIT 10`)
+                .all() as Array<{ hostname: string; total: number }>;
+              topSites = sites.map(s => `${s.hostname} (${s.total})`).join(', ');
+              if (topSites) topSites = `Top sites: ${topSites}`;
+            }
+          } catch { /* site knowledge may not be ready */ }
+
+          let recentConvos = '';
+          try {
+            const convos = conversationManager.list().slice(0, 5);
+            if (convos.length > 0) {
+              recentConvos = convos.map(c => {
+                const ago = Math.round((Date.now() - new Date(c.updatedAt).getTime()) / 60_000);
+                const agoStr = ago < 60 ? `${ago}m ago` : `${Math.round(ago / 60)}h ago`;
+                return `- "${c.title}" (${agoStr})`;
+              }).join('\n');
+            }
+          } catch { /* conversations may not be ready */ }
+
+          const rules = await generateDashboardRules(dashClient, {
+            userMemoryContext: memCtx,
+            topSitesContext: topSites,
+            recentConversations: recentConvos,
+          });
+          dashboardExecutor?.setRules(rules);
+          log.info('[Dashboard] Rules ready');
+        } catch (err: any) {
+          log.warn(`[Dashboard] Rules generation failed: ${err?.message || err}`);
+        }
+      })();
+    }
+  });
+
+  // --- Crash recovery: GPU and renderer process deaths ---
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    log.error(`Renderer process gone: reason=${details.reason}, exitCode=${details.exitCode}`);
+    if (details.reason === 'crashed' || details.reason === 'oom' || details.reason === 'killed') {
+      log.warn('Attempting to reload renderer after crash...');
+      try {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          const isDev = process.env.NODE_ENV === 'development';
+          if (isDev) {
+            mainWindow.loadURL('http://localhost:5173');
+          } else {
+            mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+          }
+        }
+      } catch (reloadErr: any) {
+        log.error(`Failed to reload after crash: ${reloadErr?.message}`);
+      }
+    }
+  });
+
+  mainWindow.webContents.on('unresponsive', () => {
+    log.warn('Main window became unresponsive — waiting for recovery...');
+  });
+
+  mainWindow.webContents.on('responsive', () => {
+    log.info('Main window is responsive again');
   });
 
   mainWindow.on('closed', () => {
@@ -382,6 +486,14 @@ function setupIpcHandlers(): void {
         mainWindow.webContents.send(IPC_EVENTS.CHAT_STREAM_TEXT, response);
       }
       mainWindow.webContents.send(IPC_EVENTS.CHAT_STREAM_END, response);
+
+      // Pre-prune flush: extract memories from messages about to be deleted
+      const currentMsgs = conversationManager.get(conversation.id)?.messages || [];
+      const willPruneCount = (currentMsgs.length + 2) - ConversationManager.getMaxPersistedMessages();
+      if (willPruneCount > 0) {
+        const doomed = currentMsgs.slice(0, willPruneCount);
+        flushBeforePrune(conversation.id, doomed, client).catch(() => {});
+      }
 
       conversationManager.addMessage(conversation.id, { role: 'user', content: message || '[Empty message]', images, documents: documentMetas });
       conversationManager.addMessage(conversation.id, { role: 'assistant', content: response || '[No response]' });
@@ -701,6 +813,21 @@ function setupIpcHandlers(): void {
     const items = getActions(payload.planId);
     return { success: true, items };
   });
+
+  // Dashboard
+  handleValidated(IPC.DASHBOARD_GET, ipcSchemas[IPC.DASHBOARD_GET], async () => {
+    return dashboardExecutor?.getCurrentState() ?? null;
+  });
+
+  handleValidated(IPC.DASHBOARD_DISMISS_RULE, ipcSchemas[IPC.DASHBOARD_DISMISS_RULE], async (_event, { ruleId }) => {
+    dashboardExecutor?.dismissRule(ruleId);
+    return { success: true };
+  });
+
+  handleValidated(IPC.DASHBOARD_SET_VISIBLE, ipcSchemas[IPC.DASHBOARD_SET_VISIBLE], async (_event, { visible }) => {
+    dashboardExecutor?.setDashboardVisible(visible);
+    return { success: true };
+  });
 }
 
 const gotTheLock = app.requestSingleInstanceLock();
@@ -736,6 +863,7 @@ if (!gotTheLock) {
 }
 
 app.on('window-all-closed', () => {
+  dashboardExecutor?.stop();
   stopSessionReaper();
   closeSearchCache();
   shutdownLearningSystem();
@@ -750,6 +878,16 @@ app.on('certificate-error', (event, _webContents, _url, _error, _certificate, ca
     callback(true);
   } else {
     callback(false);
+  }
+});
+
+// GPU / child process crash recovery — prevent cascading app death.
+app.on('child-process-gone', (_event, details) => {
+  log.error(`Child process gone: type=${details.type}, reason=${details.reason}, exitCode=${details.exitCode}`);
+  if (details.type === 'GPU') {
+    log.warn('GPU process crashed — app continues with software rendering');
+    // With --in-process-gpu on Linux this shouldn't happen, but if it does
+    // the app can continue; Chromium falls back to software rendering automatically.
   }
 });
 
@@ -780,7 +918,19 @@ async function gracefulShutdown(signal: string): Promise<void> {
 process.on('SIGTERM', () => void gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => void gracefulShutdown('SIGINT'));
 
+// SIGPIPE: broken pipe from stdout/stderr (e.g., piped to a dead process).
+// Default Node.js behavior is to crash — we suppress it entirely.
+process.on('SIGPIPE', () => {
+  log.debug('SIGPIPE received (suppressed)');
+});
+
 process.on('uncaughtException', (error) => {
+  // EPIPE / SIGPIPE errors should never crash the app — they just mean
+  // a pipe (stdout/stderr) was broken, which is harmless.
+  if (error && (error as any).code === 'EPIPE') {
+    log.debug('EPIPE exception suppressed');
+    return;
+  }
   log.error('Uncaught exception:', error);
 });
 

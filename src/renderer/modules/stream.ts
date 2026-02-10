@@ -29,6 +29,10 @@ export function initStream(): void {
     appendError(error.error);
     setStreaming(false);
   });
+
+  window.api.onToolLimitReached((data) => {
+    showToolLimitPrompt(data.toolCallCount);
+  });
 }
 
 export function setStreaming(streaming: boolean): void {
@@ -320,4 +324,39 @@ export function appendError(message: string): void {
   errorEl.textContent = message;
   elements.outputEl.appendChild(errorEl);
   scrollToBottom(false);
+}
+
+function showToolLimitPrompt(toolCallCount: number): void {
+  // Remove any existing prompt
+  const existing = document.querySelector('.tool-limit-prompt');
+  if (existing) existing.remove();
+
+  const container = document.createElement('div');
+  container.className = 'tool-limit-prompt';
+
+  const text = document.createElement('span');
+  text.className = 'tool-limit-prompt-text';
+  text.textContent = `Used ${toolCallCount} tool calls. Continue working?`;
+
+  const continueBtn = document.createElement('button');
+  continueBtn.className = 'tool-limit-btn tool-limit-continue';
+  continueBtn.textContent = 'Continue';
+  continueBtn.onclick = () => {
+    container.remove();
+    window.api.respondToToolLimit(true);
+  };
+
+  const stopBtn = document.createElement('button');
+  stopBtn.className = 'tool-limit-btn tool-limit-stop';
+  stopBtn.textContent = 'Finish up';
+  stopBtn.onclick = () => {
+    container.remove();
+    window.api.respondToToolLimit(false);
+  };
+
+  container.appendChild(text);
+  container.appendChild(continueBtn);
+  container.appendChild(stopBtn);
+  elements.outputEl.appendChild(container);
+  scrollToBottom(true);
 }

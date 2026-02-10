@@ -13,7 +13,7 @@ const DEFAULT_TITLE = 'New Chat';
  * The LLM can always recover context by reading files, git log, grep, etc.
  * Users can change this at runtime via prompt (e.g. "change history to 20").
  */
-let MAX_PERSISTED_MESSAGES = 10;
+let MAX_PERSISTED_MESSAGES = 50;
 
 function evictToolResults(messages: Message[]): Message[] {
   return messages;

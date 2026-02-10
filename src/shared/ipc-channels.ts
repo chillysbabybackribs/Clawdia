@@ -86,6 +86,14 @@ export const IPC = {
   VAULT_GET_JOB: 'vault:get-job',
   VAULT_GET_DOC: 'vault:get-doc',
 
+  // Tool loop continuation
+  CHAT_CONTINUE_RESPONSE: 'chat:continue-response',
+
+  // Dashboard
+  DASHBOARD_GET: 'dashboard:get',
+  DASHBOARD_DISMISS_RULE: 'dashboard:dismiss-rule',
+  DASHBOARD_SET_VISIBLE: 'dashboard:set-visible',
+
   // Actions
   ACTION_CREATE_PLAN: 'action:create-plan',
   ACTION_ADD_ITEM: 'action:add-item',
@@ -116,6 +124,7 @@ export const IPC_EVENTS = {
   CHAT_TOOL_ACTIVITY_SUMMARY: 'chat:tool:activity:summary',
   API_USAGE_WARNING: 'api:usage:warning',
   CHAT_ROUTE_INFO: 'chat:route:info',
+  CHAT_TOOL_LIMIT_REACHED: 'chat:tool-limit:reached',
 
   // Browser state
   BROWSER_NAVIGATED: 'browser:navigated',
@@ -133,4 +142,7 @@ export const IPC_EVENTS = {
   // Accounts
   ACCOUNTS_UPDATED: 'accounts:updated',
   VAULT_JOB_UPDATE: 'vault:job:update',
+
+  // Dashboard
+  DASHBOARD_UPDATE: 'dashboard:update',
 } as const;

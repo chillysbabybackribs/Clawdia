@@ -11,6 +11,7 @@ const wiredPages = new WeakSet<Page>();
 
 function schedulePopupDismiss(page: Page, delayMs: number = POST_NAV_DISMISS_DELAY_MS): void {
   setTimeout(() => {
+    if (page.isClosed()) return;
     void dismissPopups(page);
   }, delayMs);
 }
@@ -273,6 +274,7 @@ export async function dismissPopups(page: Page): Promise<void> {
     const msg = err?.message || '';
     if (msg.includes('Execution context was destroyed') ||
         msg.includes('Target closed') ||
+        msg.includes('has been closed') ||
         msg.includes('frame was detached') ||
         msg.includes('navigation')) {
       return;

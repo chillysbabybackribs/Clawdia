@@ -48,12 +48,13 @@ export interface SearchResultEntry {
 // --- Singleton ---
 
 let db: Database.Database | null = null;
-let initFailed = false;
+let initFailCount = 0;
+const MAX_INIT_RETRIES = 3;
 
 /** Returns true if the cache DB is available (or could be opened). */
 export function isCacheAvailable(): boolean {
   if (db) return true;
-  if (initFailed) return false;
+  if (initFailCount >= MAX_INIT_RETRIES) return false;
   try {
     getDb();
     return true;
@@ -64,16 +65,17 @@ export function isCacheAvailable(): boolean {
 
 function getDb(): Database.Database {
   if (db) return db;
-  if (initFailed) throw new Error('Search cache previously failed to initialize');
+  if (initFailCount >= MAX_INIT_RETRIES) throw new Error(`Search cache failed to initialize after ${MAX_INIT_RETRIES} attempts`);
 
   const dbPath = path.join(app.getPath('userData'), 'search-cache.sqlite');
-  log.info(`Opening search cache at ${dbPath}`);
+  log.info(`Opening search cache at ${dbPath} (attempt ${initFailCount + 1})`);
 
   try {
     db = new Database(dbPath);
+    initFailCount = 0; // Reset on success
   } catch (err: any) {
-    initFailed = true;
-    log.warn(`Failed to open search cache DB: ${err?.message}`);
+    initFailCount++;
+    log.warn(`Failed to open search cache DB (attempt ${initFailCount}/${MAX_INIT_RETRIES}): ${err?.message}`);
     throw err;
   }
   db.pragma('journal_mode = WAL');
@@ -137,7 +139,7 @@ export function storePage(
   },
 ): string {
   const id = makePageId(url);
-  if (initFailed) return id; // Return ID but skip storage
+  if (initFailCount >= MAX_INIT_RETRIES) return ''; // Signal that storage was skipped
   const database = getDb();
 
   database.prepare(`
@@ -165,7 +167,7 @@ export function storeSearch(
   source?: string,
 ): string {
   const id = randomUUID().slice(0, 12);
-  if (initFailed) return id;
+  if (initFailCount >= MAX_INIT_RETRIES) return '';
   const database = getDb();
 
   database.prepare(`
@@ -184,7 +186,7 @@ export function storeSearch(
 }
 
 export function getPage(pageId: string): CachedPage | null {
-  if (initFailed) return null;
+  if (initFailCount >= MAX_INIT_RETRIES) return null;
   const database = getDb();
   const row = database.prepare('SELECT * FROM pages WHERE id = ?').get(pageId) as any;
   if (!row) return null;
@@ -202,7 +204,7 @@ export function getPage(pageId: string): CachedPage | null {
 }
 
 export function getPageByUrl(url: string, maxAgeMs?: number): CachedPage | null {
-  if (initFailed) return null;
+  if (initFailCount >= MAX_INIT_RETRIES) return null;
   const database = getDb();
   let row: any;
 
@@ -228,7 +230,7 @@ export function getPageByUrl(url: string, maxAgeMs?: number): CachedPage | null 
 }
 
 export function getSearch(searchId: string): CachedSearch | null {
-  if (initFailed) return null;
+  if (initFailCount >= MAX_INIT_RETRIES) return null;
   const database = getDb();
   const row = database.prepare('SELECT * FROM searches WHERE id = ?').get(searchId) as any;
   if (!row) return null;
@@ -242,7 +244,7 @@ export function getSearch(searchId: string): CachedSearch | null {
 }
 
 export function getRecentSearches(limit = 10): CachedSearch[] {
-  if (initFailed) return [];
+  if (initFailCount >= MAX_INIT_RETRIES) return [];
   const database = getDb();
   const rows = database.prepare('SELECT * FROM searches ORDER BY searched_at DESC LIMIT ?').all(limit) as any[];
   return rows.map((row) => ({
@@ -317,7 +319,7 @@ export function getPageSection(pageId: string, keyword: string, maxChars = 5_000
  * Delete entries older than maxAgeMs. Returns count of deleted entries.
  */
 export function pruneOlderThan(maxAgeMs: number): number {
-  if (initFailed) return 0;
+  if (initFailCount >= MAX_INIT_RETRIES) return 0;
   const database = getDb();
   const cutoff = Date.now() - maxAgeMs;
 

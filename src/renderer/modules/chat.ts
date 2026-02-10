@@ -1,5 +1,6 @@
 import type { DocumentAttachment, DocumentMeta, ImageAttachment, ToolCall } from '../../shared/types';
 import { hideArcade, resetArcadeDismissed, showArcade } from '../arcade/menu';
+import { fetchAndShowDashboard, hideDashboard, resetDashboardCache } from './dashboard';
 import { clearPendingAttachments, renderMessageImages, showAttachmentError } from './attachments';
 import { closeBrowserMenu, handleOutsideClick, handleSourceLinkClick } from './browser';
 import { renderMessageDocuments } from './documents';
@@ -92,9 +93,11 @@ function updateEmptyState(): void {
   if (appState.isSetupMode) return;
   const hasMessages = elements.outputEl.children.length > 0;
   if (hasMessages) {
+    hideDashboard();
     hideArcade();
   } else {
-    showArcade(elements.outputEl);
+    // Dashboard first; arcade is available from setup screen
+    void fetchAndShowDashboard(elements.outputEl);
   }
 }
 
@@ -423,6 +426,7 @@ async function switchChatTab(
 async function createNewChatTab(): Promise<void> {
   if (appState.isStreaming) return;
   resetArcadeDismissed();
+  resetDashboardCache();
   const conversation = await window.api.newConversation();
   appState.openChatTabs.push({ id: conversation.id, title: DEFAULT_CHAT_TAB_TITLE });
   renderChatTabs();
@@ -639,14 +643,10 @@ async function sendMessage(): Promise<void> {
 }
 
 function appendUserMessage(content: string, shouldScroll: boolean = true, images?: ImageAttachment[], documents?: DocumentMeta[]): HTMLDivElement {
+  hideDashboard();
   hideArcade();
   const wrapper = document.createElement('div');
   wrapper.className = 'user-message';
-
-  const label = document.createElement('div');
-  label.className = 'user-message-label';
-  label.textContent = 'You';
-  wrapper.appendChild(label);
 
   if (images && images.length > 0) {
     renderMessageImages(images, wrapper);

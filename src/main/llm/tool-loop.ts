@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, ipcMain } from 'electron';
 import { homedir } from 'os';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -14,7 +14,7 @@ import {
   ToolExecCompleteEvent,
   ToolStepProgressEvent,
 } from '../../shared/types';
-import { IPC_EVENTS } from '../../shared/ipc-channels';
+import { IPC, IPC_EVENTS } from '../../shared/ipc-channels';
 import { buildSystemPrompt, getStaticPrompt, getDynamicPrompt, type PromptTier } from './system-prompt';
 import { getModelLabel, getModelConfig } from '../../shared/models';
 import { BROWSER_TOOL_DEFINITIONS, executeTool as executeBrowserTool } from '../browser/tools';
@@ -52,15 +52,15 @@ import { createLogger, perfLog, perfTimer } from '../logger';
 
 const log = createLogger('tool-loop');
 
-const MAX_TOOL_CALLS = 75;
-const MAX_TOOL_ITERATIONS = 75;
+const MAX_TOOL_CALLS = 150;
+const MAX_TOOL_ITERATIONS = 150;
 import { ConversationManager } from './conversation';
 // Dynamically reads from ConversationManager so runtime changes apply everywhere
 const getMaxHistoryMessages = () => ConversationManager.getMaxPersistedMessages();
 const MAX_FINAL_RESPONSE_CONTINUATIONS = 3;
-const MAX_TOOL_RESULT_IN_HISTORY = 1000; // chars — roughly 250 tokens
+const MAX_TOOL_RESULT_IN_HISTORY = 2000; // chars — roughly 500 tokens; retains enough context for synthesis
 const MAX_TOOL_RESULT_CHARS = 30_000; // hard cap on any single tool result before it enters conversation
-const KEEP_FULL_TOOL_RESULTS = 1; // keep last N tool_result messages uncompressed
+const KEEP_FULL_TOOL_RESULTS = 4; // keep last N tool_result messages uncompressed (was 1 — too aggressive for research tasks)
 const LOCAL_TOOL_NAMES = new Set(LOCAL_TOOL_DEFINITIONS.map((tool) => tool.name));
 import { VAULT_TOOL_DEFINITIONS, executeVaultTool } from '../vault/tools';
 
@@ -68,6 +68,13 @@ const ALL_TOOLS = [...BROWSER_TOOL_DEFINITIONS, ...LOCAL_TOOL_DEFINITIONS, SEQUE
 const VAULT_TOOL_NAMES = new Set(VAULT_TOOL_DEFINITIONS.map(t => t.name));
 
 const LOCAL_WRITE_TOOL_NAMES = new Set(['file_write', 'file_edit']);
+
+// Token usage callback for dashboard executor
+let tokenUsageCallback: ((data: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number; model: string }) => void) | null = null;
+
+export function setTokenUsageCallback(cb: typeof tokenUsageCallback): void {
+  tokenUsageCallback = cb;
+}
 
 const MEDIA_EXTRACT_FAST_PATH_MIN_SCORE = 0.8;
 const MEDIA_EXTRACT_CDN_DENY_RE = /(MissingKey|Key-Pair-Id|403\s+Forbidden|HTTP\/?1\.\d\s+403|AccessDenied|Forbidden)/i;
@@ -91,7 +98,8 @@ const MEDIA_EXTRACT_ALLOWED_BROWSER_READ = new Set([
   'browser_search',
   'browser_search_rich',
 ]);
-const MEDIA_EXTRACT_FORBIDDEN_SHELL_RE = /\b(ffmpeg|curl|wget|xdotool|apt-get|brew|pip|pip3)\b/i;
+// FFmpeg, curl, wget are now ALLOWED for media processing (v1.0.6+). Only system package managers restricted.
+const MEDIA_EXTRACT_FORBIDDEN_SHELL_RE = /\b(xdotool|apt-get|brew|pip|pip3)\b/i;
 
 function isBareHostUrl(url: string): boolean {
   try {
@@ -712,7 +720,7 @@ export class ToolLoop {
     // Build split prompts: static (cached) + dynamic (uncached, small)
     const minimalStatic = getStaticPrompt('minimal');
     const standardStatic = getStaticPrompt('standard');
-    const dynamicPrompt = getDynamicPrompt(modelLabel, currentUrl);
+    const dynamicPrompt = getDynamicPrompt(modelLabel, currentUrl, userMessage);
 
     // Combined prompts for backward-compat paths (forceFinalResponse, etc.)
     const minimalPrompt = minimalStatic + '\n\n' + dynamicPrompt;
@@ -881,7 +889,8 @@ export class ToolLoop {
     /** Track all tool names used across iterations for strategy cache. */
     const allToolNamesUsed: string[] = [];
 
-    for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+    let maxIterations = MAX_TOOL_ITERATIONS;
+    for (let iteration = 0; iteration < maxIterations; iteration++) {
       if (this.aborted) {
         this.emitThinking('');
         return '[Stopped]';
@@ -901,18 +910,31 @@ export class ToolLoop {
       }
 
       if (toolCallCount >= MAX_TOOL_CALLS) {
-        const text = await this.forceFinalResponseAtToolLimit(messages, systemPrompt, systemDynamic);
-        this.emitThinking('');
-        this.emitToolActivitySummary(text);
-        const totalMs = performance.now() - totalStart; log.info(`Total wall time: ${totalMs.toFixed(0)}ms, iterations: ${iteration + 1}, toolCalls: ${toolCallCount}`); perfLog("tool-loop", "total-wall-time", totalMs, { iterations: iteration + 1, toolCalls: toolCallCount });
-        return text;
+        // Ask the user if they want to continue
+        const shouldContinue = await this.askUserToContinue(toolCallCount);
+        if (shouldContinue) {
+          toolCallCount = 0; // Reset counter for another round
+          log.info(`User chose to continue — tool call counter reset`);
+          messages.push(
+            makeMessage(
+              'user',
+              '[SYSTEM: The user has granted you additional tool calls. Continue working on the task. Pick up where you left off.]'
+            )
+          );
+        } else {
+          const text = await this.forceFinalResponseAtToolLimit(messages, systemPrompt, systemDynamic);
+          this.emitThinking('');
+          this.emitToolActivitySummary(text);
+          const totalMs = performance.now() - totalStart; log.info(`Total wall time: ${totalMs.toFixed(0)}ms, iterations: ${iteration + 1}, toolCalls: ${toolCallCount}`); perfLog("tool-loop", "total-wall-time", totalMs, { iterations: iteration + 1, toolCalls: toolCallCount });
+          return text;
+        }
       }
 
       if (toolCallCount === MAX_TOOL_CALLS - 5) {
         messages.push(
           makeMessage(
             'user',
-            '[SYSTEM: Approaching tool limit. Prioritize breadth — address ALL parts of the user\'s request. Do not give up or ask permission to continue.]'
+            '[SYSTEM: Approaching tool limit. Prioritize breadth — address ALL parts of the user\'s request. If you have not finished, you will be able to continue.]'
           )
         );
       }
@@ -1056,6 +1078,14 @@ export class ToolLoop {
           timestamp: Date.now(),
         });
       }
+      // Forward to dashboard executor for session cost tracking
+      tokenUsageCallback?.({
+        inputTokens: rIn || 0,
+        outputTokens: rOut || 0,
+        cacheReadTokens: cRead || 0,
+        cacheCreateTokens: cWrite || 0,
+        model: response.model,
+      });
       if ((rIn || 0) > 150_000) {
         log.warn(`High input token count: ${rIn} — approaching context limit`);
       }
@@ -1091,17 +1121,15 @@ export class ToolLoop {
         }
       }
       if (toolCalls.length === 0) {
-        // Final response — finish any open HTML stream
-        await this.finishStream(interceptor);
-        if (streamedFullText) {
-          this.streamed = true;
-        }
         if (responseText) {
           finalResponseParts.push(responseText);
         }
 
         // If the model was truncated by max_tokens, continue seamlessly.
-        if (response.stopReason === 'max_tokens' && continuationCount < MAX_FINAL_RESPONSE_CONTINUATIONS) {
+        // Do NOT finalize the stream yet — the continuation will keep appending
+        // to the same streaming container, preventing duplicate chat bubbles.
+        const willContinue = response.stopReason === 'max_tokens' && continuationCount < MAX_FINAL_RESPONSE_CONTINUATIONS;
+        if (willContinue) {
           continuationCount += 1;
           const contContent = response.content && response.content.length > 0
             ? response.content
@@ -1110,11 +1138,17 @@ export class ToolLoop {
           messages.push(
             makeMessage(
               'user',
-              '[SYSTEM: Your previous response was cut off by a token limit. Continue exactly where you left off, with no repetition. Finish all remaining required sections.]'
+              '[SYSTEM: Your previous response was cut off by a token limit. Continue exactly where you left off, with no repetition. Do not re-state what you already said. Finish all remaining required sections.]'
             )
           );
           this.emitThinking(`Continuing response (${continuationCount})...`);
           continue;
+        }
+
+        // Truly final response — finish any open HTML stream
+        await this.finishStream(interceptor);
+        if (streamedFullText) {
+          this.streamed = true;
         }
 
         this.emitThinking('');
@@ -1389,15 +1423,16 @@ export class ToolLoop {
       }
     }
 
+    // Iteration limit reached — force a final response
+    log.warn(`Iteration limit (${maxIterations}) reached, toolCalls: ${toolCallCount}`);
+    const text = await this.forceFinalResponseAtToolLimit(messages, systemPrompt, systemDynamic);
     this.emitThinking('');
-    this.emitToolActivitySummary('');
+    this.emitToolActivitySummary(text);
     const totalMsMax = performance.now() - totalStart;
-    log.warn(`Total wall time: ${totalMsMax.toFixed(0)}ms, iterations: ${MAX_TOOL_ITERATIONS}, toolCalls: ${toolCallCount} — exceeded max iterations`);
-    perfLog('tool-loop', 'total-wall-time-MAX', totalMsMax, { iterations: MAX_TOOL_ITERATIONS, toolCalls: toolCallCount });
+    log.warn(`Total wall time: ${totalMsMax.toFixed(0)}ms, iterations: ${maxIterations}, toolCalls: ${toolCallCount} — exceeded max iterations`);
+    perfLog('tool-loop', 'total-wall-time-MAX', totalMsMax, { iterations: maxIterations, toolCalls: toolCallCount });
     this.emitToolLoopComplete(toolCallCount, totalMsMax, toolFailures);
-    throw new Error(
-      `Tool loop exceeded ${MAX_TOOL_ITERATIONS} iterations for this message. Please try a narrower request.`
-    );
+    return text;
   }
 
   // -------------------------------------------------------------------------
@@ -1545,9 +1580,12 @@ export class ToolLoop {
     // needs to emit tool_use blocks (~100-300 tokens). Smaller max_tokens means
     // faster inference because the model stops planning for 4096 output tokens.
     // Final response after tools: full budget restored (isToolLoopIteration=false).
-    if (!isToolLoopIteration) return 4096;
-    if (toolCallCount === 0) return 4096; // first call — could be direct response
-    return 1536; // intermediate: tool_use blocks + browser_interact steps fit in ~800 tokens
+    if (!isToolLoopIteration) return 8192;
+    if (toolCallCount === 0) return 8192; // first call — could be direct response
+    // Document creation needs a large budget — the entire doc content goes into
+    // the tool_use JSON input. Give full budget when document generation is active.
+    if (this.documentProgressEnabled) return 8192;
+    return 4096; // intermediate: tool_use + text preamble — 1536 was causing truncation
   }
 
   private startEarlyToolExecution(toolCall: ToolCall): Promise<string> {
@@ -1954,5 +1992,58 @@ export class ToolLoop {
       dynamicSystemPrompt: dynamicPrompt,
     });
     return this.extractText(finalResponse).trim();
+  }
+
+  /**
+   * Ask the user whether to continue after hitting the tool call limit.
+   * Emits an IPC event to the renderer and waits for a response.
+   * Returns true if user wants to continue, false to stop.
+   * Auto-stops after 120 seconds with no response.
+   */
+  private askUserToContinue(toolCallCount: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (this.window.isDestroyed()) {
+        resolve(false);
+        return;
+      }
+
+      const TIMEOUT_MS = 120_000; // 2 minutes
+      let resolved = false;
+
+      const cleanup = () => {
+        if (resolved) return;
+        resolved = true;
+        ipcMain.removeHandler(IPC.CHAT_CONTINUE_RESPONSE);
+      };
+
+      // Send the prompt to the renderer
+      this.window.webContents.send(IPC_EVENTS.CHAT_TOOL_LIMIT_REACHED, {
+        toolCallCount,
+        maxToolCalls: MAX_TOOL_CALLS,
+      });
+
+      // Listen for the user's response
+      ipcMain.handleOnce(IPC.CHAT_CONTINUE_RESPONSE, (_event, payload: { continue: boolean }) => {
+        cleanup();
+        log.info(`User responded to tool limit prompt: continue=${payload.continue}`);
+        resolve(payload.continue);
+        return { ok: true };
+      });
+
+      // Timeout — auto-stop if user doesn't respond
+      setTimeout(() => {
+        if (!resolved) {
+          log.info('Tool limit continue prompt timed out — forcing finish');
+          cleanup();
+          resolve(false);
+        }
+      }, TIMEOUT_MS);
+
+      // If aborted while waiting, stop
+      if (this.aborted) {
+        cleanup();
+        resolve(false);
+      }
+    });
   }
 }

@@ -630,6 +630,22 @@ export const actionIdSchema = isObject<{ planId: string }>({
   planId: isNonEmptyString('planId'),
 });
 
+export interface DashboardDismissRulePayload {
+  ruleId: string;
+}
+
+export interface DashboardSetVisiblePayload {
+  visible: boolean;
+}
+
+export const dashboardDismissRuleSchema = isObject<DashboardDismissRulePayload>({
+  ruleId: isNonEmptyString('ruleId'),
+});
+
+export const dashboardSetVisibleSchema = isObject<DashboardSetVisiblePayload>({
+  visible: isBoolean('visible'),
+});
+
 export function validate<T>(input: unknown, validator: Validator<T>): T {
   const result = validator(input);
   if (result.valid) return result.data;
@@ -718,4 +734,7 @@ export const ipcSchemas = {
   [IPC.ACTION_UNDO_PLAN]: actionIdSchema,
   [IPC.ACTION_GET_PLAN]: actionIdSchema,
   [IPC.ACTION_GET_ITEMS]: actionIdSchema,
+  [IPC.DASHBOARD_GET]: noPayload,
+  [IPC.DASHBOARD_DISMISS_RULE]: dashboardDismissRuleSchema,
+  [IPC.DASHBOARD_SET_VISIBLE]: dashboardSetVisibleSchema,
 } as const;

@@ -432,6 +432,23 @@ function ensureBrowserView(): BrowserView {
       void navigate(url);
       return { action: 'deny' };
     });
+
+    // BrowserView crash recovery — reload instead of leaving a dead panel
+    browserView.webContents.on('render-process-gone', (_event, details) => {
+      log.error(`BrowserView renderer gone: reason=${details.reason}, exitCode=${details.exitCode}`);
+      if (details.reason === 'crashed' || details.reason === 'oom' || details.reason === 'killed') {
+        log.warn('BrowserView crashed — will recreate on next navigation');
+        // Mark as dead so next ensureBrowserView() creates a fresh one
+        if (browserView && !browserView.webContents.isDestroyed()) {
+          try { browserView.webContents.close(); } catch { /* ignore */ }
+        }
+        if (mainWindow && !mainWindow.isDestroyed() && browserView) {
+          try { mainWindow.removeBrowserView(browserView); } catch { /* ignore */ }
+        }
+        browserView = null;
+        sessionInvalidated = true;
+      }
+    });
   }
 
   return browserView;
@@ -502,8 +519,9 @@ function registerSession(ctx: BrowserContext | null, tabId: string | null): Play
 
 function touchSession(): void {
   for (const s of activeSessions.values()) {
-    if (s.status === 'active') {
+    if (s.status === 'active' || s.status === 'idle') {
       s.lastActivityAt = Date.now();
+      s.status = 'active';
     }
   }
 }
@@ -524,27 +542,38 @@ async function cleanupSession(session: PlaywrightSession, reason: string): Promi
   session.status = 'closing';
   log.info(`Cleaning up session ${session.id}: reason=${reason}`);
 
-  // 1. Close all tracked pages
-  for (const page of session.pages) {
-    try {
-      if (!page.isClosed()) {
-        await withSoftTimeout(page.close(), CLEANUP_STEP_TIMEOUT_MS, `close page ${page.url()}`);
+  // IMPORTANT: We must NOT close the browserContext or its pages here.
+  // There is only one browserContext — it's the CDP connection wrapping the
+  // BrowserView. Closing it destroys the BrowserView's webContents, which
+  // triggers window-all-closed → app.quit().
+  //
+  // The session tracker exists for bookkeeping (idle detection, memory
+  // monitoring). Actual browser teardown only happens in closeBrowser()
+  // during app shutdown.
+  //
+  // For the 'browser-close' reason (called from closeBrowser), we DO close
+  // pages and context since the app is shutting down intentionally.
+  if (reason === 'browser-close') {
+    for (const page of session.pages) {
+      try {
+        if (!page.isClosed()) {
+          await withSoftTimeout(page.close(), CLEANUP_STEP_TIMEOUT_MS, `close page ${page.url()}`);
+        }
+      } catch (err: any) {
+        log.warn(`Failed to close page: ${err?.message}`);
       }
-    } catch (err: any) {
-      log.warn(`Failed to close page: ${err?.message}`);
+    }
+
+    if (session.browserContext) {
+      try {
+        await withSoftTimeout(session.browserContext.close(), CLEANUP_STEP_TIMEOUT_MS, 'close browser context');
+      } catch (err: any) {
+        log.warn(`Failed to close context: ${err?.message}`);
+      }
     }
   }
 
-  // 2. Close browser context if it exists
-  if (session.browserContext) {
-    try {
-      await withSoftTimeout(session.browserContext.close(), CLEANUP_STEP_TIMEOUT_MS, 'close browser context');
-    } catch (err: any) {
-      log.warn(`Failed to close context: ${err?.message}`);
-    }
-  }
-
-  // 3. Remove from tracker
+  // Remove from tracker
   activeSessions.delete(session.id);
   log.info(`Session ${session.id} cleaned up (reason=${reason})`);
 }
@@ -594,11 +623,14 @@ function logMemoryUsage(): void {
 
   if (rssMB >= MEMORY_CRITICAL_MB) {
     log.warn('Memory critical', info);
-    // Aggressive cleanup: reap all idle sessions regardless of timeout
-    // Collect first to avoid mutating Map during iteration
+    // Clean up ONLY idle/orphaned sessions — never kill active sessions mid-task.
+    // Killing active sessions during large tasks causes cascading failures and app crashes.
     const toClean = Array.from(activeSessions.values()).filter(
-      (s) => s.status === 'active' || s.status === 'idle'
+      (s) => s.status === 'idle' || s.status === 'orphaned'
     );
+    if (toClean.length === 0) {
+      log.warn('Memory critical but all sessions are active — skipping aggressive cleanup');
+    }
     for (const s of toClean) {
       void cleanupSession(s, 'memory-critical');
     }
@@ -623,9 +655,14 @@ async function runSessionReaper(): Promise<void> {
       continue;
     }
 
-    // Idle timeout: no activity for 5 minutes
+    // Idle timeout: no activity for 5 minutes — log but do NOT destroy the
+    // session. There is only one CDP session for the BrowserView; destroying it
+    // kills the BrowserView and cascades into app.quit(). Just mark idle.
     if (now - session.lastActivityAt > SESSION_IDLE_TIMEOUT_MS) {
-      await cleanupSession(session, 'idle-timeout');
+      if (session.status !== 'idle') {
+        log.info(`Session ${session.id} is idle (>5min inactivity)`);
+        session.status = 'idle';
+      }
       continue;
     }
 
@@ -1227,6 +1264,21 @@ export function getActiveTabUrl(): string | null {
 
 export function listTabs(): BrowserTabInfo[] {
   return getTabsSnapshot();
+}
+
+export function getBrowserStatus(): { status: 'ready' | 'active' | 'busy' | 'error' | 'disabled'; currentUrl: string | null } {
+  // Check if any session is active
+  for (const [, sess] of activeSessions) {
+    if (sess.status === 'active') {
+      const url = getActiveTabUrl();
+      return { status: 'active', currentUrl: url };
+    }
+  }
+  // Has browser context but no active session
+  if (browserContext) {
+    return { status: 'ready', currentUrl: null };
+  }
+  return { status: 'ready', currentUrl: null };
 }
 
 // ---------------------------------------------------------------------------
