@@ -52,6 +52,9 @@ const DEMONSTRATIVE_SIGNALS = /\b(that|this|the)\s+(popup|pop-?up|button|link|ba
 /** Shopping/price signals */
 const SHOPPING_SIGNALS = /\b(buy|purchase|order|price|cost|cheap|expensive|deal|discount|coupon|sale|compare\s+prices?|under\s+\$|best\s+.+\s+for)\b/i;
 
+/** Persistent task / scheduling signals — triggers task_create tool availability */
+const PERSISTENT_TASK_SIGNALS = /\b(every\s+(?:\d+\s+)?(?:day|morning|evening|night|hours?|minutes?|weeks?|months?|seconds?|monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?|every\s+(?:other|few|couple(?:\s+of)?)\s+(?:day|hours?|minutes?|weeks?|months?)s?|hourly|daily|weekly|monthly|tonight\s+at|tomorrow\s+(?:at|morning)|remind\s+me\s+(?:in|at|to)|keep\s+an?\s+eye\s+on|watch\s+for|alert\s+me\s+(?:when|if)|notify\s+me\s+(?:when|if)|let\s+me\s+know\s+(?:when|if)|whenever|(?:show|list|what\s+are)\s+my\s+tasks?|pause\s+(?:the|my)\s+(?:\w+\s+)*task|resume\s+(?:the|my)\s+(?:\w+\s+)*task|delete\s+(?:the|my)\s+(?:\w+\s+)*task|run\s+(?:the|my|it)\s+(?:\w+\s+)*(?:task\s+)?now|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)|in\s+\d+\s+(?:minutes?|hours?)\s+(?:remind|tell|check|notify|alert)|create\s+(?:a\s+)?(?:new\s+)?task|(?:new|add(?:\s+a)?)\s+task|(?:set\s+up|setup)\s+(?:a\s+)?task|monitor\s+(?:my|the|for)|track\s+(?:my|the|for))\b/i;
+
 // ============================================================================
 // CHAT-ONLY PATTERNS — strong signals that NO tools are needed
 // ============================================================================
@@ -162,6 +165,11 @@ export function classifyIntent(
     return 'tools';
   }
 
+  if (PERSISTENT_TASK_SIGNALS.test(msg)) {
+    logResult('tools', 'persistent-task-signal', start);
+    return 'tools';
+  }
+
   if (DEMONSTRATIVE_SIGNALS.test(msg)) {
     logResult('tools', 'demonstrative-signal', start);
     return 'tools';
@@ -241,6 +249,9 @@ export function classifyToolClass(message: string): ToolClass {
   const msg = message.trim();
   if (!msg) return 'all';
 
+  // Persistent task signals always need 'all' — task tools span both browser and local
+  if (PERSISTENT_TASK_SIGNALS.test(msg)) return 'all';
+
   const hasBrowser = WEB_SIGNALS.test(msg) || URL_PATTERNS.test(msg) ||
                      SHOPPING_SIGNALS.test(msg) || NOTIFICATION_SIGNALS.test(msg) ||
                      MEDIA_SIGNALS.test(msg) || DEMONSTRATIVE_SIGNALS.test(msg);
@@ -274,7 +285,7 @@ export function classifyEnriched(
   const intent = classifyIntent(userMessage, history);
   const toolClass = classifyToolClass(userMessage);
 
-  const strategy: TaskStrategy =
+  let strategy: TaskStrategy =
     intent === 'tools'
       ? classifyArchetype(userMessage, history, currentUrl)
       : {
@@ -286,6 +297,19 @@ export function classifyEnriched(
           extractedParams: {},
           skipBrowserTools: false,
         };
+
+  // Override archetype hint when persistent task signals are detected.
+  // This prevents misleading hints like "use browser_search" from
+  // steering the LLM away from task_create for recurring requests.
+  // Also force score >= 0.5 so the hint passes the injection gate in tool-loop.ts.
+  if (PERSISTENT_TASK_SIGNALS.test(userMessage)) {
+    strategy = {
+      ...strategy,
+      score: Math.max(strategy.score, 0.8),
+      archetype: strategy.archetype === 'unknown' ? 'site-interact' : strategy.archetype,
+      systemHint: 'Task: the user is requesting recurring/scheduled/monitored work. Use task_create to set up a persistent task. Do NOT use shell_exec with loops, cron, or any other workaround.',
+    };
+  }
 
   return { intent, toolClass, strategy };
 }

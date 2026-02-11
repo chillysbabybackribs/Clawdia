@@ -92,7 +92,32 @@ export const IPC = {
   // Dashboard
   DASHBOARD_GET: 'dashboard:get',
   DASHBOARD_DISMISS_RULE: 'dashboard:dismiss-rule',
+  DASHBOARD_DISMISS_ALERT: 'dashboard:dismiss-alert',
   DASHBOARD_SET_VISIBLE: 'dashboard:set-visible',
+
+  // Ambient settings
+  AMBIENT_SETTINGS_GET: 'ambient:settings:get',
+  AMBIENT_SETTINGS_SET: 'ambient:settings:set',
+
+  // Tasks
+  TASK_LIST: 'task:list',
+  TASK_GET: 'task:get',
+  TASK_DELETE: 'task:delete',
+  TASK_PAUSE: 'task:pause',
+  TASK_RESUME: 'task:resume',
+  TASK_RUN_NOW: 'task:run-now',
+  TASK_APPROVE_RUN: 'task:approve-run',
+  TASK_DISMISS_RUN: 'task:dismiss-run',
+  TASK_GET_UNREAD: 'task:get-unread',
+  TASK_CLEAR_UNREAD: 'task:clear-unread',
+  TASK_GET_RUNS: 'task:get-runs',
+  TASK_GET_EXECUTOR: 'task:get-executor',
+
+  // Telegram
+  TELEGRAM_GET_CONFIG: 'telegram:get-config',
+  TELEGRAM_SET_TOKEN: 'telegram:set-token',
+  TELEGRAM_SET_ENABLED: 'telegram:set-enabled',
+  TELEGRAM_CLEAR_AUTH: 'telegram:clear-auth',
 
   // Actions
   ACTION_CREATE_PLAN: 'action:create-plan',
@@ -122,6 +147,7 @@ export const IPC_EVENTS = {
   CHAT_LIVE_HTML_END: 'chat:live-html:end',
   CHAT_TOOL_ACTIVITY: 'chat:tool:activity',
   CHAT_TOOL_ACTIVITY_SUMMARY: 'chat:tool:activity:summary',
+  CHAT_UPDATED: 'chat:updated',
   API_USAGE_WARNING: 'api:usage:warning',
   CHAT_ROUTE_INFO: 'chat:route:info',
   CHAT_TOOL_LIMIT_REACHED: 'chat:tool-limit:reached',
@@ -145,4 +171,10 @@ export const IPC_EVENTS = {
 
   // Dashboard
   DASHBOARD_UPDATE: 'dashboard:update',
+
+  // Tasks
+  TASK_STATE_UPDATE: 'task:state:update',
+  TASK_FOCUS: 'task:focus',
+  TASK_APPROVAL_FOCUS: 'task:approval:focus',
+  TASK_RUN_NOTIFICATION: 'task:run:notification',
 } as const;

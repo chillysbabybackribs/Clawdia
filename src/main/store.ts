@@ -22,6 +22,28 @@ export interface BrowserHistoryEntry {
   timestamp: number;
 }
 
+export interface AmbientSettings {
+  enabled: boolean;
+  browserHistory: boolean;
+  filesystemScan: boolean;
+  gitScan: boolean;
+  shellHistory: boolean;
+  recentFiles: boolean;
+  scanRoots: string[];
+  browserHistoryHours: number;
+}
+
+export const DEFAULT_AMBIENT_SETTINGS: AmbientSettings = {
+  enabled: true,
+  browserHistory: true,
+  filesystemScan: true,
+  gitScan: true,
+  shellHistory: true,
+  recentFiles: true,
+  scanRoots: ['~/Desktop', '~/Documents', '~/Projects', '~/repos', '~/code', '~/dev'],
+  browserHistoryHours: 48,
+};
+
 export interface ClawdiaStoreSchema {
   schemaVersion: number;
   anthropicApiKey: string;
@@ -37,6 +59,14 @@ export interface ClawdiaStoreSchema {
   userAccounts?: UserAccount[];
   /** Cached fast-path tool availability results (yt-dlp, wget, etc.) */
   fastPathToolStatus?: Record<string, unknown>;
+  ambientSettings?: AmbientSettings;
+  /** When true, headless task runs import cookies from Chrome for authenticated sessions. Default: false (opt-in). */
+  importBrowserSessions?: boolean;
+
+  // Telegram bot integration
+  telegramBotToken?: string;
+  telegramEnabled?: boolean;
+  telegramAuthorizedChatId?: number;
 
   // Legacy key used by older builds before BYOK migration.
   anthropic_api_key?: string;
@@ -47,7 +77,7 @@ export interface ClawdiaStoreSchema {
 // ============================================================================
 
 /** Increment this every time the store schema changes. */
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 export interface Migration {
   version: number;
@@ -87,6 +117,15 @@ export const migrations: Migration[] = [
     migrate: (s) => {
       if (!s.get('userAccounts')) {
         s.set('userAccounts', []);
+      }
+    },
+  },
+  {
+    version: 3,
+    description: 'Initialize ambientSettings',
+    migrate: (s) => {
+      if (!s.get('ambientSettings')) {
+        s.set('ambientSettings', { ...DEFAULT_AMBIENT_SETTINGS });
       }
     },
   },

@@ -1,164 +1,156 @@
 import { AnthropicClient } from '../llm/client';
 import { collectMetrics } from './metrics';
-import { evaluateCondition } from './condition-parser';
-import type { DashboardSuggestion, DashboardRule, DashboardState, SuggestionIcon } from '../../shared/dashboard-types';
+import type { HaikuDashboardResponse } from '../../shared/dashboard-types';
 import { createLogger } from '../logger';
 
 const log = createLogger('dashboard-suggestions');
 const HAIKU_MODEL = 'claude-haiku-4-5-20251001';
 
-export type { DashboardSuggestion, DashboardState, SuggestionIcon };
+let cachedInsights: HaikuDashboardResponse | null = null;
 
-const VALID_ICONS: Set<string> = new Set([
-  'cpu', 'memory', 'disk', 'network', 'battery', 'browser',
-  'terminal', 'git', 'project', 'time', 'cleanup', 'alert',
-]);
-
-const AVAILABLE_METRIC_KEYS = [
-  'cpu_percent', 'cpu_cores', 'ram_percent', 'ram_used_mb', 'ram_total_mb',
-  'disk_percent', 'disk_used_gb', 'disk_total_gb',
-  'battery_percent', 'battery_charging',
-  'top_process_name', 'top_process_cpu', 'top_process_ram_mb',
-  'cpu_delta', 'network_up', 'process_count',
-  'hour', 'day_of_week', 'session_duration_minutes', 'minutes_since_last_message',
-  'active_project', 'git_uncommitted_changes', 'git_hours_since_last_commit',
-];
-
-const RULES_SYSTEM_PROMPT = `Generate 5-8 dashboard rules as JSON. Each rule is evaluated against live metrics.
-
-Rule schema: {"id":"string","condition":"expr","suggestion_text":"template","type":"actionable|info","action":"string (if actionable)","icon":"cpu|memory|disk|network|battery|browser|terminal|git|project|time|cleanup|alert","priority":1-5,"cooldown_minutes":1-120}
-
-Condition syntax: metric_key OP value, joined with AND/OR/NOT. Operators: > >= < <= == !=
-Metric keys: ${AVAILABLE_METRIC_KEYS.join(', ')}
-Templates: {{key}} for dynamic values. Keep suggestion_text under 100 chars.
-null comparisons → false. Skip battery rules if battery_percent is null.
-Mix system health with time/workflow suggestions. Be concise.
-
-Respond ONLY with: {"rules":[...]}`;
-
-
-let cachedRules: DashboardRule[] | null = null;
-
-export function getCachedRules(): DashboardRule[] | null {
-  return cachedRules;
+export function getCachedInsights(): HaikuDashboardResponse | null {
+  return cachedInsights;
 }
 
-export interface RulesGenerationContext {
+export interface InsightsGenerationContext {
   userMemoryContext: string;
   topSitesContext: string;
   recentConversations: string;
+  ambientContext?: string;
 }
 
-/**
- * Attempt to repair a truncated JSON rules array by finding the last complete
- * rule object and closing the array/object brackets.
- */
-function repairTruncatedRulesJson(jsonStr: string): { rules: any[] } | null {
-  // Find all complete rule objects: {...}
-  const rulePattern = /\{[^{}]*"id"\s*:\s*"[^"]+?"[^{}]*\}/g;
-  const matches = jsonStr.match(rulePattern);
-  if (!matches || matches.length === 0) return null;
+const INSIGHTS_SYSTEM_PROMPT = `You are Clawdia's dashboard intelligence engine. You receive ambient context about the user's computer activity and return structured data that the dashboard UI renders.
 
-  // Try to parse each match as a valid rule
-  const validRules: any[] = [];
-  for (const m of matches) {
-    try {
-      const obj = JSON.parse(m);
-      if (obj.id && obj.condition) validRules.push(obj);
-    } catch {
-      // skip malformed match
-    }
-  }
+You do NOT generate user-facing text for suggestions. You do NOT give advice about breaks, time management, or wellness. You do NOT comment on healthy system state.
 
-  return validRules.length > 0 ? { rules: validRules } : null;
-}
+Your job:
+1. RANK the user's projects by relevance. Consider: git state (uncommitted/unpushed changes rank higher), recency of activity, and whether the project relates to what the user has been browsing/researching.
 
-export async function generateDashboardRules(
+2. GENERATE action commands for each project. These are natural language commands that Clawdia will execute when the user clicks a button. Be specific — reference actual file paths, branch names, and project state.
+
+3. SELECT the most relevant activity to highlight. From browser history, shell commands, and recent files, pick the entries that tell the most coherent story about what the user has been doing. Skip noise (google.com searches, ls commands, etc.).
+
+4. DETECT patterns if any are notable. Only include a pattern_note if something genuinely interesting emerges — like repeated searches for the same topic, or rapid context switching between projects.
+
+Rules:
+- NEVER include advice, wellness tips, break suggestions, or time-awareness messages
+- NEVER comment on healthy/normal system metrics
+- NEVER expose internal values like heat scores to the user
+- NEVER tell the user what to work on or how to prioritize
+- ALWAYS reference specific project names, domains, file names, and commit messages
+- ALWAYS generate actionable commands that Clawdia can actually execute
+- If no notable activity exists, return minimal data — don't fill space with generic content
+
+Respond with valid JSON only. No markdown, no preamble.`;
+
+export async function generateDashboardInsights(
   client: AnthropicClient,
-  context: RulesGenerationContext,
-): Promise<DashboardRule[]> {
+  context: InsightsGenerationContext,
+): Promise<HaikuDashboardResponse | null> {
   const metrics = collectMetrics();
 
   const now = new Date();
   const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
   const dayStr = now.toLocaleDateString('en-US', { weekday: 'long' });
 
-  const userMessage = `Metrics: ${JSON.stringify(metrics)}
-Time: ${dayStr} ${timeStr}
+  const ambientLine = context.ambientContext ? `\nAmbient: ${context.ambientContext.slice(0, 1600)}` : '';
+
+  const userMessage = `Time: ${dayStr} ${timeStr}
+CPU: ${metrics.cpu.usagePercent}% RAM: ${metrics.memory.usagePercent}%
 ${context.userMemoryContext ? `User context: ${context.userMemoryContext.slice(0, 400)}` : ''}
 ${context.topSitesContext ? `Sites: ${context.topSitesContext.slice(0, 200)}` : ''}
-${context.recentConversations ? `Recent: ${context.recentConversations.slice(0, 200)}` : ''}`;
+${context.recentConversations ? `Recent convos: ${context.recentConversations.slice(0, 200)}` : ''}${ambientLine}`;
 
-  let rules: DashboardRule[] = [];
+  const fullPrompt = INSIGHTS_SYSTEM_PROMPT + '\n\n' + userMessage;
+  log.info(`[Dashboard] Insights prompt (${fullPrompt.length} chars)`);
 
   try {
     const { text } = await client.complete(
-      [{ role: 'user' as const, content: RULES_SYSTEM_PROMPT + '\n\n' + userMessage }],
-      { maxTokens: 2048, model: HAIKU_MODEL }
+      [{ role: 'user' as const, content: fullPrompt }],
+      { maxTokens: 2048, model: HAIKU_MODEL },
     );
 
-    log.info(`[Dashboard] Haiku raw response (${text.length} chars):\n${text.slice(0, 2000)}`);
+    log.info(`[Dashboard] Haiku insights response (${text.length} chars): ${text.slice(0, 500)}`);
 
     let jsonStr = text.trim();
     const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      jsonStr = jsonMatch[0];
-    }
+    if (jsonMatch) jsonStr = jsonMatch[0];
 
     let parsed: any;
     try {
       parsed = JSON.parse(jsonStr);
     } catch {
-      // Truncated JSON — try to repair by closing brackets
-      parsed = repairTruncatedRulesJson(jsonStr);
+      // Try repair: extract complete objects
+      parsed = repairInsightsJson(jsonStr);
       if (parsed) {
-        log.info(`[Dashboard] Repaired truncated JSON, recovered ${parsed.rules?.length ?? 0} rules`);
+        log.info(`[Dashboard] Repaired truncated insights JSON`);
       } else {
         throw new Error('JSON parse failed and repair unsuccessful');
       }
     }
-    if (parsed.rules && Array.isArray(parsed.rules)) {
-      log.info(`[Dashboard] Parsed ${parsed.rules.length} raw rules from Haiku`);
-      rules = parsed.rules
-        .slice(0, 10)
-        .filter((r: any) => r.id && r.condition && r.suggestion_text && r.icon)
-        .map((r: any): DashboardRule => ({
-          id: String(r.id),
-          condition: String(r.condition).slice(0, 500),
-          suggestion_text: String(r.suggestion_text),
-          type: r.type === 'actionable' ? 'actionable' : 'info',
-          action: r.action ? String(r.action) : undefined,
-          icon: VALID_ICONS.has(r.icon) ? (r.icon as SuggestionIcon) : 'alert',
-          priority: Math.max(1, Math.min(5, parseInt(r.priority, 10) || 3)),
-          cooldown_minutes: Math.max(1, Math.min(120, parseInt(r.cooldown_minutes, 10) || 5)),
-        }));
 
-      log.info(`[Dashboard] After filter: ${rules.length} valid rules`);
-      for (const r of rules) {
-        log.info(`[Dashboard]   rule="${r.id}" condition="${r.condition}" priority=${r.priority} icon=${r.icon}`);
-      }
+    const response: HaikuDashboardResponse = {
+      projects: Array.isArray(parsed.projects)
+        ? parsed.projects.slice(0, 3).filter((p: any) => (p.path || p.name) && typeof p.rank === 'number').map((p: any) => ({
+          path: String(p.path || p.name),
+          rank: Math.max(1, Math.min(10, parseInt(p.rank, 10) || 5)),
+          actions: Array.isArray(p.actions) ? p.actions.slice(0, 2).map((a: any) => ({
+            label: String(a.label || '').slice(0, 30),
+            command: String(a.command || ''),
+          })) : undefined,
+        }))
+        : [],
+      activity_highlights: Array.isArray(parsed.activity_highlights)
+        ? parsed.activity_highlights.slice(0, 4).map((h: any) => String(h).slice(0, 60))
+        : [],
+      pattern_note: parsed.pattern_note ? String(parsed.pattern_note).slice(0, 80) : undefined,
+    };
 
-      // Dry-run validation: remove rules with unparseable conditions
-      const dummyContext: Record<string, number | boolean | string | null> = {};
-      for (const key of AVAILABLE_METRIC_KEYS) dummyContext[key] = 0;
-      rules = rules.filter((r) => {
-        try {
-          evaluateCondition(r.condition, dummyContext);
-          return true;
-        } catch (err: any) {
-          log.warn(`[Dashboard] Discarding rule ${r.id}: invalid condition "${r.condition}" — ${err?.message}`);
-          return false;
-        }
-      });
-      log.info(`[Dashboard] After dry-run validation: ${rules.length} rules survived`);
-    } else {
-      log.warn(`[Dashboard] Haiku response did not contain a rules array`);
-    }
+    log.info(`[Dashboard] Parsed insights: ${response.projects.length} projects, ${response.activity_highlights.length} highlights, note=${!!response.pattern_note}`);
+    cachedInsights = response;
+    return response;
   } catch (err: any) {
-    log.warn(`Dashboard rules generation failed: ${err?.message || err}`);
+    log.warn(`[Dashboard] Insights generation failed: ${err?.message || err}`);
+    return null;
   }
+}
 
-  cachedRules = rules;
-  log.info(`Dashboard: ${rules.length} rules generated and cached`);
-  return rules;
+function repairInsightsJson(jsonStr: string): HaikuDashboardResponse | null {
+  try {
+    // Try to extract at least the projects array (greedy — handles truncation without closing bracket)
+    const projectsMatch = jsonStr.match(/"projects"\s*:\s*\[([\s\S]*?)(?:\]|$)/);
+    const highlightsMatch = jsonStr.match(/"activity_highlights"\s*:\s*\[([\s\S]*?)(?:\]|$)/);
+    const noteMatch = jsonStr.match(/"pattern_note"\s*:\s*"([^"]*?)"/);
+
+    const projects: any[] = [];
+    if (projectsMatch) {
+      // Match projects with either "path" or "name" field
+      const projectPattern = /\{[^{}]*"(?:path|name)"\s*:\s*"[^"]+?"[^{}]*\}/g;
+      const matches = projectsMatch[1].match(projectPattern);
+      if (matches) {
+        for (const m of matches) {
+          try { projects.push(JSON.parse(m)); } catch { /* skip */ }
+        }
+      }
+    }
+
+    const highlights: string[] = [];
+    if (highlightsMatch) {
+      const strPattern = /"([^"]+?)"/g;
+      let m;
+      while ((m = strPattern.exec(highlightsMatch[1])) !== null) {
+        highlights.push(m[1]);
+      }
+    }
+
+    if (projects.length === 0 && highlights.length === 0) return null;
+
+    return {
+      projects: projects.map(p => ({ path: p.path || p.name, rank: p.rank || 5, actions: p.actions })),
+      activity_highlights: highlights,
+      pattern_note: noteMatch?.[1] || undefined,
+    };
+  } catch {
+    return null;
+  }
 }

@@ -156,6 +156,7 @@ export const appState = {
   highlightedAddressSuggestionIndex: -1,
   currentBrowserUrl: '',  // tracks the actual URL of the active browser tab
   readmeVisible: false,
+  activeView: 'chat' as 'chat' | 'tasks' | 'conversations' | 'readme' | 'settings',
 };
 
 export const elements = {} as {
@@ -178,13 +179,13 @@ export const elements = {} as {
   setupArcadeBtn: HTMLButtonElement;
   setupArcadeHost: HTMLDivElement;
   setupArcadeOutput: HTMLDivElement;
-  conversationsToggle: HTMLElement;
-  conversationsDropdown: HTMLElement;
   conversationsList: HTMLElement;
+  conversationsSearch: HTMLInputElement;
+  conversationsView: HTMLDivElement;
   newConversationBtn: HTMLElement;
-  settingsToggle: HTMLElement;
   settingsModal: HTMLDivElement;
-  settingsClose: HTMLElement;
+  settingsView: HTMLDivElement;
+  settingsBody: HTMLDivElement;
   settingsApiKeyMasked: HTMLDivElement;
   changeApiKeyBtn: HTMLButtonElement;
   removeApiKeyBtn: HTMLButtonElement;
@@ -220,9 +221,7 @@ export const elements = {} as {
   panelMinBtn: HTMLElement | null;
   panelMaxBtn: HTMLElement | null;
   panelCloseBtn: HTMLElement | null;
-  readmeToggle: HTMLButtonElement;
   readmeView: HTMLDivElement;
-  readmeClose: HTMLButtonElement;
   browserMenuBtn: HTMLButtonElement;
   browserMenuDropdown: HTMLDivElement;
   browserMenuBody: HTMLDivElement;
@@ -235,9 +234,35 @@ export const elements = {} as {
   saveAccountBtn: HTMLButtonElement;
   cancelAccountBtn: HTMLButtonElement;
   addAccountBtn: HTMLButtonElement;
+  ambientMasterToggle: HTMLInputElement;
+  ambientSubToggles: HTMLDivElement;
+  ambientBrowserHistory: HTMLInputElement;
+  ambientFilesystemScan: HTMLInputElement;
+  ambientGitScan: HTMLInputElement;
+  ambientShellHistory: HTMLInputElement;
+  ambientRecentFiles: HTMLInputElement;
+  ambientScanRootsList: HTMLDivElement;
+  ambientScanRootInput: HTMLInputElement;
+  ambientScanRootAddBtn: HTMLButtonElement;
+  telegramTokenInput: HTMLInputElement;
+  telegramSaveTokenBtn: HTMLButtonElement;
+  telegramEnableToggle: HTMLInputElement;
+  telegramStatus: HTMLDivElement;
+  telegramAuthSection: HTMLDivElement;
+  telegramAuthId: HTMLSpanElement;
+  telegramClearAuthBtn: HTMLButtonElement;
   minBtn: HTMLElement | null;
   maxBtn: HTMLElement | null;
   closeBtn: HTMLElement | null;
+  sidebarNav: HTMLElement;
+  navChatBtn: HTMLButtonElement;
+  navTasksBtn: HTMLButtonElement;
+  navTasksBadge: HTMLSpanElement;
+  navConversationsBtn: HTMLButtonElement;
+  navReadmeBtn: HTMLButtonElement;
+  navSettingsBtn: HTMLButtonElement;
+  taskView: HTMLDivElement;
+  tvContent: HTMLDivElement;
 };
 
 function required<T extends HTMLElement>(id: string): T {
@@ -276,13 +301,13 @@ export function initElements(): void {
   elements.setupArcadeBtn = required<HTMLButtonElement>('setup-arcade-btn');
   elements.setupArcadeHost = required<HTMLDivElement>('setup-arcade-host');
   elements.setupArcadeOutput = required<HTMLDivElement>('setup-arcade-output');
-  elements.conversationsToggle = required<HTMLElement>('conversations-toggle');
-  elements.conversationsDropdown = required<HTMLElement>('conversations-dropdown');
   elements.conversationsList = required<HTMLElement>('conversations-list');
+  elements.conversationsSearch = required<HTMLInputElement>('conversations-search');
+  elements.conversationsView = required<HTMLDivElement>('conversations-view');
   elements.newConversationBtn = required<HTMLElement>('new-conversation-btn');
-  elements.settingsToggle = required<HTMLElement>('settings-toggle');
   elements.settingsModal = required<HTMLDivElement>('settings-modal');
-  elements.settingsClose = required<HTMLElement>('settings-close');
+  elements.settingsView = required<HTMLDivElement>('settings-view');
+  elements.settingsBody = required<HTMLDivElement>('settings-body');
   elements.settingsApiKeyMasked = required<HTMLDivElement>('settings-api-key-masked');
   elements.changeApiKeyBtn = required<HTMLButtonElement>('change-api-key-btn');
   elements.removeApiKeyBtn = required<HTMLButtonElement>('remove-api-key-btn');
@@ -318,9 +343,7 @@ export function initElements(): void {
   elements.panelMinBtn = document.getElementById('panel-min-btn');
   elements.panelMaxBtn = document.getElementById('panel-max-btn');
   elements.panelCloseBtn = document.getElementById('panel-close-btn');
-  elements.readmeToggle = required<HTMLButtonElement>('readme-toggle');
   elements.readmeView = required<HTMLDivElement>('readme-view');
-  elements.readmeClose = required<HTMLButtonElement>('readme-close');
   elements.browserMenuBtn = required<HTMLButtonElement>('browser-menu-btn');
   elements.browserMenuDropdown = required<HTMLDivElement>('browser-menu-dropdown');
   elements.browserMenuBody = required<HTMLDivElement>('browser-menu-body');
@@ -333,7 +356,33 @@ export function initElements(): void {
   elements.saveAccountBtn = required<HTMLButtonElement>('save-account-btn');
   elements.cancelAccountBtn = required<HTMLButtonElement>('cancel-account-btn');
   elements.addAccountBtn = required<HTMLButtonElement>('add-account-btn');
+  elements.ambientMasterToggle = required<HTMLInputElement>('ambient-master-toggle');
+  elements.ambientSubToggles = required<HTMLDivElement>('ambient-sub-toggles');
+  elements.ambientBrowserHistory = required<HTMLInputElement>('ambient-browser-history');
+  elements.ambientFilesystemScan = required<HTMLInputElement>('ambient-filesystem-scan');
+  elements.ambientGitScan = required<HTMLInputElement>('ambient-git-scan');
+  elements.ambientShellHistory = required<HTMLInputElement>('ambient-shell-history');
+  elements.ambientRecentFiles = required<HTMLInputElement>('ambient-recent-files');
+  elements.ambientScanRootsList = required<HTMLDivElement>('ambient-scan-roots-list');
+  elements.ambientScanRootInput = required<HTMLInputElement>('ambient-scan-root-input');
+  elements.ambientScanRootAddBtn = required<HTMLButtonElement>('ambient-scan-root-add-btn');
+  elements.telegramTokenInput = required<HTMLInputElement>('telegram-token-input');
+  elements.telegramSaveTokenBtn = required<HTMLButtonElement>('telegram-save-token-btn');
+  elements.telegramEnableToggle = required<HTMLInputElement>('telegram-enable-toggle');
+  elements.telegramStatus = required<HTMLDivElement>('telegram-status');
+  elements.telegramAuthSection = required<HTMLDivElement>('telegram-auth-section');
+  elements.telegramAuthId = required<HTMLSpanElement>('telegram-auth-id');
+  elements.telegramClearAuthBtn = required<HTMLButtonElement>('telegram-clear-auth-btn');
   elements.minBtn = document.getElementById('min-btn');
   elements.maxBtn = document.getElementById('max-btn');
   elements.closeBtn = document.getElementById('close-btn');
+  elements.sidebarNav = required<HTMLElement>('sidebar-nav');
+  elements.navChatBtn = required<HTMLButtonElement>('nav-chat');
+  elements.navTasksBtn = required<HTMLButtonElement>('nav-tasks');
+  elements.navTasksBadge = required<HTMLSpanElement>('nav-tasks-badge');
+  elements.navConversationsBtn = required<HTMLButtonElement>('nav-conversations');
+  elements.navReadmeBtn = required<HTMLButtonElement>('nav-readme');
+  elements.navSettingsBtn = required<HTMLButtonElement>('nav-settings');
+  elements.taskView = required<HTMLDivElement>('task-view');
+  elements.tvContent = required<HTMLDivElement>('tv-content');
 }

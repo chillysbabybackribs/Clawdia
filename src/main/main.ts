@@ -6,14 +6,13 @@ if (process.platform === 'linux') {
 // Log tap — mirrors all stdout/stderr to ~/.clawdia-live.log for AI monitoring
 import './log-tap';
 
-import { app, BrowserWindow, clipboard, dialog, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, Menu, nativeImage, Notification, shell, Tray } from 'electron';
 import { execSync } from 'child_process';
-import { randomUUID } from 'crypto';
 import { homedir } from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import { IPC, IPC_EVENTS } from '../shared/ipc-channels';
-import { DocumentMeta } from '../shared/types';
+import { ToolLoopEmitter } from '../shared/types';
 import { extractDocument } from './documents/extractor';
 import { createDocument } from './documents/creator';
 import { setupBrowserIpc, setMainWindow, closeBrowser, initPlaywright, setCdpPort, stopSessionReaper, killOrphanedCDPProcesses } from './browser/manager';
@@ -21,16 +20,22 @@ import { registerPlaywrightSearchFallback } from './browser/tools';
 import { AnthropicClient } from './llm/client';
 import { ConversationManager } from './llm/conversation';
 import { ToolLoop, clearPrefetchCache } from './llm/tool-loop';
+import { processChatMessage } from './llm/chat-pipeline';
+import { initHeadlessRunner } from './tasks/headless-runner';
+import { shutdown as shutdownTaskBrowser } from './tasks/task-browser';
+import { TaskScheduler, setSchedulerInstance } from './tasks/scheduler';
+import { getTaskDashboardItems } from './tasks/task-dashboard';
+import { getTask, listTasks, deleteTask, pauseTask, resumeTask, getRunsForTask, getRun, updateRun, cleanupZombieRuns, getExecutorForTask } from './tasks/task-store';
 import { detectFastPathTools } from './llm/tool-bootstrap';
 import { strategyCache } from './llm/strategy-cache';
-import { store, runMigrations, resetStore, type ChatTabState, type ClawdiaStoreSchema } from './store';
+import { store, runMigrations, resetStore, DEFAULT_AMBIENT_SETTINGS, type AmbientSettings, type ChatTabState, type ClawdiaStoreSchema } from './store';
 import { DEFAULT_MODEL } from '../shared/models';
 import { usageTracker } from './usage-tracker';
 import { createLogger, setLogLevel, type LogLevel } from './logger';
 import { handleValidated, ipcSchemas } from './ipc-validator';
 import { initSearchCache, closeSearchCache } from './cache/search-cache';
 import { listAccounts, addAccount, removeAccount } from './accounts/account-store';
-import { initLearningSystem, shutdownLearningSystem, siteKnowledge, userMemory, maybeExtractMemories, flushBeforePrune } from './learning';
+import { initLearningSystem, shutdownLearningSystem, siteKnowledge, userMemory } from './learning';
 import { initVault } from './vault/db';
 import { IngestionManager, ingestionEmitter } from './ingestion/manager';
 import { VaultSearch } from './vault/search';
@@ -38,10 +43,15 @@ import { getIngestionJob } from './vault/documents';
 import { createPlan, addAction, getPlan, getActions } from './actions/ledger';
 import { ActionExecutor } from './actions/executor';
 import { ActionType, IngestionJob } from '../shared/vault-types';
-import { generateDashboardRules } from './dashboard/suggestions';
+import { generateDashboardInsights, getCachedInsights } from './dashboard/suggestions';
 import { DashboardExecutor } from './dashboard/executor';
+import { collectAmbientData, collectAmbientContext } from './dashboard/ambient';
+import { loadDashboardState, saveDashboardState, computeContextHash, sessionHadActivity } from './dashboard/persistence';
+import { buildProjectCards, buildActivityFeed } from './dashboard/state-builder';
 import { setTokenUsageCallback } from './llm/tool-loop';
 import { getBrowserStatus } from './browser/manager';
+import { logCookieDiagnostic } from './tasks/cookie-export';
+import { startTelegramBot, stopTelegramBot, notifyTaskResult, isTelegramBotRunning } from './integrations/telegram-bot';
 
 const log = createLogger('main');
 // TEST FIX: Verifying cascade restart issue is resolved - 2026-02-07 TESTING NOW
@@ -88,16 +98,22 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
+let trayFirstMinimize = true; // Show notification only on first minimize-to-tray
+let savedWindowBounds: Electron.Rectangle | null = null; // Restore size after hide on Linux
 let conversationManager: ConversationManager;
 let activeToolLoop: ToolLoop | null = null;
 let dashboardExecutor: DashboardExecutor | null = null;
+let taskScheduler: TaskScheduler | null = null;
+let lastMessageTimestamp: number | null = null;
+let taskUnreadCount = 0;
 
 // Cache the AnthropicClient to reuse HTTP connection pooling.
 let cachedClient: AnthropicClient | null = null;
 let cachedClientApiKey: string | null = null;
 let cachedClientModel: string | null = null;
 
-function getClient(apiKey: string, model: string): AnthropicClient {
+export function getClient(apiKey: string, model: string): AnthropicClient {
   if (cachedClient && cachedClientApiKey === apiKey && cachedClientModel === model) return cachedClient;
   cachedClient = new AnthropicClient(apiKey, model);
   cachedClientApiKey = apiKey;
@@ -105,17 +121,26 @@ function getClient(apiKey: string, model: string): AnthropicClient {
   return cachedClient;
 }
 
-function getSelectedModel(): string {
-  return ((store.get('selectedModel') as string) || DEFAULT_MODEL);
-}
 const CHAT_TAB_STATE_KEY: keyof ClawdiaStoreSchema = 'chat_tab_state';
 const CONNECTION_WARMUP_TARGETS = [
   'https://api.anthropic.com/',
   'https://google.serper.dev/',
 ];
 
-function getAnthropicApiKey(): string {
+/** Wrap a BrowserWindow as a ToolLoopEmitter. */
+function wrapWindow(win: BrowserWindow): ToolLoopEmitter {
+  return {
+    send(channel: string, ...args: any[]) { win.webContents.send(channel, ...args); },
+    isDestroyed() { return win.isDestroyed(); },
+  };
+}
+
+export function getAnthropicApiKey(): string {
   return ((store.get('anthropicApiKey') as string | undefined) ?? '').trim();
+}
+
+export function getSelectedModel(): string {
+  return ((store.get('selectedModel') as string) || DEFAULT_MODEL);
 }
 
 function getMaskedAnthropicApiKey(): string {
@@ -132,6 +157,39 @@ function sanitizeChatTabState(input: unknown): ChatTabState {
     : [];
   const activeId = typeof state.activeId === 'string' ? state.activeId : null;
   return { tabIds, activeId };
+}
+
+/** Broadcast current task list to renderer for dashboard update (debounced) */
+let _broadcastTimer: ReturnType<typeof setTimeout> | null = null;
+let _taskStateDirty = false;
+function broadcastTaskState(): void {
+  if (_broadcastTimer) return;              // already scheduled
+  _broadcastTimer = setTimeout(() => {
+    _broadcastTimer = null;
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      // Window unavailable (tray mode) — mark dirty so next show picks it up
+      _taskStateDirty = true;
+      return;
+    }
+    _taskStateDirty = false;
+    const items = getTaskDashboardItems();
+    mainWindow.webContents.send(IPC_EVENTS.TASK_STATE_UPDATE, items);
+  }, 300);
+}
+
+/** Flush pending task state update after window (re)creation. */
+export function flushPendingTaskState(): void {
+  if (_taskStateDirty && mainWindow && !mainWindow.isDestroyed()) {
+    _taskStateDirty = false;
+    const items = getTaskDashboardItems();
+    mainWindow.webContents.send(IPC_EVENTS.TASK_STATE_UPDATE, items);
+  }
+}
+
+export { broadcastTaskState };
+
+export function getMainWindow(): BrowserWindow | null {
+  return mainWindow;
 }
 
 async function warmConnections(): Promise<void> {
@@ -224,6 +282,83 @@ async function validateAnthropicApiKey(key: string, model?: string): Promise<{ v
   }
 }
 
+function showWindow(): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (process.platform !== 'linux') {
+      // macOS/Windows: show() after hide() works reliably
+      mainWindow.show();
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+      log.info('[Tray] Window restored from tray');
+      return;
+    }
+    // Linux: frameless windows produce a 10x10 ghost on show() after hide().
+    // Remove the close-to-hide handler before destroying so it doesn't re-hide.
+    mainWindow.removeAllListeners('close');
+    mainWindow.destroy();
+    mainWindow = null;
+  }
+  // (Re)create the window — all app state lives in memory, not the window.
+  createWindow();
+  log.info('[Tray] Window recreated from tray');
+}
+
+function initTelegramIfEnabled(): void {
+  const enabled = store.get('telegramEnabled') as boolean | undefined;
+  const token = (store.get('telegramBotToken') as string | undefined)?.trim();
+  if (!enabled || !token) return;
+  startTelegramBot(token, {
+    getApiKey: getAnthropicApiKey,
+    getSelectedModel,
+    getClient,
+    conversationManager,
+    getMainWindow: () => mainWindow,
+    getAuthorizedChatId: () => store.get('telegramAuthorizedChatId') as number | undefined,
+    setAuthorizedChatId: (chatId: number) => { store.set('telegramAuthorizedChatId', chatId); },
+  });
+}
+
+function createTray(): void {
+  // Resolve tray icon: prefer 32px for crisp tray rendering, fall back to build icon.
+  // In packaged builds, extraResources places icon.png next to the asar.
+  const candidates = [
+    path.join(__dirname, '../../release/.icon-set/icon_32.png'),  // dev: small icon
+    path.join(__dirname, '../../build/icon.png'),                  // dev: build icon
+    path.join(process.resourcesPath || '', 'icon.png'),            // packaged: extraResources
+  ];
+  const usePath = candidates.find(p => fs.existsSync(p)) || candidates[1];
+
+  const icon = nativeImage.createFromPath(usePath);
+  tray = new Tray(icon);
+  tray.setToolTip('Clawdia');
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: 'Open Clawdia',
+      click: () => showWindow(),
+    },
+    {
+      label: 'Pause all tasks',
+      click: () => {
+        log.info('[Tray] Pause all tasks clicked (not yet implemented)');
+      },
+    },
+    { type: 'separator' },
+    {
+      label: 'Quit',
+      click: () => {
+        (app as any).isQuitting = true;
+        app.quit();
+      },
+    },
+  ]);
+
+  tray.setContextMenu(contextMenu);
+
+  // Left-click opens the window (Linux/Windows behavior)
+  tray.on('click', () => showWindow());
+}
+
 function createWindow(): void {
   const preloadPath = path.join(__dirname, 'preload.js');
   log.debug(`Preload absolute path: ${preloadPath}`);
@@ -314,19 +449,65 @@ function createWindow(): void {
   });
   conversationManager = new ConversationManager(store);
 
-  if (isDev) {
-    mainWindow.loadURL('http://localhost:5173');
-  } else {
-    mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
-  }
+  const DEV_LOAD_URL = 'http://localhost:5173';
+  const MAX_LOAD_RETRIES = 5;
+  const LOAD_RETRY_MS = 2000;
+  const win = mainWindow!;
+
+  const loadWindowUrl = () => {
+    if (win.isDestroyed()) return;
+    if (isDev) {
+      win.loadURL(DEV_LOAD_URL);
+    } else {
+      win.loadFile(path.join(__dirname, '../renderer/index.html'));
+    }
+  };
+
+  loadWindowUrl();
+
+  win.webContents.on('did-fail-load', (_event, errorCode, _errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame || win.isDestroyed()) return;
+    if (isDev && validatedURL === DEV_LOAD_URL) {
+      const retries = (win as any).__loadRetries ?? 0;
+      (win as any).__loadRetries = retries + 1;
+      if (retries < MAX_LOAD_RETRIES) {
+        log.warn(`[Main] Dev load failed (${errorCode}), retrying in ${LOAD_RETRY_MS}ms (${retries + 1}/${MAX_LOAD_RETRIES})`);
+        setTimeout(loadWindowUrl, LOAD_RETRY_MS);
+      } else {
+        const errorHtml = `data:text/html,${encodeURIComponent(
+          `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Clawdia</title></head><body style="font-family:sans-serif;padding:2rem;max-width:32rem;">
+            <h1>Could not load app</h1>
+            <p>Dev server at <code>http://localhost:5173</code> did not respond after ${MAX_LOAD_RETRIES} attempts.</p>
+            <p>Start the dev server with <code>npm run dev</code> (or ensure <code>npm run dev:renderer</code> is running), then click below.</p>
+            <button onclick="location.href='${DEV_LOAD_URL}'" style="padding:0.5rem 1rem;cursor:pointer;">Retry</button>
+          </body></html>`
+        )}`;
+        win.loadURL(errorHtml).catch(() => { });
+      }
+    } else if (!isDev) {
+      log.error('[Main] Failed to load renderer', { errorCode, validatedURL });
+    }
+  });
+
+  win.webContents.once('did-finish-load', () => {
+    if (win.isDestroyed()) return;
+    delete (win as any).__loadRetries;
+    // In dev, show only after main frame has loaded to avoid blank window on restart.
+    if (isDev) win.show();
+    // Flush any task state updates that arrived while window was closed
+    setTimeout(() => flushPendingTaskState(), 500);
+  });
 
   mainWindow.once('ready-to-show', () => {
-    mainWindow?.show();
+    if (!isDev) mainWindow?.show();
     // Kill any orphaned CDP processes from a prior crashed session before connecting.
     killOrphanedCDPProcesses();
     // CDP server is reliably up once the window is ready to show.
     // Kick off Playwright connection here so it doesn't race.
     void initPlaywright().then(() => registerPlaywrightSearchFallback());
+
+    // Log diagnostic summary of available session cookies (fire-and-forget).
+    void logCookieDiagnostic();
 
     // Warm DNS + TCP + TLS connections to API endpoints (fire-and-forget).
     // Eliminates cold-start latency on first search/LLM call.
@@ -337,12 +518,13 @@ function createWindow(): void {
 
     // Dashboard executor — starts immediately (static layer works without rules).
     // Haiku rules generation is async and loaded when ready.
-    let lastMessageTimestamp: number | null = null;
     dashboardExecutor = new DashboardExecutor({
       getSelectedModel,
       storeGet: (key: string) => store.get(key as any),
       getBrowserStatus,
       lastMessageGetter: () => lastMessageTimestamp,
+      getTaskDashboardItems,
+      getTaskUnreadCount: () => taskUnreadCount,
     });
 
     dashboardExecutor.setUpdateEmitter((state) => {
@@ -356,48 +538,106 @@ function createWindow(): void {
 
     dashboardExecutor.start();
 
-    // Async: generate rules via Haiku
+    // Async: collect ambient data + generate insights via Haiku (with persistence)
     const dashApiKey = getAnthropicApiKey();
     if (dashApiKey) {
       void (async () => {
         try {
-          const dashClient = getClient(dashApiKey, getSelectedModel());
-          let memCtx = '';
-          try { memCtx = userMemory?.getPromptContext(600) || ''; } catch { /* db may not be ready */ }
+          // Step 1: Load persisted state from disk
+          const persisted = loadDashboardState();
 
-          let topSites = '';
+          // Step 2: Collect fresh ambient data
+          let ambientData;
+          let ambientCtx = '';
           try {
-            const sk = siteKnowledge;
-            if (sk) {
-              const sites = (sk as any).db
-                .prepare(`SELECT hostname, SUM(success_count) AS total FROM site_knowledge GROUP BY hostname ORDER BY total DESC LIMIT 10`)
-                .all() as Array<{ hostname: string; total: number }>;
-              topSites = sites.map(s => `${s.hostname} (${s.total})`).join(', ');
-              if (topSites) topSites = `Top sites: ${topSites}`;
-            }
-          } catch { /* site knowledge may not be ready */ }
+            const [rawResult, fmtResult] = await Promise.all([
+              collectAmbientData(),
+              collectAmbientContext(),
+            ]);
+            ambientData = rawResult;
+            ambientCtx = fmtResult.combined;
+            log.info(`[Ambient] Collected raw data + ${ambientCtx.length} chars formatted context`);
+          } catch (err: any) {
+            log.warn(`[Ambient] Context collection failed: ${err?.message || err}`);
+          }
 
-          let recentConvos = '';
-          try {
-            const convos = conversationManager.list().slice(0, 5);
-            if (convos.length > 0) {
-              recentConvos = convos.map(c => {
-                const ago = Math.round((Date.now() - new Date(c.updatedAt).getTime()) / 60_000);
-                const agoStr = ago < 60 ? `${ago}m ago` : `${Math.round(ago / 60)}h ago`;
-                return `- "${c.title}" (${agoStr})`;
-              }).join('\n');
-            }
-          } catch { /* conversations may not be ready */ }
+          // Step 3: Compute context hash and decide startup strategy
+          const freshHash = ambientData ? computeContextHash(ambientData) : '';
+          const hashesMatch = persisted && freshHash === persisted.contextHash;
 
-          const rules = await generateDashboardRules(dashClient, {
-            userMemoryContext: memCtx,
-            topSitesContext: topSites,
-            recentConversations: recentConvos,
-          });
-          dashboardExecutor?.setRules(rules);
-          log.info('[Dashboard] Rules ready');
+          if (hashesMatch && !persisted.sessionHadActivity) {
+            // Case A: Hashes match, last session idle → reuse persisted state, skip Haiku
+            log.info(`[Dashboard] Persistence: reusing cached state (no activity change, hash=${freshHash.slice(0, 8)})`);
+            dashboardExecutor?.setAmbientData(
+              ambientData!,
+              persisted.haiku,
+            );
+            // No Haiku call — render immediately from persisted data
+          } else {
+            // Case B (hash differs) or Case C (no persisted state)
+            // Show persisted state as placeholder if available
+            if (persisted && ambientData) {
+              log.info(`[Dashboard] Persistence: showing cached state as placeholder, refreshing in background (hash ${persisted.contextHash.slice(0, 8)} → ${freshHash.slice(0, 8)})`);
+              dashboardExecutor?.setAmbientData(ambientData, persisted.haiku);
+            } else if (ambientData) {
+              log.info(`[Dashboard] Persistence: no cached state, normal startup`);
+              dashboardExecutor?.setAmbientData(ambientData, null);
+            }
+
+            // Haiku call for fresh insights
+            const dashClient = getClient(dashApiKey, getSelectedModel());
+            let memCtx = '';
+            try { memCtx = userMemory?.getPromptContext(600) || ''; } catch { /* db may not be ready */ }
+
+            let topSites = '';
+            try {
+              const sk = siteKnowledge;
+              if (sk) {
+                const sites = (sk as any).db
+                  .prepare(`SELECT hostname, SUM(success_count) AS total FROM site_knowledge GROUP BY hostname ORDER BY total DESC LIMIT 10`)
+                  .all() as Array<{ hostname: string; total: number }>;
+                topSites = sites.map(s => `${s.hostname} (${s.total})`).join(', ');
+                if (topSites) topSites = `Top sites: ${topSites}`;
+              }
+            } catch { /* site knowledge may not be ready */ }
+
+            let recentConvos = '';
+            try {
+              const convos = conversationManager.list().slice(0, 5);
+              if (convos.length > 0) {
+                recentConvos = convos.map(c => {
+                  const ago = Math.round((Date.now() - new Date(c.updatedAt).getTime()) / 60_000);
+                  const agoStr = ago < 60 ? `${ago}m ago` : `${Math.round(ago / 60)}h ago`;
+                  return `- "${c.title}" (${agoStr})`;
+                }).join('\n');
+              }
+            } catch { /* conversations may not be ready */ }
+
+            const haiku = await generateDashboardInsights(dashClient, {
+              userMemoryContext: memCtx,
+              topSitesContext: topSites,
+              recentConversations: recentConvos,
+              ambientContext: ambientCtx,
+            });
+
+            // Re-feed with Haiku enrichment
+            if (ambientData) {
+              dashboardExecutor?.setAmbientData(ambientData, haiku);
+
+              // Save fresh state to disk
+              saveDashboardState({
+                haiku,
+                projectCards: buildProjectCards(ambientData, haiku),
+                activityFeed: buildActivityFeed(ambientData),
+                contextHash: freshHash,
+                sessionHadActivity: sessionHadActivity(),
+                savedAt: Date.now(),
+              });
+            }
+            log.info('[Dashboard] Insights ready');
+          }
         } catch (err: any) {
-          log.warn(`[Dashboard] Rules generation failed: ${err?.message || err}`);
+          log.warn(`[Dashboard] Insights generation failed: ${err?.message || err}`);
         }
       })();
     }
@@ -431,6 +671,28 @@ function createWindow(): void {
     log.info('Main window is responsive again');
   });
 
+  // Hide to tray instead of closing. The window is only actually destroyed when
+  // app.quit() is called (via tray menu or gracefulShutdown), which sets app.isQuitting.
+  mainWindow.on('close', (event) => {
+    if (!(app as any).isQuitting) {
+      event.preventDefault();
+      if (mainWindow) {
+        savedWindowBounds = mainWindow.getBounds();
+        mainWindow.hide();
+      }
+      log.info('[Tray] Window hidden to tray');
+
+      if (trayFirstMinimize && Notification.isSupported()) {
+        trayFirstMinimize = false;
+        new Notification({
+          title: 'Clawdia',
+          body: 'Still running in the background. Right-click the tray icon to quit.',
+          silent: true,
+        }).show();
+      }
+    }
+  });
+
   mainWindow.on('closed', () => {
     usageTracker.setWarningEmitter(null);
     mainWindow = null;
@@ -443,11 +705,6 @@ function setupIpcHandlers(): void {
     const { conversationId, message, images, documents, messageId } = payload;
     if (!mainWindow) return { error: 'No window' };
 
-    let conversation = conversationManager.get(conversationId || '');
-    if (!conversation) {
-      conversation = conversationManager.create();
-    }
-
     const apiKey = getAnthropicApiKey();
     if (!apiKey) {
       mainWindow.webContents.send(IPC_EVENTS.CHAT_THINKING, '');
@@ -456,61 +713,39 @@ function setupIpcHandlers(): void {
     }
 
     const model = getSelectedModel();
-    log.info(`[CHAT_SEND] selectedModel=${model} | conversationId=${conversation.id}`);
+    log.info(`[CHAT_SEND] selectedModel=${model}`);
     const client = getClient(apiKey, model);
-    const history = conversation.messages;
-    const loop = new ToolLoop(mainWindow, client);
-    activeToolLoop = loop;
-
-    // Convert DocumentAttachment[] to DocumentMeta[] for storage (strip extracted text)
-    const documentMetas: DocumentMeta[] | undefined = documents?.map((d) => ({
-      filename: d.filename,
-      originalName: d.originalName,
-      mimeType: d.mimeType,
-      sizeBytes: d.sizeBytes,
-      pageCount: d.pageCount,
-      sheetNames: d.sheetNames,
-      truncated: d.truncated,
-    }));
+    const win = mainWindow;
 
     try {
-      const response = await usageTracker.runWithConversation(conversation.id, () =>
-        loop.run(message, history, images, documents, {
-          conversationId: conversation.id,
-          messageId: messageId || randomUUID(),
-        })
-      );
-      // If the loop streamed chunks itself (real-time streaming with HTML interception),
-      // we only need to send the end event. Otherwise send the full text.
-      if (!loop.streamed) {
-        mainWindow.webContents.send(IPC_EVENTS.CHAT_STREAM_TEXT, response);
-      }
-      mainWindow.webContents.send(IPC_EVENTS.CHAT_STREAM_END, response);
-
-      // Pre-prune flush: extract memories from messages about to be deleted
-      const currentMsgs = conversationManager.get(conversation.id)?.messages || [];
-      const willPruneCount = (currentMsgs.length + 2) - ConversationManager.getMaxPersistedMessages();
-      if (willPruneCount > 0) {
-        const doomed = currentMsgs.slice(0, willPruneCount);
-        flushBeforePrune(conversation.id, doomed, client).catch(() => {});
-      }
-
-      conversationManager.addMessage(conversation.id, { role: 'user', content: message || '[Empty message]', images, documents: documentMetas });
-      conversationManager.addMessage(conversation.id, { role: 'assistant', content: response || '[No response]' });
-      const updatedConversation = conversationManager.get(conversation.id);
-      if (updatedConversation) {
-        maybeExtractMemories(conversation.id, updatedConversation.messages, client);
-      }
-
-      return { conversationId: conversation.id };
+      const result = await processChatMessage({
+        message,
+        conversationId,
+        messageId,
+        emitter: wrapWindow(win),
+        client,
+        conversationManager,
+        images,
+        documents,
+        onToolLoopCreated: (loop) => { activeToolLoop = loop; },
+        onResponse: (response, loop) => {
+          if (!win.isDestroyed()) {
+            if (!loop.streamed) {
+              win.webContents.send(IPC_EVENTS.CHAT_STREAM_TEXT, response);
+            }
+            win.webContents.send(IPC_EVENTS.CHAT_STREAM_END, response);
+          }
+        },
+        onError: (error) => {
+          if (!win.isDestroyed()) {
+            win.webContents.send(IPC_EVENTS.CHAT_THINKING, '');
+            win.webContents.send(IPC_EVENTS.CHAT_ERROR, { error: error?.message || 'Unknown error' });
+          }
+        },
+      });
+      return { conversationId: result.conversationId };
     } catch (error: any) {
-      mainWindow.webContents.send(IPC_EVENTS.CHAT_THINKING, '');
-      mainWindow.webContents.send(IPC_EVENTS.CHAT_ERROR, { error: error?.message || 'Unknown error' });
       return { error: error?.message || 'Unknown error' };
-    } finally {
-      if (activeToolLoop === loop) {
-        activeToolLoop = null;
-      }
     }
   });
 
@@ -820,7 +1055,12 @@ function setupIpcHandlers(): void {
   });
 
   handleValidated(IPC.DASHBOARD_DISMISS_RULE, ipcSchemas[IPC.DASHBOARD_DISMISS_RULE], async (_event, { ruleId }) => {
-    dashboardExecutor?.dismissRule(ruleId);
+    dashboardExecutor?.dismissAlert(ruleId);
+    return { success: true };
+  });
+
+  handleValidated(IPC.DASHBOARD_DISMISS_ALERT, ipcSchemas[IPC.DASHBOARD_DISMISS_ALERT], async (_event, { alertId }) => {
+    dashboardExecutor?.dismissAlert(alertId);
     return { success: true };
   });
 
@@ -828,6 +1068,134 @@ function setupIpcHandlers(): void {
     dashboardExecutor?.setDashboardVisible(visible);
     return { success: true };
   });
+
+  // Ambient settings
+  handleValidated(IPC.AMBIENT_SETTINGS_GET, ipcSchemas[IPC.AMBIENT_SETTINGS_GET], async () => {
+    const saved = store.get('ambientSettings') as AmbientSettings | undefined;
+    return saved ?? { ...DEFAULT_AMBIENT_SETTINGS };
+  });
+
+  handleValidated(IPC.AMBIENT_SETTINGS_SET, ipcSchemas[IPC.AMBIENT_SETTINGS_SET], async (_event, { settings }) => {
+    const current = (store.get('ambientSettings') as AmbientSettings | undefined) ?? { ...DEFAULT_AMBIENT_SETTINGS };
+    const merged = { ...current, ...settings } as AmbientSettings;
+    // Validate scanRoots is an array of strings
+    if (Array.isArray(merged.scanRoots)) {
+      merged.scanRoots = merged.scanRoots.filter((r: unknown) => typeof r === 'string' && r.trim().length > 0);
+    } else {
+      merged.scanRoots = DEFAULT_AMBIENT_SETTINGS.scanRoots;
+    }
+    // Clamp browserHistoryHours
+    if (typeof merged.browserHistoryHours !== 'number' || merged.browserHistoryHours < 1) {
+      merged.browserHistoryHours = DEFAULT_AMBIENT_SETTINGS.browserHistoryHours;
+    }
+    store.set('ambientSettings', merged);
+    return { success: true };
+  });
+
+  // Task handlers
+  handleValidated(IPC.TASK_LIST, ipcSchemas[IPC.TASK_LIST], async () => {
+    return getTaskDashboardItems();
+  });
+
+  handleValidated(IPC.TASK_GET, ipcSchemas[IPC.TASK_GET], async (_event, { taskId }) => {
+    const task = getTask(taskId);
+    if (!task) return { success: false, error: 'Task not found' };
+    const runs = getRunsForTask(taskId, 5);
+    return { success: true, task, runs };
+  });
+
+  handleValidated(IPC.TASK_DELETE, ipcSchemas[IPC.TASK_DELETE], async (_event, { taskId }) => {
+    deleteTask(taskId);
+    broadcastTaskState();
+    return { success: true };
+  });
+
+  handleValidated(IPC.TASK_PAUSE, ipcSchemas[IPC.TASK_PAUSE], async (_event, { taskId }) => {
+    pauseTask(taskId);
+    taskScheduler?.onTaskPaused(taskId);
+    broadcastTaskState();
+    return { success: true };
+  });
+
+  handleValidated(IPC.TASK_RESUME, ipcSchemas[IPC.TASK_RESUME], async (_event, { taskId }) => {
+    resumeTask(taskId);
+    taskScheduler?.onTaskResumed(taskId);
+    broadcastTaskState();
+    return { success: true };
+  });
+
+  handleValidated(IPC.TASK_RUN_NOW, ipcSchemas[IPC.TASK_RUN_NOW], async (_event, { taskId }) => {
+    const result = await taskScheduler?.triggerManualRun(taskId);
+    broadcastTaskState();
+    return { success: true, result };
+  });
+
+  handleValidated(IPC.TASK_APPROVE_RUN, ipcSchemas[IPC.TASK_APPROVE_RUN], async (_event, { runId }) => {
+    // Approve: mark run as cancelled (we'll create a fresh run via triggerManualRun)
+    const run = getRun(runId);
+    if (!run) return { success: false, error: 'Run not found' };
+    updateRun(runId, { status: 'cancelled' });
+    // Trigger actual execution
+    const result = await taskScheduler?.triggerManualRun(run.taskId);
+    broadcastTaskState();
+    return { success: true, result };
+  });
+
+  handleValidated(IPC.TASK_DISMISS_RUN, ipcSchemas[IPC.TASK_DISMISS_RUN], async (_event, { runId }) => {
+    updateRun(runId, { status: 'cancelled' });
+    broadcastTaskState();
+    return { success: true };
+  });
+
+  handleValidated(IPC.TASK_GET_UNREAD, ipcSchemas[IPC.TASK_GET_UNREAD], async () => {
+    return { count: taskUnreadCount };
+  });
+
+  handleValidated(IPC.TASK_CLEAR_UNREAD, ipcSchemas[IPC.TASK_CLEAR_UNREAD], async () => {
+    taskUnreadCount = 0;
+    return { success: true };
+  });
+
+  handleValidated(IPC.TASK_GET_RUNS, ipcSchemas[IPC.TASK_GET_RUNS], async (_event, { taskId }) => {
+    const runs = getRunsForTask(taskId, 20);
+    return { success: true, runs };
+  });
+
+  handleValidated(IPC.TASK_GET_EXECUTOR, ipcSchemas[IPC.TASK_GET_EXECUTOR], async (_event, { taskId }) => {
+    const executor = getExecutorForTask(taskId);
+    return { success: true, executor };
+  });
+
+  // Telegram config
+  handleValidated(IPC.TELEGRAM_GET_CONFIG, ipcSchemas[IPC.TELEGRAM_GET_CONFIG], async () => ({
+    enabled: Boolean(store.get('telegramEnabled')),
+    hasToken: Boolean((store.get('telegramBotToken') as string | undefined)?.trim()),
+    authorizedChatId: store.get('telegramAuthorizedChatId') as number | undefined,
+    running: isTelegramBotRunning(),
+  }));
+
+  handleValidated(IPC.TELEGRAM_SET_TOKEN, ipcSchemas[IPC.TELEGRAM_SET_TOKEN], async (_event, { token }) => {
+    store.set('telegramBotToken', token.trim());
+    // Restart bot if enabled
+    if (store.get('telegramEnabled')) initTelegramIfEnabled();
+    return { success: true };
+  });
+
+  handleValidated(IPC.TELEGRAM_SET_ENABLED, ipcSchemas[IPC.TELEGRAM_SET_ENABLED], async (_event, { enabled }) => {
+    store.set('telegramEnabled', enabled);
+    if (enabled) {
+      initTelegramIfEnabled();
+    } else {
+      stopTelegramBot();
+    }
+    return { success: true };
+  });
+
+  handleValidated(IPC.TELEGRAM_CLEAR_AUTH, ipcSchemas[IPC.TELEGRAM_CLEAR_AUTH], async () => {
+    store.set('telegramAuthorizedChatId', undefined as any);
+    return { success: true };
+  });
+
 }
 
 const gotTheLock = app.requestSingleInstanceLock();
@@ -836,10 +1204,7 @@ if (!gotTheLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    }
+    showWindow();
   });
 
   app.whenReady().then(async () => {
@@ -847,14 +1212,57 @@ if (!gotTheLock) {
     initSearchCache();
     initLearningSystem();
     initVault();
+
+    // Clean up zombie task runs left over from a prior crash/quit.
+    // Must happen after initVault() (DB available) but before scheduler starts.
+    const zombieCount = cleanupZombieRuns();
+    if (zombieCount > 0) {
+      log.info(`[Startup] Cleaned up ${zombieCount} zombie task run(s)`);
+    }
+
+    initHeadlessRunner({
+      getApiKey: getAnthropicApiKey,
+      getClient,
+      getDefaultModel: getSelectedModel,
+    });
+    taskScheduler = new TaskScheduler({
+      getApiKey: getAnthropicApiKey,
+      getSelectedModel,
+      lastMessageGetter: () => lastMessageTimestamp,
+      getMainWindow: () => mainWindow,
+      onRunCompleted: (task, result) => {
+        // Track unread if window is hidden/minimized
+        if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible() || mainWindow.isMinimized()) {
+          taskUnreadCount++;
+        }
+        // Push updated task state to renderer
+        broadcastTaskState();
+        // Notify Telegram if running
+        notifyTaskResult(task, result);
+      },
+      onApprovalNeeded: (task, runId) => {
+        if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible() || mainWindow.isMinimized()) {
+          taskUnreadCount++;
+        }
+        broadcastTaskState();
+      },
+    });
+    setSchedulerInstance(taskScheduler);
+    taskScheduler.start();
     setupIpcHandlers();
     setupBrowserIpc();
+    createTray();
     createWindow();
+    initTelegramIfEnabled();
+
     // initPlaywright() is now called from mainWindow 'ready-to-show' event
     // to ensure CDP server is up before attempting connection.
 
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
+      // macOS dock click — show existing hidden window or create a new one
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        showWindow();
+      } else {
         createWindow();
         // initPlaywright will be triggered by ready-to-show in createWindow.
       }
@@ -863,13 +1271,39 @@ if (!gotTheLock) {
 }
 
 app.on('window-all-closed', () => {
+  // On Linux, we destroy + recreate the window on tray restore, which triggers
+  // window-all-closed briefly. Only clean up if actually quitting.
+  if (!(app as any).isQuitting) {
+    log.info('[Tray] window-all-closed (tray mode — keeping background services alive)');
+    return;
+  }
+  log.info('[Tray] window-all-closed (quitting — cleaning up)');
+  try {
+    const currentState = dashboardExecutor?.getCurrentState();
+    if (currentState) {
+      const existing = loadDashboardState();
+      saveDashboardState({
+        haiku: getCachedInsights() || existing?.haiku || null,
+        projectCards: currentState.projects,
+        activityFeed: currentState.activityFeed,
+        contextHash: existing?.contextHash || '',
+        sessionHadActivity: sessionHadActivity(),
+        savedAt: Date.now(),
+      });
+    }
+  } catch (err: any) {
+    log.warn(`[Dashboard] Failed to save state on quit: ${err?.message || err}`);
+  }
   dashboardExecutor?.stop();
+  taskScheduler?.stop();
   stopSessionReaper();
   closeSearchCache();
   shutdownLearningSystem();
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+});
+
+// Ensure isQuitting is set for any quit path (Cmd+Q on macOS, SIGTERM, tray Quit, etc.)
+app.on('before-quit', () => {
+  (app as any).isQuitting = true;
 });
 
 app.on('certificate-error', (event, _webContents, _url, _error, _certificate, callback) => {
@@ -896,7 +1330,15 @@ const SHUTDOWN_TIMEOUT_MS = 10_000;
 
 async function gracefulShutdown(signal: string): Promise<void> {
   log.info(`${signal} received, shutting down...`);
+  (app as any).isQuitting = true;
+  taskScheduler?.stop();
+  stopTelegramBot();
   stopSessionReaper();
+
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
 
   const shutdownTimer = setTimeout(() => {
     log.warn(`Shutdown timed out after ${SHUTDOWN_TIMEOUT_MS}ms, forcing exit`);
@@ -904,6 +1346,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
   }, SHUTDOWN_TIMEOUT_MS);
 
   try {
+    await shutdownTaskBrowser();
     await closeBrowser();
     shutdownLearningSystem();
   } catch (err: any) {

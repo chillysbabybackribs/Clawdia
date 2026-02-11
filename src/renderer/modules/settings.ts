@@ -1,49 +1,18 @@
 import { CLAUDE_MODELS } from '../../shared/models';
-import { hideArcade } from '../arcade/menu';
 import { escapeHtml } from './markdown';
 import { appState, elements } from './state';
 import { hideThinking, setStreaming } from './stream';
 import { setSetupMode } from './setup';
 import { initAccountsUI, loadAccountsList } from './accounts-ui';
+import { initAmbientSettingsUI, loadAmbientSettings, saveAmbientSettings } from './ambient-settings-ui';
+import { initTelegramSettingsUI, loadTelegramSettings } from './telegram-settings-ui';
+
+let settingsContentMoved = false;
 
 export function initSettings(): void {
   initAccountsUI();
-  elements.readmeToggle.addEventListener('click', toggleReadme);
-  elements.readmeClose.addEventListener('click', () => setReadmeVisible(false));
-  elements.readmeView.addEventListener('click', (e) => {
-    if (e.target === elements.readmeView) {
-      setReadmeVisible(false);
-    }
-  });
-
-  elements.settingsToggle.addEventListener('click', async () => {
-    elements.settingsModal.classList.remove('hidden');
-    try {
-      const settings = await window.api.getSettings();
-      elements.settingsApiKeyMasked.textContent = settings.anthropic_key_masked || settings.anthropic_api_key || 'Not configured';
-      elements.searchBackendSelect.value = settings.search_backend || 'serper';
-      if (settings.selected_model) {
-        appState.currentSelectedModel = settings.selected_model;
-        syncAllModelSelects(appState.currentSelectedModel);
-      }
-      elements.changeApiKeyForm.classList.add('hidden');
-      elements.changeApiKeyInput.value = '';
-      elements.changeApiKeyInput.type = 'password';
-      setVisibilityToggleState(elements.changeApiKeyVisibilityBtn, false);
-      setChangeKeyError(null);
-      void loadAccountsList();
-    } catch {
-      // Ignore settings load failures.
-    }
-  });
-
-  elements.settingsClose.addEventListener('click', () => {
-    elements.settingsModal.classList.add('hidden');
-  });
-
-  elements.settingsModal.querySelector('.modal-backdrop')?.addEventListener('click', () => {
-    elements.settingsModal.classList.add('hidden');
-  });
+  initAmbientSettingsUI();
+  initTelegramSettingsUI();
 
   elements.changeApiKeyBtn.addEventListener('click', () => {
     elements.changeApiKeyForm.classList.remove('hidden');
@@ -108,7 +77,6 @@ export function initSettings(): void {
     const confirmed = window.confirm('This will clear your key and return to setup. Continue?');
     if (!confirmed) return;
     await window.api.clearApiKey();
-    elements.settingsModal.classList.add('hidden');
     if (appState.isStreaming) {
       await window.api.stopGeneration();
       hideThinking();
@@ -131,10 +99,11 @@ export function initSettings(): void {
       }
     }
     await window.api.setSetting('search_backend', elements.searchBackendSelect.value);
-    elements.settingsModal.classList.add('hidden');
+    await saveAmbientSettings();
   });
 
-  elements.settingsModal.addEventListener('click', (e) => {
+  // Handle get-key-btn clicks in both settings modal and settings view
+  document.addEventListener('click', (e) => {
     const btn = (e.target as HTMLElement).closest('.get-key-btn') as HTMLElement | null;
     if (!btn) return;
     const url = btn.dataset.url;
@@ -156,12 +125,6 @@ export function initSettings(): void {
     toggleModelPicker();
   });
 
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && appState.readmeVisible) {
-      setReadmeVisible(false);
-    }
-  });
-
   document.addEventListener('click', (e) => {
     if (
       !elements.modelPickerPopup.contains(e.target as Node) &&
@@ -171,6 +134,7 @@ export function initSettings(): void {
       closeModelPicker();
     }
   });
+
 }
 
 export function setVisibilityToggleState(button: HTMLButtonElement, visible: boolean): void {
@@ -264,20 +228,38 @@ export function closeModelPicker(): void {
   elements.modelPickerBtn.classList.remove('open');
 }
 
-export function setReadmeVisible(visible: boolean): void {
-  appState.readmeVisible = visible;
-  elements.readmeView.classList.toggle('hidden', !visible);
-  elements.chatAppShell.classList.toggle('hidden', visible);
-  elements.readmeToggle.classList.toggle('active', visible);
-  if (visible) {
-    hideArcade();
-    elements.settingsModal.classList.add('hidden');
-    elements.conversationsDropdown.classList.add('hidden');
+/** Move settings form content into the settings view panel, then load fresh data. */
+export async function loadSettingsView(): Promise<void> {
+  // Move the settings form from its hidden source into the view panel (once)
+  if (!settingsContentMoved) {
+    const source = elements.settingsModal;
+    const target = elements.settingsBody;
+    // Move all child nodes from the source container into the target
+    while (source.firstChild) {
+      target.appendChild(source.firstChild);
+    }
+    settingsContentMoved = true;
   }
-}
 
-function toggleReadme(): void {
-  setReadmeVisible(!appState.readmeVisible);
+  try {
+    const settings = await window.api.getSettings();
+    elements.settingsApiKeyMasked.textContent = settings.anthropic_key_masked || settings.anthropic_api_key || 'Not configured';
+    elements.searchBackendSelect.value = settings.search_backend || 'serper';
+    if (settings.selected_model) {
+      appState.currentSelectedModel = settings.selected_model;
+      syncAllModelSelects(appState.currentSelectedModel);
+    }
+    elements.changeApiKeyForm.classList.add('hidden');
+    elements.changeApiKeyInput.value = '';
+    elements.changeApiKeyInput.type = 'password';
+    setVisibilityToggleState(elements.changeApiKeyVisibilityBtn, false);
+    setChangeKeyError(null);
+    void loadAccountsList();
+    void loadAmbientSettings();
+    void loadTelegramSettings();
+  } catch {
+    // Ignore settings load failures.
+  }
 }
 
 export async function validateAndPersistAnthropicKey(key: string): Promise<{ valid: boolean; error?: string }> {

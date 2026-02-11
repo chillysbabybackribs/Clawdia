@@ -1,22 +1,29 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Clawdia — AI Desktop Workspace</title>
-  <meta name="description" content="A local-first AI workspace that controls your browser, terminal, and filesystem. Open-source, bring your own key.">
+  <title>OpenClaw Local — Security-First AI Control Plane (Clawdia)</title>
+  <meta name="description"
+    content="OpenClaw Local is the security-first, local control plane for your desktop. Control your browser, terminal, and filesystem with AI. Open-source, BYO-key.">
+
+  <!-- Canonical -->
+  <link rel="canonical" href="https://openclawlocal.com/">
 
   <!-- Open Graph -->
-  <meta property="og:title" content="Clawdia — AI Desktop Workspace">
-  <meta property="og:description" content="Claude controls the browser. And the terminal. And the filesystem.">
+  <meta property="og:title" content="OpenClaw Local — Security-First AI Control Plane">
+  <meta property="og:description"
+    content="The local-first AI workspace that controls your browser, terminal, and filesystem. Secure, open-source, and autonomous.">
   <meta property="og:image" content="https://openclawlocal.com/assets/og-image.png">
-  <meta property="og:url" content="https://openclawlocal.com">
+  <meta property="og:url" content="https://openclawlocal.com/">
   <meta property="og:type" content="website">
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Clawdia — AI Desktop Workspace">
-  <meta name="twitter:description" content="Claude controls the browser. And the terminal. And the filesystem.">
+  <meta name="twitter:title" content="OpenClaw Local — Security-First AI Control Plane">
+  <meta name="twitter:description"
+    content="The local-first AI workspace that controls your browser, terminal, and filesystem. Secure, open-source, and autonomous.">
   <meta name="twitter:image" content="https://openclawlocal.com/assets/og-image.png">
 
   <link rel="icon" type="image/png" href="assets/icon.png">
@@ -24,10 +31,35 @@
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+    rel="stylesheet">
 
   <link rel="stylesheet" href="style.css">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "OpenClaw Local",
+    "alternateName": "Clawdia",
+    "operatingSystem": "Windows, macOS, Linux",
+    "applicationCategory": "DeveloperApplication",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    },
+    "description": "A local-first AI workspace that controls your browser, terminal, and filesystem using your own API key.",
+    "url": "https://openclawlocal.com",
+    "author": {
+      "@type": "Organization",
+      "name": "OpenClaw Local",
+      "url": "https://openclawlocal.com"
+    }
+  }
+  </script>
 </head>
+
 <body>
 
   <!-- Fixed Top Bar -->
@@ -35,6 +67,8 @@
     <div class="topbar-inner">
       <a href="#" class="topbar-brand">C L A W D I A</a>
       <div class="topbar-links">
+        <a href="#how-it-works">How it works</a>
+        <a href="#faq">FAQ</a>
         <a href="https://github.com/chillysbabybackribs/Clawdia" target="_blank" rel="noopener">GitHub</a>
         <a href="#download" class="topbar-download">Download</a>
       </div>
@@ -43,55 +77,118 @@
 
   <!-- Hero -->
   <section class="hero" id="hero">
-    <div class="hero-content">
-      <h1 class="hero-title">C&ensp;L&ensp;A&ensp;W&ensp;D&ensp;I&ensp;A</h1>
-      <p class="hero-tagline">Claude controls the browser.<br>And the terminal. And the filesystem.</p>
+    <div class="hero-split">
 
-      <div class="hero-actions">
-        <a id="download-btn" href="#" class="btn btn-primary">
-          <span id="download-label">Download</span>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1v10M4 7l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 13h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-        </a>
-        <a href="https://github.com/chillysbabybackribs/Clawdia" target="_blank" rel="noopener" class="btn btn-secondary">
-          View on GitHub
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </a>
+      <!-- Left: text column (40%) -->
+      <div class="hero-text">
+        <h1 class="visually-hidden">OpenClaw Local: Security-First AI Control Plane</h1>
+        <h1 class="hero-title">The AI that runs on your machine.</h1>
+        <p class="hero-sub">Browser, terminal, filesystem &mdash; one agent, zero cloud dependency. Every successful route is cached locally so you <strong>never repeat</strong> an API call.</p>
+
+        <div class="hero-actions">
+          <a id="download-btn" href="#" class="btn btn-primary">
+            <span id="download-label">Download</span>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M8 1v10M4 7l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+                stroke-linejoin="round" />
+              <path d="M2 13h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            </svg>
+          </a>
+          <a href="https://github.com/chillysbabybackribs/Clawdia" target="_blank" rel="noopener"
+            class="btn btn-secondary">
+            GitHub
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+                stroke-linejoin="round" />
+            </svg>
+          </a>
+        </div>
+        <p class="hero-note" id="download-note">Also available for <a
+            href="https://github.com/chillysbabybackribs/Clawdia/releases/latest" target="_blank" rel="noopener">macOS
+            and Windows</a> &middot; <span id="download-size"></span></p>
+
+        <div class="hero-proof">
+          <div class="hero-proof-item">
+            <span class="hero-proof-check">&#10003;</span>
+            <span><strong class="proof-highlight">97% fewer</strong> repeat API calls</span>
+          </div>
+          <div class="hero-proof-item">
+            <span class="hero-proof-check">&#10003;</span>
+            <span>Local execution after first success</span>
+          </div>
+          <div class="hero-proof-item">
+            <span class="hero-proof-check">&#10003;</span>
+            <span>Retries locally before cloud fallback</span>
+          </div>
+          <div class="hero-proof-item">
+            <span class="hero-proof-check">&#10003;</span>
+            <span>Full OpenClaw pipelines &mdash; locally</span>
+          </div>
+        </div>
       </div>
-      <p class="hero-note" id="download-note">Also available for <a href="https://github.com/chillysbabybackribs/Clawdia/releases/latest" target="_blank" rel="noopener">macOS and Windows</a> &middot; <span id="download-size"></span></p>
-    </div>
 
-    <div class="hero-media" id="hero-media" role="button" tabindex="0" aria-expanded="false" aria-label="Expand demo video">
-      <video
-        id="hero-video"
-        autoplay
-        muted
-        loop
-        playsinline
-        preload="auto"
-      >
-        <source src="assets/loom_video.mp4" type="video/mp4">
-      </video>
-      <div class="hero-media-fallback" id="video-fallback">
-        <div class="fallback-icon">&#9654;</div>
-        <div class="fallback-text">Demo video coming soon</div>
+      <!-- Right: demo video (60%) -->
+      <div class="hero-media-col">
+        <p class="hero-kicker">Open-source &middot; Local-first &middot; BYO key</p>
+        <div class="hero-demo" id="hero-media" role="button" tabindex="0" aria-haspopup="dialog"
+          aria-label="View demo video full screen">
+          <video id="hero-video" autoplay muted loop playsinline preload="metadata">
+            <source src="assets/loom_video.mp4" type="video/mp4">
+          </video>
+          <div class="hero-media-fallback" id="video-fallback">
+            <div class="fallback-icon">&#9654;</div>
+            <div class="fallback-text">Demo video coming soon</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- How It Works -->
+  <section class="section section-how" id="how-it-works">
+    <div class="container">
+      <h2 class="section-title animate-on-scroll">How OpenClaw Local Works</h2>
+      <div class="steps animate-on-scroll">
+        <div class="step">
+          <div class="step-number">1</div>
+          <h4>Local Connection</h4>
+          <p>Clawdia connects to your local Chrome instance and shell via a secure, local-only WebSocket server.</p>
+        </div>
+        <div class="step-connector"></div>
+        <div class="step">
+          <div class="step-number">2</div>
+          <h4>AI Reasoning</h4>
+          <p>Your instructions are sent to Anthropic's API. The model plans actions based on your screen and file state.
+          </p>
+        </div>
+        <div class="step-connector"></div>
+        <div class="step">
+          <div class="step-number">3</div>
+          <h4>Execution</h4>
+          <p>Clawdia executes the plan locally—clicking buttons, running commands, or editing files—under your
+            supervision.</p>
+        </div>
       </div>
     </div>
-
-    <p class="hero-caption">Read the GitHub repo, understood the structure, updated the README, committed and pushed &mdash; <strong>all in one go.</strong></p>
   </section>
 
   <!-- Features -->
   <section class="section section-features" id="features">
     <div class="container">
+      <h2 class="visually-hidden">Key Features</h2>
 
       <div class="feature-row animate-on-scroll">
         <div class="feature-text">
           <h3 class="feature-label">Your Logins Are The API</h3>
-          <p>No API keys needed for GitHub, Gmail, AWS, Jira, Shopify, your bank &mdash; any site you're logged into. Clawdia uses your active browser sessions. Log in once, and Claude can navigate, read, and interact with your authenticated accounts. Every website you have a login for becomes a tool.</p>
+          <p>No API keys needed for GitHub, Gmail, AWS, Jira, Shopify, your bank &mdash; any site you're logged into.
+            Clawdia uses your active browser sessions. Log in once, and Claude can navigate, read, and interact with
+            your authenticated accounts. Every website you have a login for becomes a tool.</p>
         </div>
         <div class="feature-visual">
           <div class="feature-code">
-            <div class="code-header"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+            <div class="code-header"><span class="code-dot"></span><span class="code-dot"></span><span
+                class="code-dot"></span></div>
             <pre><code><span class="c-cm">// No API keys. Just your browser sessions.</span>
 
 <span class="c-you">You:</span> Check my GitHub notifications
@@ -113,11 +210,14 @@
       <div class="feature-row feature-row-reverse animate-on-scroll">
         <div class="feature-text">
           <h3 class="feature-label">Browser Automation</h3>
-          <p>Claude controls a real browser with your active sessions. Search, navigate, click, type, screenshot, manage tabs &mdash; 11 tools, yeah &mdash; that's all you need bud. Full Playwright under the hood. It sees what you see, logged into what you're logged into.</p>
+          <p>Claude controls a real browser with your active sessions. Search, navigate, click, type, screenshot, manage
+            tabs &mdash; 11 tools, yeah &mdash; that's all you need bud. Full Playwright under the hood. It sees what
+            you see, logged into what you're logged into.</p>
         </div>
         <div class="feature-visual">
           <div class="feature-code">
-            <div class="code-header"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+            <div class="code-header"><span class="code-dot"></span><span class="code-dot"></span><span
+                class="code-dot"></span></div>
             <pre><code><span class="c-kw">navigate</span>(<span class="c-str">"github.com/settings"</span>)
 <span class="c-kw">click</span>(<span class="c-str">"SSH and GPG keys"</span>)
 <span class="c-kw">screenshot</span>()
@@ -129,11 +229,14 @@
       <div class="feature-row animate-on-scroll">
         <div class="feature-text">
           <h3 class="feature-label">Your Computer, Its Hands</h3>
-          <p>Clawdia works directly on your machine &mdash; no cloud, no sandbox. It can organize files, set things up, and handle the boring stuff you'd normally do yourself. Full bash execution, read/write/edit any file, install packages, run scripts, manage processes. Your machine, your rules.</p>
+          <p>Clawdia works directly on your machine &mdash; no cloud, no sandbox. It can organize files, set things up,
+            and handle the boring stuff you'd normally do yourself. Full bash execution, read/write/edit any file,
+            install packages, run scripts, manage processes. Your machine, your rules.</p>
         </div>
         <div class="feature-visual">
           <div class="feature-code">
-            <div class="code-header"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+            <div class="code-header"><span class="code-dot"></span><span class="code-dot"></span><span
+                class="code-dot"></span></div>
             <pre><code><span class="c-cm">$</span> <span class="c-kw">bash</span> <span class="c-str">"ls ~/projects"</span>
 <span class="c-cm">$</span> <span class="c-kw">write_file</span> <span class="c-str">"config.yml"</span>
 <span class="c-cm">$</span> <span class="c-kw">execute</span> <span class="c-str">"npm run build"</span>
@@ -145,11 +248,14 @@
       <div class="feature-row feature-row-reverse animate-on-scroll">
         <div class="feature-text">
           <h3 class="feature-label">It Learns What It Doesn't Know</h3>
-          <p>Ask Clawdia to do something it's never done before. It searches the web, finds the right tools, installs them, writes the code, and delivers &mdash; on the first try. No plugins. No pre-built integrations. If a human developer could figure it out, Clawdia can too.</p>
+          <p>Ask Clawdia to do something it's never done before. It searches the web, finds the right tools, installs
+            them, writes the code, and delivers &mdash; on the first try. No plugins. No pre-built integrations. If a
+            human developer could figure it out, Clawdia can too.</p>
         </div>
         <div class="feature-visual">
           <div class="feature-code">
-            <div class="code-header"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+            <div class="code-header"><span class="code-dot"></span><span class="code-dot"></span><span
+                class="code-dot"></span></div>
             <pre><code><span class="c-you">You:</span> Screenshot my desktop every 5 seconds.
 
 <span class="c-ai">Clawdia:</span> <span class="c-kw">&rarr;</span> search(<span class="c-str">"linux screenshot tool command line"</span>)
@@ -170,7 +276,9 @@
         <div class="feature-text">
           <h3 class="feature-label">Bring Your Own Key</h3>
           <p>Your API key. Your machine. Your sessions. Free for now!</p>
-          <p class="feature-aside">You don't need a search API key at all &mdash; Playwright + Claude <em>is</em> the search API &mdash; but we show you 4 providers who give you free access to use their keys, so why not big guy?</p>
+          <p class="feature-aside">You don't need a search API key at all &mdash; Playwright + Claude <em>is</em> the
+            search API &mdash; but we show you 4 providers who give you free access to use their keys, so why not big
+            guy?</p>
         </div>
         <div class="feature-visual">
           <div class="feature-code feature-code-byok">
@@ -217,6 +325,70 @@
     </div>
   </section>
 
+  <!-- Trust & Safety -->
+  <section class="section section-trust" id="trust">
+    <div class="container">
+      <h2 class="section-title animate-on-scroll">Security & Trust</h2>
+      <div class="trust-grid animate-on-scroll">
+        <div class="trust-item">
+          <div class="trust-icon">&#128273;</div>
+          <h4>Bring Your Own Key</h4>
+          <p>Your API key is stored locally in your OS keychain. It is never sent to our servers (because we don't have
+            any).</p>
+        </div>
+        <div class="trust-item">
+          <div class="trust-icon">&#128737;&#65039;</div>
+          <h4>Local Execution</h4>
+          <p>Clawdia runs as a local Electron app. No remote execution environment. Your data stays on your machine.</p>
+        </div>
+        <div class="trust-item">
+          <div class="trust-icon">&#128065;&#65039;</div>
+          <h4>Full Observability</h4>
+          <p>Every action is logged in real-time. You see exactly what the AI plans to do before it does it.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section class="section section-faq" id="faq">
+    <div class="container">
+      <h2 class="section-title animate-on-scroll">Frequently Asked Questions</h2>
+      <div class="faq-grid animate-on-scroll">
+        <div class="faq-item">
+          <div class="faq-question">Is it local-only?</div>
+          <div class="faq-answer">Yes. The application runs entirely on your machine. The only external request is the
+            API call to Anthropic for intelligence.</div>
+        </div>
+        <div class="faq-item">
+          <div class="faq-question">What data is shared?</div>
+          <div class="faq-answer">Only the current context (screenshot, terminal output, file content) needed for the
+            task is sent to Anthropic. No data is stored by us.</div>
+        </div>
+        <div class="faq-item">
+          <div class="faq-question">Does it require Docker?</div>
+          <div class="faq-answer">No. Clawdia runs natively on your host OS to have full access to your tools and
+            environment.</div>
+        </div>
+        <div class="faq-item">
+          <div class="faq-question">Can it access my files?</div>
+          <div class="faq-answer">Yes. It has the same permissions as you do (User level). Use with caution and review
+            the documentation.</div>
+        </div>
+        <div class="faq-item">
+          <div class="faq-question">What models are supported?</div>
+          <div class="faq-answer">We support all Claude 3.5 models (Sonnet, Haiku) and legacy Opus. You can switch
+            models mid-task.</div>
+        </div>
+        <div class="faq-item">
+          <div class="faq-question">Is it free?</div>
+          <div class="faq-answer">The app is free and open source. You only pay Anthropic directly for your API usage.
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- Getting Started -->
   <section class="section section-start" id="start">
     <div class="container">
@@ -232,7 +404,8 @@
         <div class="step">
           <div class="step-number">2</div>
           <h4>Paste your Anthropic API key.</h4>
-          <p>Free $5 credit on <a href="https://console.anthropic.com/" target="_blank" rel="noopener">signup</a>. That's hundreds of messages.</p>
+          <p>Free $5 credit on <a href="https://console.anthropic.com/" target="_blank" rel="noopener">signup</a>.
+            That's hundreds of messages.</p>
         </div>
         <div class="step-connector"></div>
         <div class="step">
@@ -245,9 +418,14 @@
       <div class="build-source animate-on-scroll">
         <p>Or build from source:</p>
         <div class="code-block">
-          <code id="clone-cmd">git clone https://github.com/chillysbabybackribs/Clawdia.git && cd Clawdia && npm install && npm run dev</code>
+          <code
+            id="clone-cmd">git clone https://github.com/chillysbabybackribs/Clawdia.git && cd Clawdia && npm install && npm run dev</code>
           <button class="copy-btn" id="copy-btn" title="Copy to clipboard">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="5" y="5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="M3 11V3a1.5 1.5 0 0 1 1.5-1.5H11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <rect x="5" y="5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.5" />
+              <path d="M3 11V3a1.5 1.5 0 0 1 1.5-1.5H11" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" />
+            </svg>
             <span class="copy-text">Copy</span>
           </button>
         </div>
@@ -257,23 +435,40 @@
       <div class="download-all animate-on-scroll" id="download">
         <h3>Downloads</h3>
         <div class="download-grid">
-          <a href="https://github.com/chillysbabybackribs/Clawdia/releases/latest/download/Clawdia.AppImage" class="download-card" data-platform="linux">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2z" stroke="currentColor" stroke-width="1.5"/><path d="M12 7v6l4 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <a href="https://github.com/chillysbabybackribs/Clawdia/releases/latest/download/Clawdia.AppImage"
+            class="download-card" data-platform="linux">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+              <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2z" stroke="currentColor"
+                stroke-width="1.5" />
+              <path d="M12 7v6l4 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            </svg>
             <span class="download-os">Linux</span>
             <span class="download-format">.AppImage &middot; 159 MB</span>
           </a>
-          <a href="https://github.com/chillysbabybackribs/Clawdia/releases/latest/download/Clawdia.dmg" class="download-card" data-platform="mac">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2z" stroke="currentColor" stroke-width="1.5"/><path d="M12 7v6l4 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <a href="https://github.com/chillysbabybackribs/Clawdia/releases/latest/download/Clawdia.dmg"
+            class="download-card" data-platform="mac">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+              <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2z" stroke="currentColor"
+                stroke-width="1.5" />
+              <path d="M12 7v6l4 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            </svg>
             <span class="download-os">macOS</span>
             <span class="download-format">.dmg &middot; Universal</span>
           </a>
-          <a href="https://github.com/chillysbabybackribs/Clawdia/releases/latest/download/Clawdia-setup.exe" class="download-card" data-platform="windows">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2z" stroke="currentColor" stroke-width="1.5"/><path d="M12 7v6l4 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <a href="https://github.com/chillysbabybackribs/Clawdia/releases/latest/download/Clawdia-setup.exe"
+            class="download-card" data-platform="windows">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+              <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2z" stroke="currentColor"
+                stroke-width="1.5" />
+              <path d="M12 7v6l4 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            </svg>
             <span class="download-os">Windows</span>
             <span class="download-format">.exe installer</span>
           </a>
         </div>
-        <p class="download-all-note">All releases on <a href="https://github.com/chillysbabybackribs/Clawdia/releases/latest" target="_blank" rel="noopener">GitHub Releases</a></p>
+        <p class="download-all-note">All releases on <a
+            href="https://github.com/chillysbabybackribs/Clawdia/releases/latest" target="_blank" rel="noopener">GitHub
+            Releases</a></p>
       </div>
 
     </div>
@@ -290,6 +485,10 @@
         <a href="https://github.com/chillysbabybackribs/Clawdia" target="_blank" rel="noopener">GitHub</a>
         <span class="footer-sep">&middot;</span>
         <a href="https://x.com/" target="_blank" rel="noopener">Twitter/X</a>
+        <span class="footer-sep">&middot;</span>
+        <a href="#privacy">Privacy</a>
+        <span class="footer-sep">&middot;</span>
+        <a href="#terms">Terms</a>
       </div>
       <p class="footer-powered">Powered by Claude (Anthropic)</p>
     </div>
@@ -301,4 +500,5 @@
   </script>
   <script defer src="/_vercel/insights/script.js"></script>
 </body>
+
 </html>

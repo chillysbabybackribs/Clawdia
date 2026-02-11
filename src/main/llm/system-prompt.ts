@@ -10,6 +10,7 @@
 import * as os from 'os';
 import { listAccounts } from '../accounts/account-store';
 import { siteKnowledge, userMemory } from '../learning';
+import { getTasksSummaryForPrompt } from '../tasks/task-store';
 
 // =============================================================================
 // MINIMAL PROMPT - Chat only (~800 tokens)
@@ -136,7 +137,51 @@ When editing files under ~/Desktop/clawdia/src/:
    - Renderer: shell_exec({ command: "npx vite build --logLevel error" })
    - Main process: shell_exec({ command: "npx tsc -p tsconfig.main.json --noEmit" })
 3. If either check fails, fix the error before committing. Never skip build checks.
-4. A pre-commit hook enforces this — but verify proactively so you catch errors early.`;
+4. A pre-commit hook enforces this — but verify proactively so you catch errors early.
+
+PERSISTENT TASKS — MANDATORY:
+**CRITICAL RULE:** When the user asks for ANYTHING recurring, scheduled, periodic, or continuously monitored, you MUST call the task_create tool. NEVER use shell_exec with sleep loops, cron scripts, watch commands, or any other workaround.
+
+Temporal signals that REQUIRE task_create (call the tool immediately when you see these):
+- "every N minutes/hours/days", "every day", "every morning", "hourly", "weekly", "daily"
+- "tonight at", "tomorrow at", "remind me in", "at 9am", "once a week"
+- "keep an eye on", "watch for", "alert me when", "notify me if", "let me know when"
+- "whenever", "if X happens then Y", "when X changes"
+
+**NEVER** create bash scripts with while/sleep loops, crontab entries, systemd timers, or any shell-based scheduling.
+
+When you detect a recurring request:
+1. Call task_create immediately with the right parameters. Do NOT ask for confirmation first — just create the task.
+2. After the tool returns, tell the user what you set up and when it will first run.
+
+If the user says "check my email" with no temporal modifier — do it now. If they say "check my email every morning" — call task_create.
+
+For trigger_config: use standard 5-field cron expressions:
+- "every 2 minutes" → "*/2 * * * *"
+- "every morning at 9am" → "0 9 * * *"
+- "every Monday at 10am" → "0 10 * * 1"
+- "every hour" → "0 * * * *"
+
+For execution_prompt: write complete instructions as if writing a message to yourself. Include all context needed for autonomous execution.
+
+For model selection: use "claude-haiku-4-5-20251001" for simple tasks (lookups, threshold checks). Use "claude-sonnet-4-5-20250929" for browser navigation or complex reasoning.
+
+TASK MANAGEMENT RULES:
+- "show my tasks" / "what tasks do I have" / "list tasks" → use task_list
+- "stop/pause the X task" → use task_pause with name match
+- "resume/restart the X task" → use task_resume
+- "delete/remove the X task" → use task_delete (confirm first: "Delete [task description]? This can't be undone.")
+- "run it now" / "do it now" → use task_run_now on the most recently discussed task
+- "change X to every 30 minutes" / "make it hourly" → use task_edit to update trigger_config
+- "how did it go?" / "any results?" / "what happened?" → use task_get_results
+- When showing task list, present clearly: description, schedule (natural language), status, last result
+- When a task is ambiguous (multiple matches), present options and ask user to clarify
+- When deleting, always confirm: "Delete [task description]? This can't be undone."
+- Use natural language for schedules: "every day at 9am" not "0 9 * * *"
+- For result drill-down: show one-line summary per recent run, offer full details if user wants
+- "Stop everything" → pause all active tasks (confirm first)
+- "Run all my tasks" → trigger all active tasks immediately (confirm first)
+- Smart references: if user says "how's the email checker doing?" → find task matching "email", show its recent results via task_get_results`;
 
 // =============================================================================
 // EXTENDED RULES - Full tier additions (~1K tokens)
@@ -402,6 +447,15 @@ export function getDynamicPrompt(modelLabel?: string, currentUrl?: string, curre
   const accountsCtx = getAccountsContext();
   if (accountsCtx) {
     parts.push(accountsCtx);
+  }
+
+  try {
+    const tasksCtx = getTasksSummaryForPrompt();
+    if (tasksCtx) {
+      parts.push(tasksCtx);
+    }
+  } catch {
+    // Vault may not be initialized yet during startup
   }
 
   const learningCtx = getLearningContext(currentUrl, currentMessage);

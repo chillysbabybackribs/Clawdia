@@ -205,6 +205,12 @@ const api = {
     return () => ipcRenderer.removeListener(IPC_EVENTS.DOC_PROGRESS, handler);
   },
 
+  onChatUpdated: (callback: (data: { conversationId: string; conversation: any }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on(IPC_EVENTS.CHAT_UPDATED, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.CHAT_UPDATED, handler);
+  },
+
   // -------------------------------------------------------------------------
   // Browser
   // -------------------------------------------------------------------------
@@ -390,6 +396,9 @@ const api = {
   dismissDashboardRule: (ruleId: string) =>
     invokeChecked(IPC.DASHBOARD_DISMISS_RULE, { ruleId }),
 
+  dismissDashboardAlert: (alertId: string) =>
+    invokeChecked(IPC.DASHBOARD_DISMISS_ALERT, { alertId }),
+
   setDashboardVisible: (visible: boolean) =>
     invokeChecked(IPC.DASHBOARD_SET_VISIBLE, { visible }),
 
@@ -398,6 +407,76 @@ const api = {
     ipcRenderer.on(IPC_EVENTS.DASHBOARD_UPDATE, handler);
     return () => ipcRenderer.removeListener(IPC_EVENTS.DASHBOARD_UPDATE, handler);
   },
+
+  // -------------------------------------------------------------------------
+  // Tasks
+  // -------------------------------------------------------------------------
+  taskList: () => invokeChecked(IPC.TASK_LIST),
+  taskGet: (taskId: string) => invokeChecked(IPC.TASK_GET, { taskId }),
+  taskDelete: (taskId: string) => invokeChecked(IPC.TASK_DELETE, { taskId }),
+  taskPause: (taskId: string) => invokeChecked(IPC.TASK_PAUSE, { taskId }),
+  taskResume: (taskId: string) => invokeChecked(IPC.TASK_RESUME, { taskId }),
+  taskRunNow: (taskId: string) => invokeChecked(IPC.TASK_RUN_NOW, { taskId }),
+  taskApproveRun: (runId: string) => invokeChecked(IPC.TASK_APPROVE_RUN, { runId }),
+  taskDismissRun: (runId: string) => invokeChecked(IPC.TASK_DISMISS_RUN, { runId }),
+  taskGetUnread: () => invokeChecked(IPC.TASK_GET_UNREAD),
+  taskClearUnread: () => invokeChecked(IPC.TASK_CLEAR_UNREAD),
+  taskGetRuns: (taskId: string) => invokeChecked(IPC.TASK_GET_RUNS, { taskId }),
+  taskGetExecutor: (taskId: string) => invokeChecked(IPC.TASK_GET_EXECUTOR, { taskId }),
+
+  onTaskStateUpdate: (callback: (items: any[]) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, items: any[]) => callback(items);
+    ipcRenderer.on(IPC_EVENTS.TASK_STATE_UPDATE, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.TASK_STATE_UPDATE, handler);
+  },
+
+  onTaskFocus: (callback: (taskId: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, taskId: string) => callback(taskId);
+    ipcRenderer.on(IPC_EVENTS.TASK_FOCUS, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.TASK_FOCUS, handler);
+  },
+
+  onTaskApprovalFocus: (callback: (runId: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, runId: string) => callback(runId);
+    ipcRenderer.on(IPC_EVENTS.TASK_APPROVAL_FOCUS, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.TASK_APPROVAL_FOCUS, handler);
+  },
+
+  onTaskRunNotification: (callback: (data: {
+    taskId: string;
+    description: string;
+    status: string;
+    responseText: string;
+    errorMessage?: string;
+    durationMs: number;
+    toolCallCount: number;
+    inputTokens: number;
+    outputTokens: number;
+  }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on(IPC_EVENTS.TASK_RUN_NOTIFICATION, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.TASK_RUN_NOTIFICATION, handler);
+  },
+
+  // -------------------------------------------------------------------------
+  // Ambient Settings
+  // -------------------------------------------------------------------------
+  getAmbientSettings: () => invokeChecked(IPC.AMBIENT_SETTINGS_GET),
+
+  setAmbientSettings: (settings: Record<string, unknown>) =>
+    invokeChecked(IPC.AMBIENT_SETTINGS_SET, { settings }),
+
+  // -------------------------------------------------------------------------
+  // Telegram
+  // -------------------------------------------------------------------------
+  telegramGetConfig: () => invokeChecked(IPC.TELEGRAM_GET_CONFIG),
+
+  telegramSetToken: (token: string) => invokeChecked(IPC.TELEGRAM_SET_TOKEN, { token }),
+
+  telegramSetEnabled: (enabled: boolean) => invokeChecked(IPC.TELEGRAM_SET_ENABLED, { enabled }),
+
+  telegramClearAuth: () => invokeChecked(IPC.TELEGRAM_CLEAR_AUTH),
+
 };
 
 // Expose to renderer

@@ -638,12 +638,53 @@ export interface DashboardSetVisiblePayload {
   visible: boolean;
 }
 
+export interface DashboardDismissAlertPayload {
+  alertId: string;
+}
+
 export const dashboardDismissRuleSchema = isObject<DashboardDismissRulePayload>({
   ruleId: isNonEmptyString('ruleId'),
 });
 
+export const dashboardDismissAlertSchema = isObject<DashboardDismissAlertPayload>({
+  alertId: isNonEmptyString('alertId'),
+});
+
 export const dashboardSetVisibleSchema = isObject<DashboardSetVisiblePayload>({
   visible: isBoolean('visible'),
+});
+
+export interface AmbientSettingsSetPayload {
+  settings: Record<string, unknown>;
+}
+
+export const ambientSettingsSetSchema = isObject<AmbientSettingsSetPayload>({
+  settings: (input: unknown) => {
+    if (!isPlainObject(input)) return fail(`'settings' must be an object, got ${describeValue(input)}`);
+    return ok(input as Record<string, unknown>);
+  },
+});
+
+// Task payloads
+export interface TaskIdPayload { taskId: string }
+export interface TaskRunIdPayload { runId: string }
+
+export const taskIdSchema = isObject<TaskIdPayload>({
+  taskId: isNonEmptyString('taskId'),
+});
+
+export const taskRunIdSchema = isObject<TaskRunIdPayload>({
+  runId: isNonEmptyString('runId'),
+});
+
+// Telegram
+export interface TelegramSetTokenPayload { token: string }
+export interface TelegramSetEnabledPayload { enabled: boolean }
+export const telegramSetTokenSchema = isObject<TelegramSetTokenPayload>({
+  token: isNonEmptyString('token'),
+});
+export const telegramSetEnabledSchema = isObject<TelegramSetEnabledPayload>({
+  enabled: isBoolean('enabled'),
 });
 
 export function validate<T>(input: unknown, validator: Validator<T>): T {
@@ -736,5 +777,24 @@ export const ipcSchemas = {
   [IPC.ACTION_GET_ITEMS]: actionIdSchema,
   [IPC.DASHBOARD_GET]: noPayload,
   [IPC.DASHBOARD_DISMISS_RULE]: dashboardDismissRuleSchema,
+  [IPC.DASHBOARD_DISMISS_ALERT]: dashboardDismissAlertSchema,
   [IPC.DASHBOARD_SET_VISIBLE]: dashboardSetVisibleSchema,
+  [IPC.AMBIENT_SETTINGS_GET]: noPayload,
+  [IPC.AMBIENT_SETTINGS_SET]: ambientSettingsSetSchema,
+  [IPC.TASK_LIST]: noPayload,
+  [IPC.TASK_GET]: taskIdSchema,
+  [IPC.TASK_DELETE]: taskIdSchema,
+  [IPC.TASK_PAUSE]: taskIdSchema,
+  [IPC.TASK_RESUME]: taskIdSchema,
+  [IPC.TASK_RUN_NOW]: taskIdSchema,
+  [IPC.TASK_APPROVE_RUN]: taskRunIdSchema,
+  [IPC.TASK_DISMISS_RUN]: taskRunIdSchema,
+  [IPC.TASK_GET_UNREAD]: noPayload,
+  [IPC.TASK_CLEAR_UNREAD]: noPayload,
+  [IPC.TASK_GET_RUNS]: taskIdSchema,
+  [IPC.TASK_GET_EXECUTOR]: taskIdSchema,
+  [IPC.TELEGRAM_GET_CONFIG]: noPayload,
+  [IPC.TELEGRAM_SET_TOKEN]: telegramSetTokenSchema,
+  [IPC.TELEGRAM_SET_ENABLED]: telegramSetEnabledSchema,
+  [IPC.TELEGRAM_CLEAR_AUTH]: noPayload,
 } as const;

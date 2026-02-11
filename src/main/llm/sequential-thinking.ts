@@ -6,7 +6,7 @@
 // Provides a structured scratchpad for the LLM to externalize reasoning
 // before acting on complex, ambiguous, or destructive operations.
 //
-// State is ephemeral per-run (reset at each ToolLoop.run() call).
+// State is per-SequentialThinkingState instance (one per ToolLoop).
 
 import { createLogger } from '../logger';
 
@@ -74,7 +74,7 @@ export const SEQUENTIAL_THINKING_TOOL_DEFINITION = {
 };
 
 // ---------------------------------------------------------------------------
-// Per-run state (ephemeral — cleared at each ToolLoop.run())
+// Per-run state — now encapsulated in a class for concurrency safety
 // ---------------------------------------------------------------------------
 
 interface ThoughtEntry {
@@ -85,13 +85,6 @@ interface ThoughtEntry {
   branchFromThought?: number;
   branchId?: string;
 }
-
-let thoughtHistory: ThoughtEntry[] = [];
-let branches: Set<string> = new Set();
-
-// ---------------------------------------------------------------------------
-// Execution
-// ---------------------------------------------------------------------------
 
 interface SequentialThinkingInput {
   thought: string;
@@ -105,69 +98,80 @@ interface SequentialThinkingInput {
   needsMoreThoughts?: boolean;
 }
 
-export function executeSequentialThinking(
-  input: Record<string, unknown>,
-): string {
-  const {
-    thought,
-    nextThoughtNeeded,
-    thoughtNumber,
-    totalThoughts,
-    isRevision,
-    revisesThought,
-    branchFromThought,
-    branchId,
-    needsMoreThoughts,
-  } = input as unknown as SequentialThinkingInput;
+/**
+ * Per-ToolLoop sequential thinking state.
+ * Each ToolLoop creates one instance so concurrent loops don't share state.
+ */
+export class SequentialThinkingState {
+  private thoughtHistory: ThoughtEntry[] = [];
+  private branches: Set<string> = new Set();
 
-  // Validate required fields
-  if (!thought || typeof thought !== 'string') {
-    return JSON.stringify({ error: 'thought is required and must be a string' });
-  }
-  const safeThoughtNumber = Number.isFinite(thoughtNumber) ? Math.max(1, Math.floor(thoughtNumber)) : 1;
-  const safeTotalThoughts = Number.isFinite(totalThoughts) ? Math.max(1, Math.floor(totalThoughts)) : 1;
-
-  // Track branch
-  if (branchId && branchFromThought) {
-    branches.add(branchId);
+  reset(): void {
+    this.thoughtHistory = [];
+    this.branches = new Set();
   }
 
-  // Store thought
-  const entry: ThoughtEntry = {
-    thoughtNumber: safeThoughtNumber,
-    thought,
-    isRevision: isRevision ?? false,
-    revisesThought,
-    branchFromThought,
-    branchId,
-  };
-  thoughtHistory.push(entry);
+  execute(input: Record<string, unknown>): string {
+    const {
+      thought,
+      nextThoughtNeeded,
+      thoughtNumber,
+      totalThoughts,
+      isRevision,
+      revisesThought,
+      branchFromThought,
+      branchId,
+    } = input as unknown as SequentialThinkingInput;
 
-  // Debug logging (not visible to user)
-  const prefix = isRevision
-    ? `[revision of #${revisesThought}]`
-    : branchId
-      ? `[branch: ${branchId} from #${branchFromThought}]`
-      : '';
-  log.debug(
-    `Thought ${safeThoughtNumber}/${safeTotalThoughts} ${prefix}: ${thought.slice(0, 120)}${thought.length > 120 ? '...' : ''}`,
-  );
+    if (!thought || typeof thought !== 'string') {
+      return JSON.stringify({ error: 'thought is required and must be a string' });
+    }
+    const safeThoughtNumber = Number.isFinite(thoughtNumber) ? Math.max(1, Math.floor(thoughtNumber)) : 1;
+    const safeTotalThoughts = Number.isFinite(totalThoughts) ? Math.max(1, Math.floor(totalThoughts)) : 1;
 
-  // Return acknowledgment (matches MCP server response shape)
-  return JSON.stringify({
-    thoughtNumber: safeThoughtNumber,
-    totalThoughts: Math.max(safeTotalThoughts, safeThoughtNumber),
-    nextThoughtNeeded,
-    branches: Array.from(branches),
-    thoughtHistoryLength: thoughtHistory.length,
-  });
+    if (branchId && branchFromThought) {
+      this.branches.add(branchId);
+    }
+
+    const entry: ThoughtEntry = {
+      thoughtNumber: safeThoughtNumber,
+      thought,
+      isRevision: isRevision ?? false,
+      revisesThought,
+      branchFromThought,
+      branchId,
+    };
+    this.thoughtHistory.push(entry);
+
+    const prefix = isRevision
+      ? `[revision of #${revisesThought}]`
+      : branchId
+        ? `[branch: ${branchId} from #${branchFromThought}]`
+        : '';
+    log.debug(
+      `Thought ${safeThoughtNumber}/${safeTotalThoughts} ${prefix}: ${thought.slice(0, 120)}${thought.length > 120 ? '...' : ''}`,
+    );
+
+    return JSON.stringify({
+      thoughtNumber: safeThoughtNumber,
+      totalThoughts: Math.max(safeTotalThoughts, safeThoughtNumber),
+      nextThoughtNeeded,
+      branches: Array.from(this.branches),
+      thoughtHistoryLength: this.thoughtHistory.length,
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Reset — called at start of each ToolLoop.run()
+// Legacy module-level API — delegates to a default instance for backward compat
 // ---------------------------------------------------------------------------
 
+const _defaultState = new SequentialThinkingState();
+
+export function executeSequentialThinking(input: Record<string, unknown>): string {
+  return _defaultState.execute(input);
+}
+
 export function resetSequentialThinking(): void {
-  thoughtHistory = [];
-  branches = new Set();
+  _defaultState.reset();
 }

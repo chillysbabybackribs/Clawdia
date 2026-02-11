@@ -1,16 +1,18 @@
 import { ensureLandingTab, initBrowser, syncBrowserBounds } from './modules/browser';
-import { ensureChatShellInitialized, initChat } from './modules/chat';
+import { ensureChatShellInitialized, initChat, loadConversationsView } from './modules/chat';
 import { initAttachments } from './modules/attachments';
+import { initTaskNotifications } from './modules/dashboard';
 import { initDocuments } from './modules/documents';
 import { initMarkdown } from './modules/markdown';
-import { initSettings, syncAllModelSelects } from './modules/settings';
+import { initSettings, syncAllModelSelects, loadSettingsView } from './modules/settings';
 import { initSetup, setSetupMode } from './modules/setup';
-import { appState, initElements } from './modules/state';
+import { appState, elements, initElements } from './modules/state';
 import { initStream } from './modules/stream';
 import { initAffirmationWidget } from './modules/affirmation-widget';
 import { initActivityFeed } from './modules/activity-feed';
 import { initTokenStats } from './modules/token-stats';
 import { initVaultUI } from './modules/vault-ui';
+import { initTaskView, showTaskView, hideTaskView, highlightTaskInView } from './modules/task-view';
 
 function initClock(): void {
   const clockElement = document.getElementById('header-clock');
@@ -30,6 +32,65 @@ function initClock(): void {
   setInterval(updateClock, 60000);
 }
 
+function switchView(view: 'chat' | 'tasks' | 'conversations' | 'readme' | 'settings'): void {
+  if (appState.activeView === view) return;
+  appState.activeView = view;
+
+  // Update sidebar buttons
+  const navBtns = [
+    { btn: elements.navChatBtn, id: 'chat' },
+    { btn: elements.navTasksBtn, id: 'tasks' },
+    { btn: elements.navConversationsBtn, id: 'conversations' },
+    { btn: elements.navReadmeBtn, id: 'readme' },
+    { btn: elements.navSettingsBtn, id: 'settings' },
+  ];
+  for (const { btn, id } of navBtns) {
+    btn.classList.toggle('sidebar-nav-btn--active', view === id);
+  }
+
+  // Toggle views — all hide/show via class
+  const showChat = view === 'chat';
+  elements.chatAppShell.classList.toggle('hidden', !showChat);
+  elements.taskView.classList.toggle('hidden', view !== 'tasks');
+  elements.conversationsView.classList.toggle('hidden', view !== 'conversations');
+  elements.readmeView.classList.toggle('hidden', view !== 'readme');
+  elements.settingsView.classList.toggle('hidden', view !== 'settings');
+
+  if (view === 'tasks') {
+    void showTaskView();
+  } else {
+    hideTaskView();
+  }
+
+  if (view === 'conversations') {
+    void loadConversationsView();
+  }
+
+  if (view === 'settings') {
+    void loadSettingsView();
+  }
+}
+
+function initSidebarNav(): void {
+  elements.navChatBtn.addEventListener('click', () => switchView('chat'));
+  elements.navTasksBtn.addEventListener('click', () => switchView('tasks'));
+  elements.navConversationsBtn.addEventListener('click', () => switchView('conversations'));
+  elements.navReadmeBtn.addEventListener('click', () => switchView('readme'));
+  elements.navSettingsBtn.addEventListener('click', () => switchView('settings'));
+
+  // Listen for programmatic view switch events (from chat.ts conversation selection)
+  document.addEventListener('clawdia:switch-view', ((e: CustomEvent) => {
+    switchView(e.detail);
+  }) as EventListener);
+
+  // Wire dashboard task card clicks to switch to task view
+  window.api.onTaskFocus((taskId) => {
+    switchView('tasks');
+    // Give DOM time to render, then highlight
+    setTimeout(() => highlightTaskInView(taskId), 100);
+  });
+}
+
 async function init(): Promise<void> {
   initElements();
 
@@ -43,6 +104,9 @@ async function init(): Promise<void> {
   initSettings();
   initSetup();
   initChat();
+  initTaskNotifications();
+  initTaskView();
+  initSidebarNav();
   initAffirmationWidget();
   initAffirmationWidget();
   initVaultUI();

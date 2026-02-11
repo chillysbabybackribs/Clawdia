@@ -1,7 +1,7 @@
 import { hideArcade, resetArcadeDismissed, showArcade } from '../arcade/menu';
 import { navigatePanelToUrl } from './browser';
 import { ensureChatShellInitialized } from './chat';
-import { setReadmeVisible, setVisibilityToggleState, syncAllModelSelects, togglePasswordInputVisibility } from './settings';
+import { setVisibilityToggleState, syncAllModelSelects, togglePasswordInputVisibility } from './settings';
 import { ANTHROPIC_CONSOLE_URL, appState, elements } from './state';
 
 export function initSetup(): void {
@@ -100,14 +100,16 @@ export function setSetupMode(enabled: boolean): void {
   appState.isSetupMode = enabled;
   elements.chatAppShell.classList.toggle('hidden', enabled);
   elements.setupView.classList.toggle('hidden', !enabled);
-  setReadmeVisible(false);
 
   if (enabled) {
     hideArcade();
     elements.setupArcadeHost.classList.add('hidden');
     elements.setupArcadeBtn.textContent = 'Play arcade while you set up';
-    elements.settingsModal.classList.add('hidden');
-    elements.conversationsDropdown.classList.add('hidden');
+    // Hide all view panels when entering setup
+    elements.readmeView.classList.add('hidden');
+    elements.conversationsView.classList.add('hidden');
+    elements.settingsView.classList.add('hidden');
+    elements.taskView.classList.add('hidden');
     elements.setupApiKeyInput.value = '';
     elements.setupApiKeyInput.type = 'password';
     setVisibilityToggleState(elements.setupToggleVisibilityBtn, false);

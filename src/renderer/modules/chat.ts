@@ -54,31 +54,20 @@ export function initChat(): void {
     setStreaming(false);
   });
 
-  elements.conversationsToggle.addEventListener('click', () => {
-    elements.conversationsDropdown.classList.toggle('hidden');
-  });
-
   elements.newConversationBtn.addEventListener('click', async () => {
     await createNewChatTab();
-    await loadConversations();
-    elements.conversationsDropdown.classList.add('hidden');
+    // Switch to chat view after creating new conversation
+    const switchEvent = new CustomEvent('clawdia:switch-view', { detail: 'chat' });
+    document.dispatchEvent(switchEvent);
   });
 
-  elements.chatTabsContainer?.addEventListener(
-    'wheel',
-    (event) => {
-      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
-      event.preventDefault();
-      elements.chatTabsContainer.scrollLeft += event.deltaY;
-    },
-    { passive: false }
-  );
+  // Conversations search
+  elements.conversationsSearch.addEventListener('input', () => {
+    void loadConversationsView();
+  });
 
   document.addEventListener('click', (e) => {
     const target = e.target as Node;
-    if (!elements.conversationsDropdown.contains(target) && target !== elements.conversationsToggle) {
-      elements.conversationsDropdown.classList.add('hidden');
-    }
     handleOutsideClick(target);
   });
 
@@ -87,6 +76,13 @@ export function initChat(): void {
   elements.outputEl.addEventListener('click', handleCodeCopyClick);
   elements.outputEl.addEventListener('scroll', updateOutputAutoFollowState, { passive: true });
   elements.outputEl.addEventListener('wheel', handleOutputWheel, { passive: true });
+
+  // Auto-refresh when external source updates a conversation
+  window.api.onChatUpdated(({ conversationId }) => {
+    if (conversationId === appState.activeChatTabId) {
+      void switchChatTab(conversationId, { persistState: false, restoreScroll: false, clearInput: false });
+    }
+  });
 }
 
 function updateEmptyState(): void {
@@ -671,18 +667,125 @@ function appendUserMessage(content: string, shouldScroll: boolean = true, images
 }
 
 async function loadConversations(): Promise<void> {
+  // No-op now — conversations are loaded in the conversations view
+}
+
+function getTimeGroup(dateStr?: string): string {
+  if (!dateStr) return 'Earlier';
+  const now = new Date();
+  const d = new Date(dateStr);
+  const diffMs = now.getTime() - d.getTime();
+  const diffDays = Math.floor(diffMs / 86_400_000);
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays < 7) return 'This Week';
+  return 'Earlier';
+}
+
+function formatTimeAgo(dateStr?: string): string {
+  if (!dateStr) return '';
+  const now = new Date();
+  const d = new Date(dateStr);
+  const diffMs = now.getTime() - d.getTime();
+  const diffMin = Math.floor(diffMs / 60_000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffH = Math.floor(diffMin / 60);
+  if (diffH < 24) return `${diffH}h ago`;
+  const diffD = Math.floor(diffH / 24);
+  if (diffD < 7) return `${diffD}d ago`;
+  return d.toLocaleDateString();
+}
+
+/** Render the conversations view panel with time-grouped conversations. */
+export async function loadConversationsView(): Promise<void> {
   const conversations = await window.api.listConversations();
+  const searchQuery = elements.conversationsSearch.value.trim().toLowerCase();
+
+  let filtered = conversations;
+  if (searchQuery) {
+    filtered = conversations.filter((c: any) =>
+      (c.title || '').toLowerCase().includes(searchQuery)
+    );
+  }
+
   elements.conversationsList.innerHTML = '';
 
-  for (const conv of conversations) {
-    const item = document.createElement('div');
-    item.className = `conversation-item ${conv.id === appState.activeChatTabId ? 'active' : ''}`;
-    item.innerHTML = `<span class="conversation-item-title">${escapeHtml(conv.title)}</span>`;
-    item.addEventListener('click', async () => {
-      await openConversationInChatTab(conv.id);
-      elements.conversationsDropdown.classList.add('hidden');
-    });
-    elements.conversationsList.appendChild(item);
+  if (filtered.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'conv-view-empty';
+    empty.textContent = searchQuery ? 'No matching conversations' : 'No conversations yet';
+    elements.conversationsList.appendChild(empty);
+    return;
+  }
+
+  // Group by time
+  const groups = new Map<string, typeof filtered>();
+  for (const conv of filtered) {
+    const group = getTimeGroup((conv as any).updatedAt || (conv as any).createdAt);
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group)!.push(conv);
+  }
+
+  const groupOrder = ['Today', 'Yesterday', 'This Week', 'Earlier'];
+  for (const groupName of groupOrder) {
+    const items = groups.get(groupName);
+    if (!items || items.length === 0) continue;
+
+    const groupHeader = document.createElement('div');
+    groupHeader.className = 'conv-view-group-header';
+    groupHeader.textContent = groupName;
+    elements.conversationsList.appendChild(groupHeader);
+
+    for (const conv of items) {
+      const row = document.createElement('div');
+      row.className = `conv-view-item${conv.id === appState.activeChatTabId ? ' conv-view-item--active' : ''}`;
+
+      const timeAgo = formatTimeAgo((conv as any).updatedAt || (conv as any).createdAt);
+      const msgCount = (conv as any).messageCount || '';
+      const metaParts = [timeAgo, msgCount ? `${msgCount} messages` : ''].filter(Boolean).join(' \u00B7 ');
+
+      row.innerHTML = `
+        <div class="conv-view-item-body">
+          <div class="conv-view-item-title">${escapeHtml(conv.title || 'New Chat')}</div>
+          <div class="conv-view-item-meta">${metaParts}</div>
+        </div>
+        <button class="conv-view-item-delete" title="Delete conversation">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"/>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+          </svg>
+        </button>
+      `;
+
+      // Click to open conversation
+      row.addEventListener('click', async (e) => {
+        if ((e.target as HTMLElement).closest('.conv-view-item-delete')) return;
+        await openConversationInChatTab(conv.id);
+        // Switch back to chat view
+        const switchEvent = new CustomEvent('clawdia:switch-view', { detail: 'chat' });
+        document.dispatchEvent(switchEvent);
+      });
+
+      // Delete button
+      const deleteBtn = row.querySelector('.conv-view-item-delete');
+      if (deleteBtn) {
+        deleteBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const confirmed = window.confirm('Delete this conversation?');
+          if (!confirmed) return;
+          await window.api.deleteConversation(conv.id);
+          // Remove from open tabs if present
+          const tabIdx = getChatTabIndex(conv.id);
+          if (tabIdx >= 0) {
+            await closeChatTab(conv.id);
+          }
+          void loadConversationsView();
+        });
+      }
+
+      elements.conversationsList.appendChild(row);
+    }
   }
 }
 
@@ -692,6 +795,5 @@ export function resetForSetupMode(): void {
     hideThinking();
     setStreaming(false);
   }
-  elements.conversationsDropdown.classList.add('hidden');
   closeBrowserMenu();
 }

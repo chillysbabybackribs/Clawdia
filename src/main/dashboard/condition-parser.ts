@@ -18,6 +18,7 @@ type Token =
   | { type: 'number'; value: number }
   | { type: 'boolean'; value: boolean }
   | { type: 'null' }
+  | { type: 'string'; value: string }
   | { type: 'ident'; value: string }
   | { type: 'op'; value: string }
   | { type: 'keyword'; value: 'AND' | 'OR' | 'NOT' }
@@ -56,6 +57,21 @@ function tokenize(input: string): Token[] {
       if (input[i] === '-') { num += '-'; i++; }
       while (i < input.length && /[0-9.]/.test(input[i])) { num += input[i]; i++; }
       tokens.push({ type: 'number', value: parseFloat(num) });
+      continue;
+    }
+
+    // String literals (single or double quoted)
+    if (input[i] === "'" || input[i] === '"') {
+      const quote = input[i];
+      i++; // skip opening quote
+      let str = '';
+      while (i < input.length && input[i] !== quote) {
+        str += input[i];
+        i++;
+      }
+      if (i >= input.length) throw new Error(`Unterminated string literal`);
+      i++; // skip closing quote
+      tokens.push({ type: 'string', value: str });
       continue;
     }
 
@@ -171,6 +187,8 @@ class Parser {
       result = (this.advance() as { type: 'number'; value: number }).value;
     } else if (tok.type === 'boolean') {
       result = (this.advance() as { type: 'boolean'; value: boolean }).value;
+    } else if (tok.type === 'string') {
+      result = (this.advance() as { type: 'string'; value: string }).value;
     } else if (tok.type === 'null') {
       this.advance();
       result = null;

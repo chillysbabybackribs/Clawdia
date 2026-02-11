@@ -1,12 +1,44 @@
-export type SuggestionIcon = 'cpu' | 'memory' | 'disk' | 'network' | 'battery' | 'browser' | 'terminal' | 'git' | 'project' | 'time' | 'cleanup' | 'alert';
+// ---------------------------------------------------------------------------
+// New command-center types
+// ---------------------------------------------------------------------------
 
-export interface DashboardSuggestion {
-  text: string;
-  type: 'actionable' | 'info';
-  action?: string;
-  icon: SuggestionIcon;
-  ruleId?: string;
+export interface DashboardProjectCard {
+  name: string;
+  fullPath: string;
+  heatScore: number;
+  branch?: string;
+  uncommittedCount?: number;
+  stagedCount?: number;
+  unpushedCount?: number;
+  lastCommitMessage?: string;
+  hoursSinceLastCommit?: number;
+  actions?: Array<{ label: string; command: string }>;
 }
+
+export interface DashboardActivityItem {
+  type: 'browser' | 'shell' | 'file';
+  text: string;
+  command?: string;
+}
+
+export interface DashboardAlert {
+  id: string;
+  metric: 'cpu' | 'ram' | 'disk' | 'battery';
+  message: string;
+  severity: 'warning' | 'critical';
+  action?: string;
+  actionLabel?: string;
+}
+
+export interface HaikuDashboardResponse {
+  projects: Array<{ path: string; rank: number; actions?: Array<{ label: string; command: string }> }>;
+  activity_highlights: string[];
+  pattern_note?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Metrics & static layer (unchanged)
+// ---------------------------------------------------------------------------
 
 export interface SystemMetrics {
   cpu: { usagePercent: number; cores: number };
@@ -22,9 +54,10 @@ export interface ExtendedMetrics extends SystemMetrics {
   network_up: boolean;
   process_count: number;
   hour: number;
-  day_of_week: number;        // 0=Mon..6=Sun
+  minute: number;
+  day_of_week: number;
   session_duration_minutes: number;
-  minutes_since_last_message: number;
+  minutes_since_last_message: number | null;
   active_project: string | null;
   git_uncommitted_changes: number | null;
   git_hours_since_last_commit: number | null;
@@ -45,6 +78,61 @@ export interface StaticDashboardState {
   uptime: string;
 }
 
+export type PollingTier = 'IDLE' | 'ELEVATED' | 'ALERT';
+
+// ---------------------------------------------------------------------------
+// Task Dashboard Items
+// ---------------------------------------------------------------------------
+
+export type TaskDashboardStatus = 'active' | 'paused' | 'running' | 'failed' | 'approval_pending';
+
+export interface TaskDashboardItem {
+  id: string;
+  description: string;
+  status: TaskDashboardStatus;
+  scheduleSummary: string;           // "every day 9am", "every 1h", "one-time", "condition"
+  lastRunResult?: string;            // truncated 1-line summary
+  lastRunAgo?: string;               // "2h ago", "5m ago"
+  lastRunSuccess?: boolean;
+  runCount: number;
+  failureCount: number;
+  approvalRunId?: string;            // set when status === 'approval_pending'
+  approvalSummary?: string;          // result text waiting for approval
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard state (new shape)
+// ---------------------------------------------------------------------------
+
+export interface DashboardState {
+  projects: DashboardProjectCard[];
+  activityFeed: DashboardActivityItem[];
+  alerts: DashboardAlert[];
+  tasks: TaskDashboardItem[];
+  patternNote?: string;
+  metrics: SystemMetrics;
+  static: StaticDashboardState;
+  generatedAt: number;
+  pollingTier: PollingTier;
+  taskUnreadCount: number;
+}
+
+// ---------------------------------------------------------------------------
+// @deprecated — kept temporarily during migration
+// ---------------------------------------------------------------------------
+
+export type SuggestionIcon = 'cpu' | 'memory' | 'disk' | 'network' | 'battery' | 'browser' | 'terminal' | 'git' | 'project' | 'time' | 'cleanup' | 'alert';
+
+/** @deprecated Use DashboardProjectCard instead */
+export interface DashboardSuggestion {
+  text: string;
+  type: 'actionable' | 'info';
+  action?: string;
+  icon: SuggestionIcon;
+  ruleId?: string;
+}
+
+/** @deprecated Use alert-evaluator instead */
 export interface DashboardRule {
   id: string;
   condition: string;
@@ -52,16 +140,6 @@ export interface DashboardRule {
   type: 'actionable' | 'info';
   action?: string;
   icon: SuggestionIcon;
-  priority: number;         // 1-5 (1=critical)
+  priority: number;
   cooldown_minutes: number;
-}
-
-export type PollingTier = 'IDLE' | 'ELEVATED' | 'ALERT';
-
-export interface DashboardState {
-  static: StaticDashboardState;
-  suggestions: DashboardSuggestion[];
-  metrics: SystemMetrics;
-  generatedAt: number;
-  pollingTier: PollingTier;
 }

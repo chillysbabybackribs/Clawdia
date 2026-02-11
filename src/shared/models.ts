@@ -123,3 +123,21 @@ export function getModelConfig(modelId: string): ModelConfig | undefined {
 export function getModelTier(modelId: string): ModelTier {
   return MODEL_CONFIGS.find((m) => m.id === modelId)?.tier ?? 'sonnet';
 }
+
+/**
+ * Resolve a model identifier to a full API model ID.
+ * Accepts either a full model ID (returned as-is) or a short tier name
+ * like "haiku", "sonnet", "opus" (resolved to the first matching model).
+ * Returns DEFAULT_MODEL if the input doesn't match anything.
+ */
+export function resolveModelId(input: string): string {
+  // Already a full model ID?
+  if (MODEL_CONFIGS.some((m) => m.id === input)) return input;
+
+  // Try as a tier name (e.g. "haiku" → first model with tier "haiku")
+  const tier = input.toLowerCase() as ModelTier;
+  const byTier = MODEL_CONFIGS.find((m) => m.tier === tier);
+  if (byTier) return byTier.id;
+
+  return DEFAULT_MODEL;
+}

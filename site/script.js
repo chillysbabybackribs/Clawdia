@@ -5,6 +5,13 @@
 (function () {
   'use strict';
 
+  // ─── Video Playback ───
+
+  var videoEl = document.getElementById('hero-video');
+  if (videoEl) {
+    videoEl.playbackRate = 0.25;
+  }
+
   // ─── GitHub Release Config ───
 
   var GITHUB_REPO = 'chillysbabybackribs/Clawdia';
@@ -183,22 +190,119 @@
     });
   }
 
-  if (heroMedia) {
-    var toggleHeroMedia = function () {
-      heroMedia.classList.toggle('is-expanded');
-      var isExpanded = heroMedia.classList.contains('is-expanded');
-      heroMedia.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+  if (heroMedia && video) {
+    var openModal = function (e) {
+      // Prevent default behavior if needed
+      if (e) e.preventDefault();
 
-      if (isExpanded) {
-        // No auto-scroll when expanded; it floats above the layout.
+      // Create modal elements
+      var overlay = document.createElement('div');
+      overlay.className = 'media-modal-overlay';
+
+      var content = document.createElement('div');
+      content.className = 'media-modal-content';
+
+      var closeBtn = document.createElement('div');
+      closeBtn.className = 'media-modal-close';
+      closeBtn.innerHTML = '&times;';
+      closeBtn.setAttribute('role', 'button');
+      closeBtn.setAttribute('aria-label', 'Close modal');
+      closeBtn.tabIndex = 0;
+
+      // Create fresh video element instead of cloning to avoid carrying over state
+      var videoEl = document.createElement('video');
+      videoEl.autoplay = true;
+      videoEl.muted = true;
+      videoEl.loop = true;
+      videoEl.playsInline = true;
+      videoEl.controls = false;
+
+      // Use currentSrc if available, else fallback to source elements
+      if (video.currentSrc) {
+        videoEl.src = video.currentSrc;
+      } else {
+        // Fallback: copy source children
+        var sources = video.querySelectorAll('source');
+        for (var i = 0; i < sources.length; i++) {
+          videoEl.appendChild(sources[i].cloneNode(true));
+        }
       }
+
+      // Append elements
+      content.appendChild(videoEl);
+      overlay.appendChild(content);
+      overlay.appendChild(closeBtn);
+      document.body.appendChild(overlay);
+
+      // Prevent body scroll
+      document.body.style.overflow = 'hidden';
+
+      // Animate in
+      requestAnimationFrame(function () {
+        overlay.classList.add('active');
+        // Need to play explicitly after insertion
+        var playPromise = videoEl.play();
+        if (playPromise !== undefined) {
+          playPromise.catch(function (error) {
+            console.log('Auto-play was prevented:', error);
+          });
+        }
+      });
+
+      // Cleanup function
+      function closeModal() {
+        overlay.classList.remove('active');
+        document.body.style.overflow = '';
+        setTimeout(function () {
+          if (overlay.parentNode) document.body.removeChild(overlay);
+        }, 300);
+        document.removeEventListener('keydown', escHandler);
+      }
+
+      // Close events
+      closeBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        closeModal();
+      });
+
+      closeBtn.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          e.stopPropagation();
+          closeModal();
+        }
+      });
+
+      overlay.addEventListener('click', function (e) {
+        // Close if clicking overlay OR the content wrapper (video itself ignores pointer events via CSS)
+        if (e.target === overlay || e.target === content) {
+          closeModal();
+        }
+      });
+
+      // Also allow clicking content explicitly if it captures events
+      content.addEventListener('click', function (e) {
+        closeModal();
+      });
+
+      var escHandler = function (e) {
+        if (e.key === 'Escape') closeModal();
+      };
+      document.addEventListener('keydown', escHandler);
+
+      // Trap focus
+      closeBtn.focus();
     };
 
-    heroMedia.addEventListener('click', toggleHeroMedia);
-    heroMedia.addEventListener('keydown', function (event) {
-      if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault();
-        toggleHeroMedia();
+    // Attach click directly
+    heroMedia.addEventListener('click', function (e) {
+      openModal(e);
+    });
+
+    // Attach keyboard listener
+    heroMedia.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') {
+        openModal(e);
       }
     });
   }

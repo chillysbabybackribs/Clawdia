@@ -1,8 +1,9 @@
 import { randomUUID } from 'crypto';
-import { BrowserWindow, ipcMain } from 'electron';
+import { ipcMain } from 'electron';
 import { homedir } from 'os';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import type { Page } from 'playwright';
 import { AnthropicClient } from './client';
 import {
   Message,
@@ -13,6 +14,7 @@ import {
   ToolExecStartEvent,
   ToolExecCompleteEvent,
   ToolStepProgressEvent,
+  ToolLoopEmitter,
 } from '../../shared/types';
 import { IPC, IPC_EVENTS } from '../../shared/ipc-channels';
 import { buildSystemPrompt, getStaticPrompt, getDynamicPrompt, type PromptTier } from './system-prompt';
@@ -29,6 +31,7 @@ import {
   SEQUENTIAL_THINKING_TOOL_DEFINITION,
   executeSequentialThinking,
   resetSequentialThinking,
+  SequentialThinkingState,
 } from './sequential-thinking';
 import type { DocProgressEvent } from '../../shared/types';
 import {
@@ -63,9 +66,11 @@ const MAX_TOOL_RESULT_CHARS = 30_000; // hard cap on any single tool result befo
 const KEEP_FULL_TOOL_RESULTS = 4; // keep last N tool_result messages uncompressed (was 1 — too aggressive for research tasks)
 const LOCAL_TOOL_NAMES = new Set(LOCAL_TOOL_DEFINITIONS.map((tool) => tool.name));
 import { VAULT_TOOL_DEFINITIONS, executeVaultTool } from '../vault/tools';
+import { TASK_TOOL_DEFINITIONS, executeTaskTool } from '../tasks/task-tools';
 
-const ALL_TOOLS = [...BROWSER_TOOL_DEFINITIONS, ...LOCAL_TOOL_DEFINITIONS, SEQUENTIAL_THINKING_TOOL_DEFINITION, ...VAULT_TOOL_DEFINITIONS];
+const ALL_TOOLS = [...BROWSER_TOOL_DEFINITIONS, ...LOCAL_TOOL_DEFINITIONS, SEQUENTIAL_THINKING_TOOL_DEFINITION, ...VAULT_TOOL_DEFINITIONS, ...TASK_TOOL_DEFINITIONS];
 const VAULT_TOOL_NAMES = new Set(VAULT_TOOL_DEFINITIONS.map(t => t.name));
+const TASK_TOOL_NAMES = new Set(TASK_TOOL_DEFINITIONS.map(t => t.name));
 
 const LOCAL_WRITE_TOOL_NAMES = new Set(['file_write', 'file_edit']);
 
@@ -187,6 +192,10 @@ async function executeTool_deprecated(
 
   if (VAULT_TOOL_NAMES.has(name)) {
     return executeVaultTool(name, input);
+  }
+
+  if (TASK_TOOL_NAMES.has(name)) {
+    return executeTaskTool(name, input);
   }
 
   if (LOCAL_TOOL_NAMES.has(name)) {
@@ -518,9 +527,12 @@ async function executeTool(
   name: string,
   input: Record<string, unknown>,
   context?: LocalToolExecutionContext,
+  isolatedPage?: Page | null,
+  thinkingState?: SequentialThinkingState,
 ): Promise<string> {
   if (name === 'sequential_thinking') {
-    return executeSequentialThinking(input);
+    // Use per-instance thinking state if provided, else fall back to global
+    return thinkingState ? thinkingState.execute(input) : executeSequentialThinking(input);
   }
 
   if (name === 'file_read') {
@@ -534,11 +546,15 @@ async function executeTool(
   }
 
   if (name.startsWith('browser_')) {
-    return executeBrowserTool(name, input);
+    return executeBrowserTool(name, input, isolatedPage);
   }
 
   if (VAULT_TOOL_NAMES.has(name)) {
     return executeVaultTool(name, input);
+  }
+
+  if (TASK_TOOL_NAMES.has(name)) {
+    return executeTaskTool(name, input);
   }
 
   if (LOCAL_TOOL_NAMES.has(name)) {
@@ -650,7 +666,7 @@ function detectFabrication(responseText: string, toolCallCount: number): string 
 }
 
 export class ToolLoop {
-  private window: BrowserWindow;
+  private emitter: ToolLoopEmitter;
   private client: AnthropicClient;
   private aborted = false;
   private abortController: AbortController | null = null;
@@ -672,9 +688,36 @@ export class ToolLoop {
   /** True if any visible text was streamed to the renderer in this run. */
   private hasStreamedText = false;
 
-  constructor(window: BrowserWindow, client: AnthropicClient) {
-    this.window = window;
+  /**
+   * Isolated Playwright Page for headless task execution.
+   * When set, browser tools use this page instead of the interactive BrowserView page.
+   * Session invalidation checks are skipped for isolated contexts.
+   */
+  private _isolatedPage: Page | null = null;
+
+  /** Per-instance sequential thinking state (no global sharing). */
+  private thinkingState = new SequentialThinkingState();
+
+  /** Per-instance prefetch cache (no global sharing). */
+  private instancePrefetchCache: {
+    files: Map<string, PrefetchFileEntry>;
+    navigation: PrefetchNavigationEntry | null;
+  } = { files: new Map(), navigation: null };
+
+  constructor(emitter: ToolLoopEmitter, client: AnthropicClient) {
+    this.emitter = emitter;
     this.client = client;
+  }
+
+  /**
+   * Set an isolated Playwright Page for headless task execution.
+   * Must be called before run(). When set:
+   * - Browser tools use this page instead of the interactive BrowserView
+   * - Session invalidation checks are skipped (isolated contexts don't use the shared CDP session)
+   * - Prefetch cache and sequential thinking state are per-instance (already guaranteed by instance fields)
+   */
+  setIsolatedPage(page: Page): void {
+    this._isolatedPage = page;
   }
 
   abort(): void {
@@ -700,8 +743,13 @@ export class ToolLoop {
     this.documentProgressEnabled = looksLikeDocumentRequest(userMessage);
     this.activityLog = [];
     this.hasStreamedText = false;
-    clearSessionInvalidated(); // Clear stale signals from prior runs
-    resetSequentialThinking(); // Fresh thinking state per run
+    // Only manage session invalidation for interactive loops (no isolatedPage).
+    // Headless loops with isolated pages don't share the BrowserView CDP session.
+    if (!this._isolatedPage) {
+      clearSessionInvalidated(); // Clear stale signals from prior runs
+    }
+    this.thinkingState.reset(); // Fresh per-instance thinking state
+    resetSequentialThinking(); // Also reset legacy global state for interactive loops
     this.emitThinking(generateSynthesisThought(0));
     if (this.documentProgressEnabled) {
       this.emitDocProgress({
@@ -881,6 +929,17 @@ export class ToolLoop {
       applyMediaExtractAuthFallbackHint();
     }
 
+    // TASK CREATION NUDGE — when persistent task signals are detected and history is
+    // short (new conversation), inject a direct instruction into the messages array.
+    // System prompt hints alone are insufficient on the first turn of a new conversation;
+    // the model tends to describe the task instead of calling task_create.
+    if (enriched.strategy.systemHint?.includes('task_create') && history.length < 4) {
+      messages.push(makeMessage('user',
+        '[System] IMPORTANT: The user is requesting a persistent/recurring task. You MUST call the task_create tool right now. Do NOT describe what you would do — call the tool immediately.'
+      ));
+      messages.push(makeMessage('assistant', 'I\'ll create that task for you now.'));
+    }
+
     const searchHistory: SearchEntry[] = [];
     let toolCallCount = 0;
     const finalResponseParts: string[] = [];
@@ -897,7 +956,8 @@ export class ToolLoop {
       }
 
       // Check if the browser session was externally invalidated (tab closed, CDP died, etc.)
-      if (isSessionInvalidated()) {
+      // Only relevant for interactive loops — headless loops with isolated pages are independent.
+      if (!this._isolatedPage && isSessionInvalidated()) {
         clearSessionInvalidated();
         log.warn('Browser session invalidated between iterations');
         // Don't crash — let the LLM know and continue
@@ -958,11 +1018,11 @@ export class ToolLoop {
           let filteredTools = ALL_TOOLS as typeof ALL_TOOLS;
           if (toolClass === 'browser') {
             const ALWAYS_INCLUDE_LOCAL = new Set(['create_document']);
-            filteredTools = ALL_TOOLS.filter(t => !LOCAL_TOOL_NAMES.has(t.name) || t.name === 'shell_exec' || ALWAYS_INCLUDE_LOCAL.has(t.name));
-            log.info(`Intent router: browser-only — ${filteredTools.length} tools (skipped ${ALL_TOOLS.length - filteredTools.length} local, kept 1 local)`);
+            filteredTools = ALL_TOOLS.filter(t => !LOCAL_TOOL_NAMES.has(t.name) || t.name === 'shell_exec' || ALWAYS_INCLUDE_LOCAL.has(t.name) || TASK_TOOL_NAMES.has(t.name));
+            log.info(`Intent router: browser-only — ${filteredTools.length} tools (skipped ${ALL_TOOLS.length - filteredTools.length} local, kept task tools)`);
           } else if (toolClass === 'local') {
-            filteredTools = ALL_TOOLS.filter(t => LOCAL_TOOL_NAMES.has(t.name) || t.name === 'sequential_thinking');
-            log.info(`Intent router: local-only — ${filteredTools.length} tools (skipped ${ALL_TOOLS.length - filteredTools.length} browser)`);
+            filteredTools = ALL_TOOLS.filter(t => LOCAL_TOOL_NAMES.has(t.name) || t.name === 'sequential_thinking' || TASK_TOOL_NAMES.has(t.name));
+            log.info(`Intent router: local-only — ${filteredTools.length} tools (skipped ${ALL_TOOLS.length - filteredTools.length} browser, kept task tools)`);
           }
 
           // If archetype says skip browser tools, additionally filter
@@ -993,7 +1053,7 @@ export class ToolLoop {
       // Only use the onText callback for streaming;
       // it fires synchronously per text_delta chunk
       const onText = (chunk: string) => {
-        if (this.window.isDestroyed()) return;
+        if (this.emitter.isDestroyed()) return;
         streamedFullText += chunk;
         this.handleStreamChunk(chunk, interceptor);
       };
@@ -1060,8 +1120,8 @@ export class ToolLoop {
       });
       log.info(`API call #${iteration + 1}: ${apiDurationMs.toFixed(0)}ms, tokens: in=${rIn} out=${rOut} cache_read=${cRead} cache_write=${cWrite}`);
       // Emit route info to renderer for transparency
-      if (!this.window.isDestroyed()) {
-        this.window.webContents.send(IPC_EVENTS.CHAT_ROUTE_INFO, {
+      if (!this.emitter.isDestroyed()) {
+        this.emitter.send(IPC_EVENTS.CHAT_ROUTE_INFO, {
           model: response.model,
           iteration: iteration + 1,
           inputTokens: rIn || 0,
@@ -1069,7 +1129,7 @@ export class ToolLoop {
           cacheReadTokens: cRead || 0,
           durationMs: Math.round(apiDurationMs),
         });
-        this.window.webContents.send(IPC_EVENTS.TOKEN_USAGE_UPDATE, {
+        this.emitter.send(IPC_EVENTS.TOKEN_USAGE_UPDATE, {
           inputTokens: rIn || 0,
           outputTokens: rOut || 0,
           cacheReadTokens: cRead || 0,
@@ -1121,6 +1181,30 @@ export class ToolLoop {
         }
       }
       if (toolCalls.length === 0) {
+        // TASK CREATION RETRY — if the LLM was supposed to call task_create but
+        // returned text instead (common hallucination: writes a fake task ID in prose),
+        // re-inject its response as context and force one more iteration.
+        if (
+          iteration === 0 &&
+          toolCallCount === 0 &&
+          enriched.strategy.systemHint?.includes('task_create') &&
+          responseText &&
+          !responseText.includes('[Stopped]')
+        ) {
+          log.warn('[TaskRetry] LLM returned text instead of calling task_create — forcing retry');
+          const assistantContent = response.content && response.content.length > 0
+            ? response.content
+            : [{ type: 'text', text: responseText }];
+          messages.push(makeMessage('assistant', JSON.stringify(assistantContent)));
+          messages.push(makeMessage('user',
+            '[System] ERROR: You did NOT call the task_create tool. You wrote a text response instead. The task was NOT created. You MUST call the task_create tool NOW. Do not respond with text — use the tool.'
+          ));
+          // Clear streamed text so the retry response replaces it
+          finalResponseParts.length = 0;
+          this.hasStreamedText = false;
+          continue;
+        }
+
         if (responseText) {
           finalResponseParts.push(responseText);
         }
@@ -1346,9 +1430,9 @@ export class ToolLoop {
         if (toolCall.name === 'create_document') {
           try {
             const docResult = JSON.parse(resultContent);
-            if (docResult.__clawdia_document__ && !this.window.isDestroyed()) {
+            if (docResult.__clawdia_document__ && !this.emitter.isDestroyed()) {
               const notifyStart = performance.now();
-              this.window.webContents.send(IPC_EVENTS.CHAT_DOCUMENT_CREATED, {
+              this.emitter.send(IPC_EVENTS.CHAT_DOCUMENT_CREATED, {
                 filePath: docResult.filePath,
                 filename: docResult.filename,
                 sizeBytes: docResult.sizeBytes,
@@ -1511,7 +1595,7 @@ export class ToolLoop {
       const earlyStarted = this.earlyToolResults.get(toolCall.id);
       let result = earlyStarted
         ? await earlyStarted
-        : await executeTool(toolCall.name, toolCall.input, task.localContext);
+        : await executeTool(toolCall.name, toolCall.input, task.localContext, this._isolatedPage, this.thinkingState);
       // Guard: ensure tool result is never empty
       if (!result || result.trim() === '') {
         log.warn(`[SANITIZE] Tool ${toolCall.name} returned empty result — substituting placeholder`);
@@ -1593,7 +1677,7 @@ export class ToolLoop {
     if (existing) return existing;
 
     const run = async () => {
-      const result = await executeTool(toolCall.name, toolCall.input);
+      const result = await executeTool(toolCall.name, toolCall.input, undefined, this._isolatedPage, this.thinkingState);
       return result;
     };
 
@@ -1843,12 +1927,12 @@ export class ToolLoop {
   // -------------------------------------------------------------------------
 
   private emitThinking(thought: string): void {
-    if (this.window.isDestroyed()) return;
-    this.window.webContents.send(IPC_EVENTS.CHAT_THINKING, thought);
+    if (this.emitter.isDestroyed()) return;
+    this.emitter.send(IPC_EVENTS.CHAT_THINKING, thought);
   }
 
   private emitDocProgress(progress: Omit<DocProgressEvent, 'conversationId' | 'messageId' | 'elapsedMs'> | DocProgressEvent): void {
-    if (this.window.isDestroyed() || !this.runContext) return;
+    if (this.emitter.isDestroyed() || !this.runContext) return;
     const elapsedMs = performance.now() - this.runStartedAt;
     const payload: DocProgressEvent = {
       conversationId: this.runContext.conversationId,
@@ -1863,63 +1947,63 @@ export class ToolLoop {
       error: progress.error,
       writeCompletedAtMs: progress.writeCompletedAtMs,
     };
-    this.window.webContents.send(IPC_EVENTS.DOC_PROGRESS, payload);
+    this.emitter.send(IPC_EVENTS.DOC_PROGRESS, payload);
   }
 
   private emitStreamText(text: string): void {
-    if (this.window.isDestroyed() || !text) return;
+    if (this.emitter.isDestroyed() || !text) return;
     this.hasStreamedText = true;
-    this.window.webContents.send(IPC_EVENTS.CHAT_STREAM_TEXT, text);
+    this.emitter.send(IPC_EVENTS.CHAT_STREAM_TEXT, text);
   }
 
   private emitStreamReset(): void {
-    if (this.window.isDestroyed()) return;
-    this.window.webContents.send(IPC_EVENTS.CHAT_STREAM_RESET);
+    if (this.emitter.isDestroyed()) return;
+    this.emitter.send(IPC_EVENTS.CHAT_STREAM_RESET);
   }
 
   private emitLiveHtmlStart(): void {
-    if (this.window.isDestroyed()) return;
-    this.window.webContents.send(IPC_EVENTS.CHAT_LIVE_HTML_START);
+    if (this.emitter.isDestroyed()) return;
+    this.emitter.send(IPC_EVENTS.CHAT_LIVE_HTML_START);
   }
 
   private emitLiveHtmlEnd(): void {
-    if (this.window.isDestroyed()) return;
-    this.window.webContents.send(IPC_EVENTS.CHAT_LIVE_HTML_END);
+    if (this.emitter.isDestroyed()) return;
+    this.emitter.send(IPC_EVENTS.CHAT_LIVE_HTML_END);
   }
 
   private emitToolActivity(entry: ToolActivityEntry): void {
-    if (this.window.isDestroyed()) return;
-    this.window.webContents.send(IPC_EVENTS.CHAT_TOOL_ACTIVITY, entry);
+    if (this.emitter.isDestroyed()) return;
+    this.emitter.send(IPC_EVENTS.CHAT_TOOL_ACTIVITY, entry);
   }
 
   private emitToolExecStart(payload: ToolExecStartEvent): void {
-    if (this.window.isDestroyed()) return;
-    this.window.webContents.send(IPC_EVENTS.TOOL_EXEC_START, payload);
+    if (this.emitter.isDestroyed()) return;
+    this.emitter.send(IPC_EVENTS.TOOL_EXEC_START, payload);
   }
 
   private emitToolExecComplete(payload: ToolExecCompleteEvent): void {
-    if (this.window.isDestroyed()) return;
-    this.window.webContents.send(IPC_EVENTS.TOOL_EXEC_COMPLETE, payload);
+    if (this.emitter.isDestroyed()) return;
+    this.emitter.send(IPC_EVENTS.TOOL_EXEC_COMPLETE, payload);
   }
 
   private emitToolStepProgress(payload: ToolStepProgressEvent): void {
-    if (this.window.isDestroyed()) return;
-    this.window.webContents.send(IPC_EVENTS.TOOL_STEP_PROGRESS, payload);
+    if (this.emitter.isDestroyed()) return;
+    this.emitter.send(IPC_EVENTS.TOOL_STEP_PROGRESS, payload);
   }
 
   private emitToolLoopComplete(totalTools: number, totalDuration: number, failures: number): void {
-    if (this.window.isDestroyed()) return;
-    this.window.webContents.send(IPC_EVENTS.TOOL_LOOP_COMPLETE, { totalTools, totalDuration, failures });
+    if (this.emitter.isDestroyed()) return;
+    this.emitter.send(IPC_EVENTS.TOOL_LOOP_COMPLETE, { totalTools, totalDuration, failures });
   }
 
   private emitToolActivitySummary(responseText: string): void {
-    if (this.window.isDestroyed()) return;
+    if (this.emitter.isDestroyed()) return;
     const summary: ToolActivitySummary = {
       totalCalls: this.activityLog.length,
       entries: this.activityLog,
       fabricationWarning: detectFabrication(responseText, this.activityLog.length) ?? undefined,
     };
-    this.window.webContents.send(IPC_EVENTS.CHAT_TOOL_ACTIVITY_SUMMARY, summary);
+    this.emitter.send(IPC_EVENTS.CHAT_TOOL_ACTIVITY_SUMMARY, summary);
   }
 
   // -------------------------------------------------------------------------
@@ -2002,7 +2086,7 @@ export class ToolLoop {
    */
   private askUserToContinue(toolCallCount: number): Promise<boolean> {
     return new Promise((resolve) => {
-      if (this.window.isDestroyed()) {
+      if (this.emitter.isDestroyed()) {
         resolve(false);
         return;
       }
@@ -2017,7 +2101,7 @@ export class ToolLoop {
       };
 
       // Send the prompt to the renderer
-      this.window.webContents.send(IPC_EVENTS.CHAT_TOOL_LIMIT_REACHED, {
+      this.emitter.send(IPC_EVENTS.CHAT_TOOL_LIMIT_REACHED, {
         toolCallCount,
         maxToolCalls: MAX_TOOL_CALLS,
       });

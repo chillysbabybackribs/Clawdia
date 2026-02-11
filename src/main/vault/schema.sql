@@ -93,3 +93,67 @@ CREATE TABLE IF NOT EXISTS actions (
     executed_at INTEGER,
     error_message TEXT
 );
+
+-- 7. PERSISTENT TASKS
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    description TEXT NOT NULL,
+    trigger_type TEXT NOT NULL CHECK(trigger_type IN ('one_time', 'scheduled', 'condition')),
+    trigger_config TEXT,
+    execution_plan TEXT DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'paused', 'completed', 'failed', 'archived')),
+    approval_mode TEXT NOT NULL DEFAULT 'auto' CHECK(approval_mode IN ('auto', 'approve_first', 'approve_always')),
+    allowed_tools TEXT DEFAULT '[]',
+    max_iterations INTEGER DEFAULT 30,
+    model TEXT,
+    token_budget INTEGER DEFAULT 50000,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    last_run_at INTEGER,
+    next_run_at INTEGER,
+    run_count INTEGER DEFAULT 0,
+    failure_count INTEGER DEFAULT 0,
+    max_failures INTEGER DEFAULT 3,
+    conversation_id TEXT,
+    metadata_json TEXT DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_next_run ON tasks(next_run_at) WHERE status = 'active';
+
+-- 8. TASK EXECUTION HISTORY
+CREATE TABLE IF NOT EXISTS task_runs (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'failed', 'cancelled', 'approval_pending')),
+    started_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    completed_at INTEGER,
+    duration_ms INTEGER,
+    result_summary TEXT,
+    result_detail TEXT,
+    tool_calls_count INTEGER DEFAULT 0,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    error_message TEXT,
+    trigger_source TEXT NOT NULL DEFAULT 'scheduled' CHECK(trigger_source IN ('scheduled', 'condition', 'manual', 'system'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status);
+
+-- 9. TASK EXECUTOR CACHE
+CREATE TABLE IF NOT EXISTS task_executors (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    version INTEGER NOT NULL DEFAULT 1,
+    executor_json TEXT NOT NULL,
+    success_count INTEGER DEFAULT 0,
+    failure_count INTEGER DEFAULT 0,
+    total_cost_saved REAL DEFAULT 0,
+    last_used_at INTEGER,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    created_from_run_id TEXT,
+    superseded_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_executors_task ON task_executors(task_id);

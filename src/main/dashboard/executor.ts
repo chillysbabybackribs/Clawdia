@@ -1,16 +1,21 @@
 import { collectExtendedMetrics, buildMetricContext } from './metrics';
-import { evaluateCondition } from './condition-parser';
+import { evaluateAlerts, dismissAlert as dismissAlertImpl } from './alert-evaluator';
+import { buildProjectCards, buildActivityFeed } from './state-builder';
 import { getModelLabel, getModelConfig } from '../../shared/models';
 import { createLogger } from '../logger';
+import type { AmbientData } from './ambient';
 import type {
-  DashboardRule,
-  DashboardSuggestion,
+  DashboardProjectCard,
+  DashboardActivityItem,
+  DashboardAlert,
   DashboardState,
   StaticDashboardState,
+  TaskDashboardItem,
   ToolStatusIndicator,
   ToolStatusLevel,
   PollingTier,
   ExtendedMetrics,
+  HaikuDashboardResponse,
 } from '../../shared/dashboard-types';
 
 const log = createLogger('dashboard-executor');
@@ -27,12 +32,6 @@ const SOFT_THRESHOLDS = { cpu: 70, ram: 75, disk: 85 };
 const HARD_THRESHOLDS = { cpu: 90, ram: 90, disk: 95 };
 const CALM_POLLS_TO_DOWNGRADE = 3;
 
-interface RuleState {
-  lastFired: number;
-  fireCount: number;
-  dismissed: boolean;
-}
-
 interface TokenUsageData {
   inputTokens: number;
   outputTokens: number;
@@ -46,16 +45,20 @@ export interface ExecutorDeps {
   storeGet: (key: string) => unknown;
   getBrowserStatus: () => { status: ToolStatusLevel; currentUrl: string | null };
   lastMessageGetter: () => number | null;
+  getTaskDashboardItems?: () => TaskDashboardItem[];
+  getTaskUnreadCount?: () => number;
 }
 
 export class DashboardExecutor {
-  private rules: DashboardRule[] = [];
-  private ruleStates = new Map<string, RuleState>();
+  // Data-driven state (replaces rules)
+  private projectCards: DashboardProjectCard[] = [];
+  private activityFeed: DashboardActivityItem[] = [];
+  private patternNote?: string;
+
   private currentTier: PollingTier = 'IDLE';
   private consecutiveCalm = 0;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private dashboardVisible = false;
-  private lastEmittedSuggestions: string = '[]';
   private emitUpdate: ((state: DashboardState) => void) | null = null;
   private lastMetrics: ExtendedMetrics | null = null;
   private stopped = false;
@@ -87,16 +90,16 @@ export class DashboardExecutor {
     log.info('[Dashboard] Executor stopped');
   }
 
-  setRules(rules: DashboardRule[]): void {
-    this.rules = rules;
-    // Initialize states for new rules
-    for (const rule of rules) {
-      if (!this.ruleStates.has(rule.id)) {
-        this.ruleStates.set(rule.id, { lastFired: 0, fireCount: 0, dismissed: false });
-      }
-    }
-    log.info(`[Dashboard] ${rules.length} rules loaded — triggering immediate poll`);
-    // Trigger an immediate poll when rules arrive
+  /**
+   * Feed raw ambient data + optional Haiku response.
+   * Replaces the old setRules() — builds project cards & activity feed.
+   */
+  setAmbientData(data: AmbientData, haiku: HaikuDashboardResponse | null): void {
+    this.projectCards = buildProjectCards(data, haiku);
+    this.activityFeed = buildActivityFeed(data);
+    this.patternNote = haiku?.pattern_note;
+
+    log.info(`[Dashboard] Ambient data set: ${this.projectCards.length} cards, ${this.activityFeed.length} feed items, note=${!!this.patternNote} — triggering immediate poll`);
     if (!this.stopped) {
       this.runPollCycle().catch((err) => log.warn(`[Dashboard] Immediate poll failed: ${err}`));
     }
@@ -109,7 +112,6 @@ export class DashboardExecutor {
   setDashboardVisible(visible: boolean): void {
     this.dashboardVisible = visible;
     if (visible) {
-      // Emit cached state immediately when becoming visible
       const state = this.getCurrentState();
       if (state && this.emitUpdate) {
         this.emitUpdate(state);
@@ -117,13 +119,8 @@ export class DashboardExecutor {
     }
   }
 
-  dismissRule(ruleId: string): void {
-    const state = this.ruleStates.get(ruleId);
-    if (state) {
-      state.dismissed = true;
-    } else {
-      this.ruleStates.set(ruleId, { lastFired: 0, fireCount: 0, dismissed: true });
-    }
+  dismissAlert(alertId: string): void {
+    dismissAlertImpl(alertId);
   }
 
   addTokenUsage(data: TokenUsageData): void {
@@ -135,12 +132,18 @@ export class DashboardExecutor {
 
   getCurrentState(): DashboardState | null {
     const staticLayer = this.buildStaticLayer();
+    const tasks = this.deps.getTaskDashboardItems?.() ?? [];
+    const taskUnreadCount = this.deps.getTaskUnreadCount?.() ?? 0;
     const metrics = this.lastMetrics || null;
     if (!metrics) {
-      // Haven't polled yet — return minimal state
       return {
+        projects: this.projectCards,
+        activityFeed: this.activityFeed,
+        alerts: [],
+        tasks,
+        taskUnreadCount,
+        patternNote: this.patternNote,
         static: staticLayer,
-        suggestions: [],
         metrics: {
           cpu: { usagePercent: 0, cores: 1 },
           memory: { totalMB: 0, usedMB: 0, usagePercent: 0 },
@@ -154,10 +157,15 @@ export class DashboardExecutor {
       };
     }
 
-    const suggestions = this.evaluateRules(metrics);
+    const alerts = evaluateAlerts(metrics);
     return {
+      projects: this.projectCards,
+      activityFeed: this.activityFeed,
+      alerts,
+      tasks,
+      taskUnreadCount,
+      patternNote: this.patternNote,
       static: staticLayer,
-      suggestions,
       metrics,
       generatedAt: Date.now(),
       pollingTier: this.currentTier,
@@ -185,25 +193,27 @@ export class DashboardExecutor {
     this.lastMetrics = metrics;
 
     const context = buildMetricContext(metrics);
-    log.info(`[Dashboard] Poll: tier=${this.currentTier} hour=${context.hour} cpu=${context.cpu_percent}% ram=${context.ram_percent}% disk=${context.disk_percent}% visible=${this.dashboardVisible} rules=${this.rules.length}`);
+    log.info(`[Dashboard] Poll: tier=${this.currentTier} cpu=${context.cpu_percent}% ram=${context.ram_percent}% disk=${context.disk_percent}% visible=${this.dashboardVisible}`);
     this.updateTier(context);
 
-    const suggestions = this.evaluateRules(metrics);
-    const suggestionsJson = JSON.stringify(suggestions.map(s => s.text));
+    const alerts = evaluateAlerts(metrics);
 
-    if (suggestionsJson !== this.lastEmittedSuggestions || this.dashboardVisible) {
-      this.lastEmittedSuggestions = suggestionsJson;
+    if (this.dashboardVisible && this.emitUpdate) {
+      const tasks = this.deps.getTaskDashboardItems?.() ?? [];
+      const taskUnreadCount = this.deps.getTaskUnreadCount?.() ?? 0;
       const state: DashboardState = {
+        projects: this.projectCards,
+        activityFeed: this.activityFeed,
+        alerts,
+        tasks,
+        taskUnreadCount,
+        patternNote: this.patternNote,
         static: this.buildStaticLayer(),
-        suggestions,
         metrics,
         generatedAt: Date.now(),
         pollingTier: this.currentTier,
       };
-
-      if (this.dashboardVisible && this.emitUpdate) {
-        this.emitUpdate(state);
-      }
+      this.emitUpdate(state);
     }
   }
 
@@ -238,80 +248,10 @@ export class DashboardExecutor {
     }
   }
 
-  private evaluateRules(metrics: ExtendedMetrics): DashboardSuggestion[] {
-    const context = buildMetricContext(metrics);
-    const now = Date.now();
-    const fired: Array<DashboardSuggestion & { priority: number }> = [];
-
-    if (this.rules.length === 0) {
-      log.debug('[Dashboard] evaluateRules: no rules loaded yet');
-      return [];
-    }
-
-    log.info(`[Dashboard] evaluateRules: ${this.rules.length} rules | hour=${context.hour} cpu=${context.cpu_percent}% ram=${context.ram_percent}% disk=${context.disk_percent}%`);
-
-    for (const rule of this.rules) {
-      const state = this.ruleStates.get(rule.id);
-      if (!state) {
-        log.debug(`[Dashboard]   rule="${rule.id}" SKIP: no state entry`);
-        continue;
-      }
-      if (state.dismissed) {
-        log.debug(`[Dashboard]   rule="${rule.id}" SKIP: dismissed`);
-        continue;
-      }
-      const cooldownRemaining = (state.lastFired + rule.cooldown_minutes * 60_000) - now;
-      if (cooldownRemaining > 0) {
-        log.debug(`[Dashboard]   rule="${rule.id}" SKIP: cooldown (${Math.round(cooldownRemaining / 1000)}s left)`);
-        continue;
-      }
-
-      let matches = false;
-      try {
-        matches = evaluateCondition(rule.condition, context);
-      } catch (err: any) {
-        log.warn(`[Dashboard]   rule="${rule.id}" ERROR: ${err?.message} | condition="${rule.condition}"`);
-        continue;
-      }
-
-      log.info(`[Dashboard]   rule="${rule.id}" condition="${rule.condition}" → ${matches ? 'FIRED' : 'false'}`);
-
-      if (matches) {
-        state.lastFired = now;
-        state.fireCount++;
-
-        // Resolve {{key}} templates
-        let text = rule.suggestion_text;
-        text = text.replace(/\{\{(\w+)\}\}/g, (_match, key) => {
-          const val = context[key];
-          if (val === null || val === undefined) return 'N/A';
-          if (typeof val === 'number') return String(Math.round(val * 10) / 10);
-          return String(val);
-        });
-
-        fired.push({
-          text,
-          type: rule.type,
-          action: rule.action,
-          icon: rule.icon,
-          ruleId: rule.id,
-          priority: rule.priority,
-        });
-      }
-    }
-
-    log.info(`[Dashboard] ${fired.length} rules fired, returning top 2`);
-    // Sort by priority (1=highest), take top 2
-    fired.sort((a, b) => a.priority - b.priority);
-    return fired.slice(0, 2).map(({ priority: _p, ...s }) => s);
-  }
-
   private buildStaticLayer(): StaticDashboardState {
     const modelId = this.deps.getSelectedModel();
     const activeModel = getModelLabel(modelId);
-    log.debug(`[Dashboard] buildStaticLayer: modelId="${modelId}" label="${activeModel}"`);
 
-    // Session cost from accumulated tokens
     const config = getModelConfig(modelId);
     let sessionCost = '$0.00';
     if (config) {
@@ -322,9 +262,7 @@ export class DashboardExecutor {
       sessionCost = total < 0.01 ? '$0.00' : `$${total.toFixed(2)}`;
     }
 
-    // Tool statuses
     const toolStatuses: ToolStatusIndicator[] = [];
-
     try {
       const browserStatus = this.deps.getBrowserStatus();
       toolStatuses.push({
@@ -339,7 +277,6 @@ export class DashboardExecutor {
     toolStatuses.push({ name: 'Files', status: 'ready' });
 
     const uptime = this.lastMetrics?.uptime || 'unknown';
-
     return { toolStatuses, activeModel, sessionCost, uptime };
   }
 }

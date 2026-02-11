@@ -40,6 +40,7 @@ import {
 import { detectAccountOnPage } from '../accounts/detector';
 import { findAccount, addAccount, touchAccount } from '../accounts/account-store';
 import { siteKnowledge } from '../learning';
+import { resolveAuthenticatedUrl } from '../tasks/service-urls';
 
 const toolsLog = createLogger('browser-tools');
 
@@ -401,8 +402,20 @@ function withProtocol(url: string): string {
   return `https://${trimmed}`;
 }
 
+/**
+ * Module-level override page for headless/isolated tool execution.
+ * When set, all browser tools use this page instead of the interactive BrowserView page.
+ * Set via executeTool(name, input, overridePage) and cleared after execution.
+ */
+let _overridePage: Page | null = null;
+
+/**
+ * Returns the current page for tool execution.
+ * If an override page is set (headless/isolated context), returns that.
+ * Otherwise falls back to the interactive BrowserView page.
+ */
 function getActiveOrCreatePage(): Page | null {
-  return getActivePage();
+  return _overridePage ?? getActivePage();
 }
 
 const MAX_BATCH_URLS = 10;
@@ -573,54 +586,70 @@ function domExtractJs(maxLen = 8_000): string {
   })()`;
 }
 
-export async function executeTool(name: string, input: any): Promise<string> {
+/**
+ * Execute a browser tool.
+ *
+ * @param name Tool name (e.g. 'browser_navigate')
+ * @param input Tool input parameters
+ * @param overridePage Optional isolated Playwright Page for headless tasks.
+ *   When provided, all page-dependent tools use this instead of the interactive BrowserView page.
+ *   When omitted, falls back to getActivePage() (existing interactive behavior).
+ */
+export async function executeTool(name: string, input: any, overridePage?: Page | null): Promise<string> {
+  // Set module-level override so getActiveOrCreatePage() returns the isolated page
+  _overridePage = overridePage ?? null;
   const t0 = performance.now();
   let result: string;
-  switch (name) {
-    case 'browser_search':
-      result = await toolSearch(String(input?.query || '')); break;
-    case 'browser_navigate':
-      result = await toolNavigate(String(input?.url || '')); break;
-    case 'browser_read_page':
-      result = await toolReadPage(); break;
-    case 'browser_click':
-      result = await toolClick(String(input?.ref || ''), input?.x, input?.y, input?.selector); break;
-    case 'browser_type':
-      result = await toolType(String(input?.text || ''), input?.ref, Boolean(input?.pressEnter)); break;
-    case 'browser_scroll':
-      result = await toolScroll(input?.direction, input?.amount); break;
-    case 'browser_tab':
-      result = await toolTab(String(input?.action || ''), input?.tabId, input?.url); break;
-    case 'browser_screenshot':
-      result = await toolScreenshot(); break;
-    case 'browser_news':
-      result = await toolNews(String(input?.query || '')); break;
-    case 'browser_shopping':
-      result = await toolShopping(String(input?.query || '')); break;
-    case 'browser_places':
-      result = await toolPlaces(String(input?.query || '')); break;
-    case 'browser_images':
-      result = await toolImages(String(input?.query || '')); break;
-    case 'browser_batch':
-      result = await toolBatch(input); break;
-    case 'browser_read_tabs':
-      result = await toolReadTabs(input?.tab_ids); break;
-    case 'browser_extract':
-      result = await toolExtract(input?.url, input?.tab_id, input?.schema); break;
-    case 'browser_visual_extract':
-      result = await toolVisualExtract(input?.url, input?.tab_id, input?.full_page); break;
-    case 'browser_search_rich':
-      result = await toolSearchRich(String(input?.query || ''), input?.entity_type, input?.extract); break;
-    case 'cache_read':
-      result = toolCacheRead(String(input?.page_id || ''), input?.section); break;
-    case 'browser_detect_account':
-      result = await toolDetectAccount(); break;
-    case 'browser_interact':
-      result = await toolInteract(input?.url, input?.steps, Boolean(input?.stopOnError)); break;
-    case 'browser_fill_form':
-      result = await toolFillForm(input?.fields || [], input?.submit); break;
-    default:
-      result = `Unknown tool: ${name}`;
+  try {
+    switch (name) {
+      case 'browser_search':
+        result = await toolSearch(String(input?.query || '')); break;
+      case 'browser_navigate':
+        result = await toolNavigate(String(input?.url || '')); break;
+      case 'browser_read_page':
+        result = await toolReadPage(); break;
+      case 'browser_click':
+        result = await toolClick(String(input?.ref || ''), input?.x, input?.y, input?.selector); break;
+      case 'browser_type':
+        result = await toolType(String(input?.text || ''), input?.ref, Boolean(input?.pressEnter)); break;
+      case 'browser_scroll':
+        result = await toolScroll(input?.direction, input?.amount); break;
+      case 'browser_tab':
+        result = await toolTab(String(input?.action || ''), input?.tabId, input?.url); break;
+      case 'browser_screenshot':
+        result = await toolScreenshot(); break;
+      case 'browser_news':
+        result = await toolNews(String(input?.query || '')); break;
+      case 'browser_shopping':
+        result = await toolShopping(String(input?.query || '')); break;
+      case 'browser_places':
+        result = await toolPlaces(String(input?.query || '')); break;
+      case 'browser_images':
+        result = await toolImages(String(input?.query || '')); break;
+      case 'browser_batch':
+        result = await toolBatch(input); break;
+      case 'browser_read_tabs':
+        result = await toolReadTabs(input?.tab_ids); break;
+      case 'browser_extract':
+        result = await toolExtract(input?.url, input?.tab_id, input?.schema); break;
+      case 'browser_visual_extract':
+        result = await toolVisualExtract(input?.url, input?.tab_id, input?.full_page); break;
+      case 'browser_search_rich':
+        result = await toolSearchRich(String(input?.query || ''), input?.entity_type, input?.extract); break;
+      case 'cache_read':
+        result = toolCacheRead(String(input?.page_id || ''), input?.section); break;
+      case 'browser_detect_account':
+        result = await toolDetectAccount(); break;
+      case 'browser_interact':
+        result = await toolInteract(input?.url, input?.steps, Boolean(input?.stopOnError)); break;
+      case 'browser_fill_form':
+        result = await toolFillForm(input?.fields || [], input?.submit); break;
+      default:
+        result = `Unknown tool: ${name}`;
+    }
+  } finally {
+    // Always clear the override after execution to prevent leaking into interactive calls
+    _overridePage = null;
   }
   const ms = performance.now() - t0;
   perfLog('browser-tool', name, ms, { chars: result.length });
@@ -631,12 +660,17 @@ export async function executeTool(name: string, input: any): Promise<string> {
 // Called once after Playwright is initialized.
 export function registerPlaywrightSearchFallback(): void {
   setPlaywrightSearchFallback(async (query: string): Promise<SearchResult[]> => {
-    // Navigate via BrowserView first, then read via Playwright.
     const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
-    await managerNavigate(searchUrl);
-    await waitForLoad(3000);
 
-    const page = getActivePage();
+    // Use isolated page directly if available; otherwise navigate via BrowserView.
+    const page = _overridePage ?? getActiveOrCreatePage();
+    if (_overridePage) {
+      await _overridePage.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+    } else {
+      await managerNavigate(searchUrl);
+      await waitForLoad(3000);
+    }
+
     if (!page) throw new Error('Playwright not connected — cannot scrape search results');
     await dismissPopups(page);
 
@@ -666,8 +700,11 @@ async function toolSearch(query: string): Promise<string> {
   if (!query.trim()) return 'Missing query.';
 
   // Fire-and-forget visual sync — show SERP in browser panel without blocking.
-  const serpUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
-  void managerNavigate(serpUrl).catch(() => {});
+  // Skip for isolated contexts (headless tasks) — they don't own the BrowserView.
+  if (!_overridePage) {
+    const serpUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+    void managerNavigate(serpUrl).catch(() => {});
+  }
 
   const response: ConsensusResult = await apiSearch(query);
 
@@ -723,9 +760,27 @@ async function toolSearch(query: string): Promise<string> {
 
 async function toolNavigate(url: string): Promise<string> {
   if (!url.trim()) return 'Missing URL.';
-  const targetUrl = withProtocol(url);
+  let targetUrl = withProtocol(url);
 
-  // Navigate via BrowserView (always works).
+  // Isolated context path: navigate the isolated page directly, skip BrowserView
+  if (_overridePage) {
+    // Resolve authenticated URLs for headless tasks (e.g., gmail.com → mail.google.com/mail/u/0/#inbox)
+    const resolved = resolveAuthenticatedUrl(targetUrl);
+    if (resolved !== targetUrl) {
+      toolsLog.info(`[Navigate] Resolved ${targetUrl} → ${resolved} (authenticated URL)`);
+      targetUrl = resolved;
+    }
+
+    try {
+      await _overridePage.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+    } catch (err: any) {
+      return `Failed to navigate to ${targetUrl}: ${err?.message || 'unknown error'}`;
+    }
+    await dismissPopups(_overridePage);
+    return getPageSnapshot(_overridePage);
+  }
+
+  // Interactive path: navigate via BrowserView (always works).
   const result = await managerNavigate(targetUrl);
   if (!result.success) {
     return `Failed to navigate to ${targetUrl}: ${result.error || 'unknown error'}`;
@@ -735,7 +790,7 @@ async function toolNavigate(url: string): Promise<string> {
   await waitForLoad(3000);
 
   // Try to read the page via Playwright if available.
-  const page = getActivePage();
+  const page = getActiveOrCreatePage();
   if (page) {
     await dismissPopups(page);
     return getPageSnapshot(page);
@@ -746,7 +801,7 @@ async function toolNavigate(url: string): Promise<string> {
 }
 
 async function toolReadPage(): Promise<string> {
-  const page = getActivePage();
+  const page = getActiveOrCreatePage();
   if (!page) return 'No active page.';
   return getPageSnapshot(page);
 }
@@ -838,7 +893,7 @@ async function focusTwitterComposer(page: Page): Promise<boolean> {
 }
 
 async function toolClick(ref: string, x?: unknown, y?: unknown, selector?: unknown): Promise<string> {
-  const page = getActivePage();
+  const page = getActiveOrCreatePage();
   if (!page) return 'No active page.';
 
   let clicked = false;
@@ -990,7 +1045,7 @@ async function toolClick(ref: string, x?: unknown, y?: unknown, selector?: unkno
 
 async function toolType(text: string, ref: unknown, pressEnter: boolean): Promise<string> {
   if (!text) return 'Missing text.';
-  const page = getActivePage();
+  const page = getActiveOrCreatePage();
   if (!page) return 'No active page.';
 
   let hostname = '';
@@ -1094,7 +1149,7 @@ async function toolType(text: string, ref: unknown, pressEnter: boolean): Promis
 }
 
 async function toolScroll(directionInput: unknown, amountInput: unknown): Promise<string> {
-  const page = getActivePage();
+  const page = getActiveOrCreatePage();
   if (!page) return 'No active page.';
 
   const direction = String(directionInput || 'down').toLowerCase() === 'up' ? 'up' : 'down';
@@ -1111,6 +1166,9 @@ async function toolScroll(directionInput: unknown, amountInput: unknown): Promis
 }
 
 async function toolTab(action: string, tabId?: string, url?: string): Promise<string> {
+  // Tab management is a BrowserView concept — not available in isolated contexts.
+  if (_overridePage) return 'Tab management is not available in headless mode.';
+
   switch (action) {
     case 'new': {
       const id = await createTab(url ? withProtocol(url) : 'about:blank');
@@ -1143,7 +1201,7 @@ async function toolTab(action: string, tabId?: string, url?: string): Promise<st
 }
 
 async function toolScreenshot(): Promise<string> {
-  const page = getActivePage();
+  const page = getActiveOrCreatePage();
   if (!page) return 'No active page.';
   const buffer = await page.screenshot({ fullPage: false, type: 'jpeg', quality: 60 });
   const base64 = buffer.toString('base64');
@@ -1465,34 +1523,38 @@ async function toolBatch(input: any): Promise<string> {
     return 'Each operation must include a valid url.';
   }
 
-  // Navigate the visible BrowserView to the first URL immediately so the user
-  // sees activity right away, before headless extraction starts.
-  const firstVisibleUrl = operations.map(op => op.url).find(shouldShowVisualTab);
-  if (firstVisibleUrl) {
-    try {
-      await managerNavigate(firstVisibleUrl);
-      // Don't wait for full load — just kick off the navigation so the user sees it.
-    } catch { /* best effort */ }
-  }
-
-  // Open additional visual tabs for remaining URLs (fire-and-forget)
+  // Visual sync — skip entirely for isolated contexts (headless tasks).
+  let firstVisibleUrl: string | undefined;
   const visualTabIds: string[] = [];
-  const urlsForVisualTabs = operations
-    .map(op => op.url)
-    .filter(shouldShowVisualTab)
-    .filter(url => url !== firstVisibleUrl) // skip the one already shown
-    .slice(0, 4); // Max 4 more (5 total with the first)
+  let visualTabPromise: Promise<void> = Promise.resolve();
 
-  // Open visual tabs asynchronously (don't block headless extraction)
-  const visualTabPromise = (async () => {
-    for (const url of urlsForVisualTabs) {
+  if (!_overridePage) {
+    // Navigate the visible BrowserView to the first URL immediately so the user
+    // sees activity right away, before headless extraction starts.
+    firstVisibleUrl = operations.map(op => op.url).find(shouldShowVisualTab);
+    if (firstVisibleUrl) {
       try {
-        const tabId = await createTab(url);
-        visualTabIds.push(tabId);
-        await new Promise(r => setTimeout(r, 150));
-      } catch { /* visual tabs are UX-only */ }
+        await managerNavigate(firstVisibleUrl);
+      } catch { /* best effort */ }
     }
-  })();
+
+    // Open additional visual tabs for remaining URLs (fire-and-forget)
+    const urlsForVisualTabs = operations
+      .map(op => op.url)
+      .filter(shouldShowVisualTab)
+      .filter(url => url !== firstVisibleUrl)
+      .slice(0, 4);
+
+    visualTabPromise = (async () => {
+      for (const url of urlsForVisualTabs) {
+        try {
+          const tabId = await createTab(url);
+          visualTabIds.push(tabId);
+          await new Promise(r => setTimeout(r, 150));
+        } catch { /* visual tabs are UX-only */ }
+      }
+    })();
+  }
 
   // Execute headless extraction in parallel (the real work)
   const parallel = input?.parallel !== false;
@@ -1506,6 +1568,9 @@ async function toolBatch(input: any): Promise<string> {
   await visualTabPromise;
 
   // Highlight extracted content in visual tabs and scroll to relevant sections
+  // Visual enhancements — skip entirely for isolated contexts (headless tasks).
+  if (!_overridePage) {
+
   // Map URLs to their extracted content for highlighting
   const urlToContent = new Map<string, string[]>();
   for (const result of results) {
@@ -1664,6 +1729,8 @@ async function toolBatch(input: any): Promise<string> {
     }, STALE_TAB_CLOSE_DELAY_MS);
   }
 
+  } // end !_overridePage visual enhancements
+
   // Store successful pages in SQLite cache and build compact references.
   // The LLM receives short summaries — it can use cache_read for full content.
   // Falls back to inline content when cache is unavailable.
@@ -1737,6 +1804,9 @@ async function toolBatch(input: any): Promise<string> {
 }
 
 async function toolReadTabs(tabIdsInput?: unknown): Promise<string> {
+  // Tab reading is a BrowserView concept — not available in isolated contexts.
+  if (_overridePage) return 'Tab reading is not available in headless mode.';
+
   const tabs = listTabs();
   if (tabs.length === 0) return 'No tabs open.';
 
@@ -1845,7 +1915,23 @@ async function toolExtract(urlInput: unknown, tabIdInput: unknown, schemaInput: 
 
   try {
     if (!url && (!tabId || tabId === activeTabId)) {
-      const rawPageData = await executeInBrowserView<Record<string, unknown>>(domExtractJs(16_000));
+      // In isolated mode, evaluate on the isolated page; otherwise use BrowserView.
+      const rawPageData: Record<string, unknown> | null = _overridePage
+        ? await _overridePage.evaluate(() => {
+            const main = document.querySelector('main, article, [role="main"]') || document.body;
+            const links = Array.from(document.querySelectorAll('a[href]')).slice(0, 50).map((a) => ({
+              text: (a.textContent || '').trim(),
+              href: (a as HTMLAnchorElement).href,
+            }));
+            return {
+              title: document.title || '',
+              url: location.href,
+              content: (main.textContent || '').trim().substring(0, 16000),
+              headings: Array.from(document.querySelectorAll('h1,h2,h3')).map((h) => (h.textContent || '').trim()).filter(Boolean),
+              links,
+            };
+          })
+        : await executeInBrowserView<Record<string, unknown>>(domExtractJs(16_000));
       // Compress the content field before LLM extraction
       if (rawPageData && typeof (rawPageData as any).content === 'string') {
         (rawPageData as any).content = compressPageContent((rawPageData as any).content, { maxChars: 4_000 }).text;
@@ -1887,7 +1973,7 @@ async function toolExtract(urlInput: unknown, tabIdInput: unknown, schemaInput: 
 
 async function toolVisualExtract(urlInput: unknown, tabIdInput: unknown, fullPageInput: unknown): Promise<string> {
   const fullPage = Boolean(fullPageInput);
-  const activePage = getActivePage();
+  const activePage = getActiveOrCreatePage();
   const activeTabId = getActiveTabId();
   const tabId = typeof tabIdInput === 'string' ? tabIdInput : null;
   const inputUrl = typeof urlInput === 'string' && urlInput.trim().length > 0 ? withProtocol(urlInput) : null;
@@ -1971,9 +2057,11 @@ function getDefaultEntitySchema(entityType: string): Record<string, string> {
 async function toolSearchRich(query: string, entityTypeInput: unknown, extractInput: unknown): Promise<string> {
   if (!query.trim()) return 'Missing query.';
 
-  // Fire-and-forget visual sync.
-  const serpUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
-  void managerNavigate(serpUrl).catch(() => {});
+  // Fire-and-forget visual sync — skip for isolated contexts (headless tasks).
+  if (!_overridePage) {
+    const serpUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+    void managerNavigate(serpUrl).catch(() => {});
+  }
 
   const entityType = typeof entityTypeInput === 'string' && entityTypeInput.trim()
     ? entityTypeInput.trim().toLowerCase()
@@ -2095,9 +2183,11 @@ async function getPageSnapshot(page: Page): Promise<string> {
 async function toolNews(query: string): Promise<string> {
   if (!query.trim()) return 'Missing query.';
 
-  // Fire-and-forget visual sync.
-  const newsUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&tbm=nws`;
-  void managerNavigate(newsUrl).catch(() => {});
+  // Fire-and-forget visual sync — skip for isolated contexts.
+  if (!_overridePage) {
+    const newsUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&tbm=nws`;
+    void managerNavigate(newsUrl).catch(() => {});
+  }
 
   const results = await searchNews(query);
 
@@ -2119,9 +2209,11 @@ async function toolNews(query: string): Promise<string> {
 async function toolShopping(query: string): Promise<string> {
   if (!query.trim()) return 'Missing query.';
 
-  // Fire-and-forget visual sync.
-  const shopUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&tbm=shop`;
-  void managerNavigate(shopUrl).catch(() => {});
+  // Fire-and-forget visual sync — skip for isolated contexts.
+  if (!_overridePage) {
+    const shopUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&tbm=shop`;
+    void managerNavigate(shopUrl).catch(() => {});
+  }
 
   const results = await searchShopping(query);
 
@@ -2143,9 +2235,11 @@ async function toolShopping(query: string): Promise<string> {
 async function toolPlaces(query: string): Promise<string> {
   if (!query.trim()) return 'Missing query.';
 
-  // Fire-and-forget visual sync.
-  const mapsUrl = `https://www.google.com/maps/search/${encodeURIComponent(query)}`;
-  void managerNavigate(mapsUrl).catch(() => {});
+  // Fire-and-forget visual sync — skip for isolated contexts.
+  if (!_overridePage) {
+    const mapsUrl = `https://www.google.com/maps/search/${encodeURIComponent(query)}`;
+    void managerNavigate(mapsUrl).catch(() => {});
+  }
 
   const results = await searchPlaces(query);
 
@@ -2169,9 +2263,11 @@ async function toolPlaces(query: string): Promise<string> {
 async function toolImages(query: string): Promise<string> {
   if (!query.trim()) return 'Missing query.';
 
-  // Fire-and-forget visual sync.
-  const imgUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&tbm=isch`;
-  void managerNavigate(imgUrl).catch(() => {});
+  // Fire-and-forget visual sync — skip for isolated contexts.
+  if (!_overridePage) {
+    const imgUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&tbm=isch`;
+    void managerNavigate(imgUrl).catch(() => {});
+  }
 
   const results = await searchImages(query);
 
@@ -2211,12 +2307,21 @@ async function toolInteract(
 
   // Optional: navigate before executing steps
   if (url && url.trim()) {
-    const navResult = await managerNavigate(withProtocol(url));
-    if (!navResult.success) return `Navigation failed: ${navResult.error || 'unknown'}`;
-    await waitForLoad(3000);
+    const targetUrl = withProtocol(url);
+    if (_overridePage) {
+      try {
+        await _overridePage.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+      } catch (err: any) {
+        return `Navigation failed: ${err?.message || 'unknown'}`;
+      }
+    } else {
+      const navResult = await managerNavigate(targetUrl);
+      if (!navResult.success) return `Navigation failed: ${navResult.error || 'unknown'}`;
+      await waitForLoad(3000);
+    }
   }
 
-  const page = getActivePage();
+  const page = getActiveOrCreatePage();
   if (!page) return 'No active page.';
 
   const results: string[] = [];
@@ -2318,7 +2423,7 @@ async function resolveFormLocator(page: Page, field: FormField) {
 }
 
 async function toolFillForm(fields: FormField[], submit?: SubmitTarget): Promise<string> {
-  const page = getActivePage();
+  const page = getActiveOrCreatePage();
   if (!page) return 'No active page.';
 
   const results: string[] = [];
@@ -2376,7 +2481,7 @@ async function toolFillForm(fields: FormField[], submit?: SubmitTarget): Promise
 // --- Account detection tool ---
 
 async function toolDetectAccount(): Promise<string> {
-  const page = getActivePage();
+  const page = getActiveOrCreatePage();
   if (!page) return 'No active page.';
 
   const url = page.url();

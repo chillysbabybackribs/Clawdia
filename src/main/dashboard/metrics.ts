@@ -212,7 +212,7 @@ export async function collectExtendedMetrics(opts: ExtendedMetricsOpts): Promise
   const lastMsg = opts.lastMessageGetter();
   const minutesSinceLastMessage = lastMsg !== null
     ? Math.round((Date.now() - lastMsg) / 60_000)
-    : -1;
+    : null;
 
   const [networkUp, gitMetrics] = await Promise.all([
     getNetworkUp(),
@@ -225,6 +225,7 @@ export async function collectExtendedMetrics(opts: ExtendedMetricsOpts): Promise
     network_up: networkUp,
     process_count: getProcessCount(),
     hour: now.getHours(),
+    minute: now.getMinutes(),
     day_of_week: dayOfWeek,
     session_duration_minutes: Math.round((Date.now() - APP_START) / 60_000),
     minutes_since_last_message: minutesSinceLastMessage,
@@ -256,6 +257,7 @@ export function buildMetricContext(m: ExtendedMetrics): Record<string, number | 
     network_up: m.network_up,
     process_count: m.process_count,
     hour: m.hour,
+    minute: m.minute,
     day_of_week: m.day_of_week,
     session_duration_minutes: m.session_duration_minutes,
     minutes_since_last_message: m.minutes_since_last_message,

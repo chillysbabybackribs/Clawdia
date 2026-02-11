@@ -216,6 +216,15 @@ export interface Tool {
   input_schema: Record<string, unknown>;
 }
 
+/**
+ * Abstraction over BrowserWindow for ToolLoop IPC emissions.
+ * Allows headless execution with a NullEmitter that captures output.
+ */
+export interface ToolLoopEmitter {
+  send(channel: string, ...args: any[]): void;
+  isDestroyed(): boolean;
+}
+
 export interface LLMConfig {
   provider: 'anthropic' | 'openai';
   apiKey: string;
