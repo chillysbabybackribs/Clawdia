@@ -10,9 +10,11 @@ import { appState, elements, initElements } from './modules/state';
 import { initStream } from './modules/stream';
 import { initAffirmationWidget } from './modules/affirmation-widget';
 import { initActivityFeed } from './modules/activity-feed';
+import { initEnhancedActivityFeed } from './modules/enhanced-activity-feed';
 import { initTokenStats } from './modules/token-stats';
 import { initVaultUI } from './modules/vault-ui';
 import { initAutonomyMode } from './modules/autonomy-mode';
+import { initApprovalPanel } from './modules/approval-panel';
 import { initTaskView, showTaskView, hideTaskView, highlightTaskInView } from './modules/task-view';
 
 function initClock(): void {
@@ -100,6 +102,7 @@ async function init(): Promise<void> {
   initAttachments();
   initStream();
   initActivityFeed();
+  initEnhancedActivityFeed(); // Initialize enhanced activity feed
   initTokenStats();
   initBrowser();
   initSettings();
@@ -112,6 +115,7 @@ async function init(): Promise<void> {
   initAffirmationWidget();
   initVaultUI();
   void initAutonomyMode();
+  initApprovalPanel();
   initClock();
 
   requestAnimationFrame(() => syncBrowserBounds());

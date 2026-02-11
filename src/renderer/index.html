@@ -49,7 +49,8 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
             stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            <path
+              d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
           </svg>
         </button>
       </nav>
@@ -103,7 +104,8 @@
             <!-- Chat Area -->
             <main class="chat-area">
               <!-- Hidden chat tabs container — state management still uses this -->
-              <div class="source-tabs chat-tabs hidden" id="chat-tabs" role="tablist" aria-label="Chat conversations"></div>
+              <div class="source-tabs chat-tabs hidden" id="chat-tabs" role="tablist" aria-label="Chat conversations">
+              </div>
               <div class="chat-scroll-region">
                 <div id="output" class="output"></div>
               </div>
@@ -111,6 +113,7 @@
 
             <!-- Input Section -->
             <footer class="input-section">
+              <div id="approval-panel-container" class="approval-panel-container hidden"></div>
               <div id="attachment-bar" class="attachment-bar"></div>
               <div class="input-row">
                 <div class="prompt-wrapper">
@@ -150,7 +153,8 @@
                   </div>
                   <span class="input-meta-sep">&middot;</span>
                   <div class="autonomy-anchor">
-                    <button id="autonomy-trigger" class="autonomy-trigger" type="button" title="Autonomy mode">Guided</button>
+                    <button id="autonomy-trigger" class="autonomy-trigger" type="button"
+                      title="Autonomy mode">Guided</button>
                     <div id="autonomy-popover" class="autonomy-popover hidden"></div>
                   </div>
                 </div>
@@ -165,14 +169,17 @@
               <div class="view-panel-header">
                 <h2 class="view-panel-title">Conversations</h2>
                 <button id="new-conversation-btn" class="view-new-btn" type="button" title="New conversation">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                    <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round">
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
                   </svg>
                   New Chat
                 </button>
               </div>
               <div class="view-search-wrap">
-                <input type="text" id="conversations-search" class="view-search-input" placeholder="Search conversations..." autocomplete="off" spellcheck="false">
+                <input type="text" id="conversations-search" class="view-search-input"
+                  placeholder="Search conversations..." autocomplete="off" spellcheck="false">
               </div>
               <div id="conversations-list" class="conversations-view-list"></div>
             </div>
@@ -363,276 +370,277 @@
 
         <!-- Settings Content (rendered into settings-view via JS) -->
         <div id="settings-modal" class="settings-content-source hidden">
-            <div class="settings-form-body">
-              <div class="form-group">
-                <div class="api-key-label-row">
-                  <label>API Key</label>
-                  <button class="get-key-btn" type="button" data-url="https://console.anthropic.com/settings/keys"
-                    title="Get API key">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                      stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-                      <polyline points="15 3 21 3 21 9"></polyline>
-                      <line x1="10" y1="14" x2="21" y2="3"></line>
+          <div class="settings-form-body">
+            <div class="form-group">
+              <div class="api-key-label-row">
+                <label>API Key</label>
+                <button class="get-key-btn" type="button" data-url="https://console.anthropic.com/settings/keys"
+                  title="Get API key">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                    <polyline points="15 3 21 3 21 9"></polyline>
+                    <line x1="10" y1="14" x2="21" y2="3"></line>
+                  </svg>
+                </button>
+                <span class="free-hint">free</span>
+              </div>
+              <div id="settings-api-key-masked" class="settings-api-key-masked">Not configured</div>
+              <div class="settings-inline-actions">
+                <button id="change-api-key-btn" class="secondary" type="button">Change Key</button>
+                <button id="remove-api-key-btn" class="danger" type="button">Remove Key</button>
+              </div>
+              <div id="change-api-key-form" class="settings-change-key hidden">
+                <div class="settings-key-input-row">
+                  <input type="password" id="change-api-key-input" placeholder="sk-ant-...">
+                  <button id="change-api-key-visibility" class="setup-visibility-btn" type="button"
+                    aria-label="Show API key" title="Show API key">
+                    <svg class="icon-eye" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                      stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M1 12s4-7 11-7s11 7 11 7s-4 7-11 7s-11-7-11-7Z"></path>
+                      <circle cx="12" cy="12" r="3"></circle>
+                    </svg>
+                    <svg class="icon-eye-off hidden" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                      stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M3 3l18 18"></path>
+                      <path d="M10.58 10.58A2 2 0 0 0 12 14a2 2 0 0 0 1.42-.58"></path>
+                      <path d="M9.88 5.09A10.94 10.94 0 0 1 12 5c7 0 11 7 11 7a21.77 21.77 0 0 1-2.65 3.49"></path>
+                      <path d="M6.61 6.61A21.79 21.79 0 0 0 1 12s4 7 11 7a10.94 10.94 0 0 0 5.39-1.61"></path>
                     </svg>
                   </button>
-                  <span class="free-hint">free</span>
                 </div>
-                <div id="settings-api-key-masked" class="settings-api-key-masked">Not configured</div>
                 <div class="settings-inline-actions">
-                  <button id="change-api-key-btn" class="secondary" type="button">Change Key</button>
-                  <button id="remove-api-key-btn" class="danger" type="button">Remove Key</button>
+                  <button id="save-changed-api-key-btn" class="primary" type="button">Validate &amp; Save Key</button>
+                  <button id="cancel-change-api-key-btn" class="secondary" type="button">Cancel</button>
                 </div>
-                <div id="change-api-key-form" class="settings-change-key hidden">
-                  <div class="settings-key-input-row">
-                    <input type="password" id="change-api-key-input" placeholder="sk-ant-...">
-                    <button id="change-api-key-visibility" class="setup-visibility-btn" type="button"
-                      aria-label="Show API key" title="Show API key">
-                      <svg class="icon-eye" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                        stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M1 12s4-7 11-7s11 7 11 7s-4 7-11 7s-11-7-11-7Z"></path>
-                        <circle cx="12" cy="12" r="3"></circle>
-                      </svg>
-                      <svg class="icon-eye-off hidden" width="16" height="16" viewBox="0 0 24 24" fill="none"
-                        stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M3 3l18 18"></path>
-                        <path d="M10.58 10.58A2 2 0 0 0 12 14a2 2 0 0 0 1.42-.58"></path>
-                        <path d="M9.88 5.09A10.94 10.94 0 0 1 12 5c7 0 11 7 11 7a21.77 21.77 0 0 1-2.65 3.49"></path>
-                        <path d="M6.61 6.61A21.79 21.79 0 0 0 1 12s4 7 11 7a10.94 10.94 0 0 0 5.39-1.61"></path>
-                      </svg>
-                    </button>
-                  </div>
-                  <div class="settings-inline-actions">
-                    <button id="save-changed-api-key-btn" class="primary" type="button">Validate &amp; Save Key</button>
-                    <button id="cancel-change-api-key-btn" class="secondary" type="button">Cancel</button>
-                  </div>
-                  <p id="change-api-key-error" class="setup-error hidden"></p>
-                </div>
+                <p id="change-api-key-error" class="setup-error hidden"></p>
               </div>
-
-              <div class="settings-section-label">Model</div>
-
-              <div class="form-group">
-                <label for="settings-model-select">Claude Model</label>
-                <select id="settings-model-select">
-                  <!-- Populated dynamically from CLAUDE_MODELS -->
-                </select>
-              </div>
-
-              <div class="settings-section-label">Search Backend</div>
-
-              <div class="form-group">
-                <label for="search-backend-select">Preferred Backend</label>
-                <select id="search-backend-select">
-                  <option value="serper">Serper (recommended)</option>
-                  <option value="serpapi">SerpAPI</option>
-                  <option value="bing">Bing</option>
-                  <option value="playwright">Browser only (no API)</option>
-                </select>
-              </div>
-
-              <div class="form-group">
-                <div class="api-key-label-row">
-                  <label for="serper-key">Serper API Key</label>
-                  <button class="get-key-btn" type="button" data-url="https://serper.dev/api-key" title="Get API key">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                      stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-                      <polyline points="15 3 21 3 21 9"></polyline>
-                      <line x1="10" y1="14" x2="21" y2="3"></line>
-                    </svg>
-                  </button>
-                  <span class="free-hint">free</span>
-                </div>
-                <input type="password" id="serper-key" placeholder="Serper API key">
-              </div>
-
-              <div class="form-group">
-                <div class="api-key-label-row">
-                  <label for="serpapi-key">SerpAPI Key</label>
-                  <button class="get-key-btn" type="button" data-url="https://serpapi.com/manage-api-key"
-                    title="Get API key">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                      stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-                      <polyline points="15 3 21 3 21 9"></polyline>
-                      <line x1="10" y1="14" x2="21" y2="3"></line>
-                    </svg>
-                  </button>
-                  <span class="free-hint">free</span>
-                </div>
-                <input type="password" id="serpapi-key" placeholder="SerpAPI key">
-              </div>
-
-              <div class="form-group">
-                <div class="api-key-label-row">
-                  <label for="bing-key">Bing API Key</label>
-                  <button class="get-key-btn" type="button"
-                    data-url="https://www.microsoft.com/en-us/bing/apis/bing-web-search-api" title="Get API key">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                      stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-                      <polyline points="15 3 21 3 21 9"></polyline>
-                      <line x1="10" y1="14" x2="21" y2="3"></line>
-                    </svg>
-                  </button>
-                  <span class="free-hint">free</span>
-                </div>
-                <input type="password" id="bing-key" placeholder="Bing API key">
-              </div>
-
-              <div class="settings-section-label">Linked Accounts</div>
-              <p class="accounts-description">Accounts are auto-detected when you browse authenticated sites. Claude
-                uses your active sessions — no passwords are stored.</p>
-              <div id="accounts-list" class="accounts-list"></div>
-              <div id="add-account-form" class="accounts-add-form hidden">
-                <div class="accounts-add-fields">
-                  <div class="accounts-field">
-                    <label for="add-account-domain">Domain</label>
-                    <input type="text" id="add-account-domain" placeholder="e.g. mail.google.com" autocomplete="off"
-                      spellcheck="false">
-                  </div>
-                  <div class="accounts-field">
-                    <label for="add-account-username">Username</label>
-                    <input type="text" id="add-account-username" placeholder="e.g. you@gmail.com" autocomplete="off"
-                      spellcheck="false">
-                  </div>
-                  <input type="hidden" id="add-account-platform" value="">
-                </div>
-                <div class="accounts-add-actions">
-                  <button id="save-account-btn" class="primary" type="button">Add</button>
-                  <button id="cancel-account-btn" class="secondary" type="button">Cancel</button>
-                </div>
-              </div>
-              <button id="add-account-btn" class="accounts-add-btn" type="button">+ Add account manually</button>
-
-              <div class="settings-section-label">Ambient Awareness</div>
-              <div class="ambient-settings">
-                <div class="ambient-toggle-row ambient-master-row">
-                  <label class="ambient-toggle-label" for="ambient-master-toggle">Enable ambient awareness</label>
-                  <label class="toggle-switch">
-                    <input type="checkbox" id="ambient-master-toggle" checked>
-                    <span class="toggle-slider"></span>
-                  </label>
-                </div>
-
-                <div id="ambient-sub-toggles" class="ambient-sub-toggles">
-                  <div class="ambient-toggle-row">
-                    <div class="ambient-toggle-info">
-                      <label class="ambient-toggle-label" for="ambient-browser-history">Browser history</label>
-                      <span class="ambient-toggle-desc">Read recent browsing activity from Chrome/Chromium</span>
-                    </div>
-                    <label class="toggle-switch">
-                      <input type="checkbox" id="ambient-browser-history" checked>
-                      <span class="toggle-slider"></span>
-                    </label>
-                  </div>
-
-                  <div class="ambient-toggle-row">
-                    <div class="ambient-toggle-info">
-                      <label class="ambient-toggle-label" for="ambient-filesystem-scan">Project scanning</label>
-                      <span class="ambient-toggle-desc">Scan directories for project activity</span>
-                    </div>
-                    <label class="toggle-switch">
-                      <input type="checkbox" id="ambient-filesystem-scan" checked>
-                      <span class="toggle-slider"></span>
-                    </label>
-                  </div>
-
-                  <div class="ambient-toggle-row">
-                    <div class="ambient-toggle-info">
-                      <label class="ambient-toggle-label" for="ambient-git-scan">Git status</label>
-                      <span class="ambient-toggle-desc">Read repository status from git projects</span>
-                    </div>
-                    <label class="toggle-switch">
-                      <input type="checkbox" id="ambient-git-scan" checked>
-                      <span class="toggle-slider"></span>
-                    </label>
-                  </div>
-
-                  <div class="ambient-toggle-row">
-                    <div class="ambient-toggle-info">
-                      <label class="ambient-toggle-label" for="ambient-shell-history">Terminal history</label>
-                      <span class="ambient-toggle-desc">Read recent shell commands</span>
-                    </div>
-                    <label class="toggle-switch">
-                      <input type="checkbox" id="ambient-shell-history" checked>
-                      <span class="toggle-slider"></span>
-                    </label>
-                  </div>
-
-                  <div class="ambient-toggle-row">
-                    <div class="ambient-toggle-info">
-                      <label class="ambient-toggle-label" for="ambient-recent-files">Recently opened files</label>
-                      <span class="ambient-toggle-desc">Read files opened by other applications</span>
-                    </div>
-                    <label class="toggle-switch">
-                      <input type="checkbox" id="ambient-recent-files" checked>
-                      <span class="toggle-slider"></span>
-                    </label>
-                  </div>
-
-                  <div class="ambient-scan-roots">
-                    <label class="ambient-toggle-label">Scan directories</label>
-                    <div id="ambient-scan-roots-list" class="ambient-scan-roots-list"></div>
-                    <div class="ambient-scan-roots-add">
-                      <input type="text" id="ambient-scan-root-input" placeholder="~/path/to/dir" autocomplete="off"
-                        spellcheck="false">
-                      <button id="ambient-scan-root-add-btn" class="secondary" type="button">Add</button>
-                    </div>
-                  </div>
-                </div>
-
-                <p class="ambient-privacy-note">All data stays on your machine. Nothing is sent to external services.
-                </p>
-              </div>
-
-              <div class="settings-section-label">Telegram Bot</div>
-              <p class="telegram-description">Connect Clawdia to Telegram for mobile access.</p>
-
-              <div class="form-group">
-                <label for="telegram-token-input">Bot Token</label>
-                <div class="telegram-token-row">
-                  <input type="password" id="telegram-token-input" placeholder="Paste token from @BotFather" autocomplete="off" spellcheck="false">
-                  <button id="telegram-save-token-btn" class="primary" type="button">Save</button>
-                </div>
-                <span class="telegram-hint">Get a token from <strong>@BotFather</strong> on Telegram</span>
-              </div>
-
-              <div class="form-group">
-                <div class="telegram-toggle-row">
-                  <label class="telegram-toggle-label" for="telegram-enable-toggle">Enable Bot</label>
-                  <label class="toggle-switch">
-                    <input type="checkbox" id="telegram-enable-toggle">
-                    <span class="toggle-slider"></span>
-                  </label>
-                </div>
-              </div>
-
-              <div class="form-group">
-                <div id="telegram-status" class="telegram-status">
-                  <span class="telegram-status-dot telegram-status-dot--gray"></span>
-                  <span class="telegram-status-text">Not configured</span>
-                </div>
-              </div>
-
-              <div id="telegram-auth-section" class="form-group hidden">
-                <label>Authorized User</label>
-                <div class="telegram-auth-row">
-                  <span id="telegram-auth-id" class="telegram-auth-id">—</span>
-                  <button id="telegram-clear-auth-btn" class="danger" type="button">Clear</button>
-                </div>
-              </div>
-
-              <div class="telegram-setup-help">
-                <p>1. Open Telegram and message <strong>@BotFather</strong></p>
-                <p>2. Send <code>/newbot</code> and follow the prompts</p>
-                <p>3. Copy the token and paste it above</p>
-                <p>4. Enable the bot and send a message to it from Telegram</p>
-              </div>
-
-              <button id="save-settings" class="primary">Save</button>
             </div>
+
+            <div class="settings-section-label">Model</div>
+
+            <div class="form-group">
+              <label for="settings-model-select">Claude Model</label>
+              <select id="settings-model-select">
+                <!-- Populated dynamically from CLAUDE_MODELS -->
+              </select>
+            </div>
+
+            <div class="settings-section-label">Search Backend</div>
+
+            <div class="form-group">
+              <label for="search-backend-select">Preferred Backend</label>
+              <select id="search-backend-select">
+                <option value="serper">Serper (recommended)</option>
+                <option value="serpapi">SerpAPI</option>
+                <option value="bing">Bing</option>
+                <option value="playwright">Browser only (no API)</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <div class="api-key-label-row">
+                <label for="serper-key">Serper API Key</label>
+                <button class="get-key-btn" type="button" data-url="https://serper.dev/api-key" title="Get API key">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                    <polyline points="15 3 21 3 21 9"></polyline>
+                    <line x1="10" y1="14" x2="21" y2="3"></line>
+                  </svg>
+                </button>
+                <span class="free-hint">free</span>
+              </div>
+              <input type="password" id="serper-key" placeholder="Serper API key">
+            </div>
+
+            <div class="form-group">
+              <div class="api-key-label-row">
+                <label for="serpapi-key">SerpAPI Key</label>
+                <button class="get-key-btn" type="button" data-url="https://serpapi.com/manage-api-key"
+                  title="Get API key">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                    <polyline points="15 3 21 3 21 9"></polyline>
+                    <line x1="10" y1="14" x2="21" y2="3"></line>
+                  </svg>
+                </button>
+                <span class="free-hint">free</span>
+              </div>
+              <input type="password" id="serpapi-key" placeholder="SerpAPI key">
+            </div>
+
+            <div class="form-group">
+              <div class="api-key-label-row">
+                <label for="bing-key">Bing API Key</label>
+                <button class="get-key-btn" type="button"
+                  data-url="https://www.microsoft.com/en-us/bing/apis/bing-web-search-api" title="Get API key">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                    <polyline points="15 3 21 3 21 9"></polyline>
+                    <line x1="10" y1="14" x2="21" y2="3"></line>
+                  </svg>
+                </button>
+                <span class="free-hint">free</span>
+              </div>
+              <input type="password" id="bing-key" placeholder="Bing API key">
+            </div>
+
+            <div class="settings-section-label">Linked Accounts</div>
+            <p class="accounts-description">Accounts are auto-detected when you browse authenticated sites. Claude
+              uses your active sessions — no passwords are stored.</p>
+            <div id="accounts-list" class="accounts-list"></div>
+            <div id="add-account-form" class="accounts-add-form hidden">
+              <div class="accounts-add-fields">
+                <div class="accounts-field">
+                  <label for="add-account-domain">Domain</label>
+                  <input type="text" id="add-account-domain" placeholder="e.g. mail.google.com" autocomplete="off"
+                    spellcheck="false">
+                </div>
+                <div class="accounts-field">
+                  <label for="add-account-username">Username</label>
+                  <input type="text" id="add-account-username" placeholder="e.g. you@gmail.com" autocomplete="off"
+                    spellcheck="false">
+                </div>
+                <input type="hidden" id="add-account-platform" value="">
+              </div>
+              <div class="accounts-add-actions">
+                <button id="save-account-btn" class="primary" type="button">Add</button>
+                <button id="cancel-account-btn" class="secondary" type="button">Cancel</button>
+              </div>
+            </div>
+            <button id="add-account-btn" class="accounts-add-btn" type="button">+ Add account manually</button>
+
+            <div class="settings-section-label">Ambient Awareness</div>
+            <div class="ambient-settings">
+              <div class="ambient-toggle-row ambient-master-row">
+                <label class="ambient-toggle-label" for="ambient-master-toggle">Enable ambient awareness</label>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="ambient-master-toggle" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+
+              <div id="ambient-sub-toggles" class="ambient-sub-toggles">
+                <div class="ambient-toggle-row">
+                  <div class="ambient-toggle-info">
+                    <label class="ambient-toggle-label" for="ambient-browser-history">Browser history</label>
+                    <span class="ambient-toggle-desc">Read recent browsing activity from Chrome/Chromium</span>
+                  </div>
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="ambient-browser-history" checked>
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+
+                <div class="ambient-toggle-row">
+                  <div class="ambient-toggle-info">
+                    <label class="ambient-toggle-label" for="ambient-filesystem-scan">Project scanning</label>
+                    <span class="ambient-toggle-desc">Scan directories for project activity</span>
+                  </div>
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="ambient-filesystem-scan" checked>
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+
+                <div class="ambient-toggle-row">
+                  <div class="ambient-toggle-info">
+                    <label class="ambient-toggle-label" for="ambient-git-scan">Git status</label>
+                    <span class="ambient-toggle-desc">Read repository status from git projects</span>
+                  </div>
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="ambient-git-scan" checked>
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+
+                <div class="ambient-toggle-row">
+                  <div class="ambient-toggle-info">
+                    <label class="ambient-toggle-label" for="ambient-shell-history">Terminal history</label>
+                    <span class="ambient-toggle-desc">Read recent shell commands</span>
+                  </div>
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="ambient-shell-history" checked>
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+
+                <div class="ambient-toggle-row">
+                  <div class="ambient-toggle-info">
+                    <label class="ambient-toggle-label" for="ambient-recent-files">Recently opened files</label>
+                    <span class="ambient-toggle-desc">Read files opened by other applications</span>
+                  </div>
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="ambient-recent-files" checked>
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+
+                <div class="ambient-scan-roots">
+                  <label class="ambient-toggle-label">Scan directories</label>
+                  <div id="ambient-scan-roots-list" class="ambient-scan-roots-list"></div>
+                  <div class="ambient-scan-roots-add">
+                    <input type="text" id="ambient-scan-root-input" placeholder="~/path/to/dir" autocomplete="off"
+                      spellcheck="false">
+                    <button id="ambient-scan-root-add-btn" class="secondary" type="button">Add</button>
+                  </div>
+                </div>
+              </div>
+
+              <p class="ambient-privacy-note">All data stays on your machine. Nothing is sent to external services.
+              </p>
+            </div>
+
+            <div class="settings-section-label">Telegram Bot</div>
+            <p class="telegram-description">Connect Clawdia to Telegram for mobile access.</p>
+
+            <div class="form-group">
+              <label for="telegram-token-input">Bot Token</label>
+              <div class="telegram-token-row">
+                <input type="password" id="telegram-token-input" placeholder="Paste token from @BotFather"
+                  autocomplete="off" spellcheck="false">
+                <button id="telegram-save-token-btn" class="primary" type="button">Save</button>
+              </div>
+              <span class="telegram-hint">Get a token from <strong>@BotFather</strong> on Telegram</span>
+            </div>
+
+            <div class="form-group">
+              <div class="telegram-toggle-row">
+                <label class="telegram-toggle-label" for="telegram-enable-toggle">Enable Bot</label>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="telegram-enable-toggle">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <div id="telegram-status" class="telegram-status">
+                <span class="telegram-status-dot telegram-status-dot--gray"></span>
+                <span class="telegram-status-text">Not configured</span>
+              </div>
+            </div>
+
+            <div id="telegram-auth-section" class="form-group hidden">
+              <label>Authorized User</label>
+              <div class="telegram-auth-row">
+                <span id="telegram-auth-id" class="telegram-auth-id">—</span>
+                <button id="telegram-clear-auth-btn" class="danger" type="button">Clear</button>
+              </div>
+            </div>
+
+            <div class="telegram-setup-help">
+              <p>1. Open Telegram and message <strong>@BotFather</strong></p>
+              <p>2. Send <code>/newbot</code> and follow the prompts</p>
+              <p>3. Copy the token and paste it above</p>
+              <p>4. Enable the bot and send a message to it from Telegram</p>
+            </div>
+
+            <button id="save-settings" class="primary">Save</button>
+          </div>
         </div>
       </div>
 

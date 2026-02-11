@@ -50,7 +50,13 @@ import {
   classifyAction,
   clearTaskApprovals
 } from './autonomy-gate';
-import { ApprovalDecision, ApprovalRequest } from '../shared/autonomy';
+import {
+  AutonomyMode,
+  ApprovalRequest,
+  ApprovalDecision,
+  AutonomyOverrides,
+  RiskLevel
+} from '../shared/autonomy';
 import { collectAmbientData, collectAmbientContext } from './dashboard/ambient';
 import { loadDashboardState, saveDashboardState, computeContextHash, sessionHadActivity } from './dashboard/persistence';
 import { buildProjectCards, buildActivityFeed } from './dashboard/state-builder';
@@ -122,28 +128,45 @@ let cachedClientModel: string | null = null;
 // Autonomy approval tracking
 const pendingApprovals = new Map<string, (decision: ApprovalDecision) => void>();
 
+import { sendApprovalRequest } from './integrations/telegram-bot';
+
 /** 
  * Solicitor for autonomy approvals.
  * Emits event to renderer and waits for response.
  */
 async function solicitorApproval(request: ApprovalRequest): Promise<ApprovalDecision> {
-  if (!mainWindow || mainWindow.isDestroyed()) return 'DENY';
+  const { requestId, expiresAt } = request;
 
   return new Promise((resolve) => {
     const timeout = setTimeout(() => {
-      if (pendingApprovals.has(request.id)) {
-        log.warn(`[Autonomy] Approval ${request.id} timed out, defaulting to DENY`);
-        pendingApprovals.delete(request.id);
+      if (pendingApprovals.has(requestId)) {
+        log.warn(`[Autonomy] Approval ${requestId} timed out, defaulting to DENY`);
+        pendingApprovals.delete(requestId);
         resolve('DENY');
       }
-    }, 60000); // 1 minute timeout
+    }, expiresAt - Date.now());
 
-    pendingApprovals.set(request.id, (decision) => {
-      clearTimeout(timeout);
-      resolve(decision);
-    });
+    const resolveOnce = (decision: ApprovalDecision) => {
+      if (pendingApprovals.has(requestId)) {
+        clearTimeout(timeout);
+        pendingApprovals.delete(requestId);
+        resolve(decision);
+      }
+    };
 
-    mainWindow!.webContents.send(IPC_EVENTS.APPROVAL_REQUEST, request);
+    pendingApprovals.set(requestId, resolveOnce);
+
+    // Desktop notification
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(IPC_EVENTS.APPROVAL_REQUEST, request);
+    }
+
+    // Telegram notification
+    if (store.get('telegramEnabled')) {
+      sendApprovalRequest(request, resolveOnce).catch(err => {
+        log.warn(`[Autonomy] Telegram approval request failed: ${err.message}`);
+      });
+    }
   });
 }
 
@@ -735,6 +758,7 @@ function createWindow(): void {
 }
 
 function setupIpcHandlers(): void {
+  log.info('[IPC] setupIpcHandlers() starting — registering all IPC handlers');
   handleValidated(IPC.CHAT_SEND, ipcSchemas[IPC.CHAT_SEND], async (_event, payload) => {
     const { conversationId, message, images, documents, messageId } = payload;
     if (!mainWindow) return { error: 'No window' };
@@ -761,6 +785,7 @@ function setupIpcHandlers(): void {
         conversationManager,
         images,
         documents,
+        requestApproval: solicitorApproval,
         onToolLoopCreated: (loop) => { activeToolLoop = loop; },
         onResponse: (response, loop) => {
           if (!win.isDestroyed()) {
@@ -795,7 +820,9 @@ function setupIpcHandlers(): void {
   handleValidated(IPC.CHAT_NEW, ipcSchemas[IPC.CHAT_NEW], async () => {
     clearPrefetchCache();
     strategyCache.clear();
-    return conversationManager.create();
+    const conv = conversationManager.create();
+    clearTaskApprovals(conv.id);
+    return { id: conv.id };
   });
   handleValidated(IPC.CHAT_LIST, ipcSchemas[IPC.CHAT_LIST], async () => conversationManager.list());
   handleValidated(IPC.CHAT_LOAD, ipcSchemas[IPC.CHAT_LOAD], async (_event, payload) => {
@@ -869,16 +896,23 @@ function setupIpcHandlers(): void {
     unrestrictedConfirmed: Boolean(store.get('unrestrictedConfirmed')),
   }));
 
-  handleValidated(IPC.AUTONOMY_SET, ipcSchemas[IPC.AUTONOMY_SET], async (_event, payload) => {
-    const { mode, confirmUnrestricted } = payload;
+  log.info(`[Main] Registering IPC handler for ${IPC.AUTONOMY_SET}`);
+  handleValidated(IPC.AUTONOMY_SET, (ipcSchemas as any)[IPC.AUTONOMY_SET], async (_event, payload) => {
+    const { mode, confirmUnrestricted } = payload as any;
+    log.info(`[AUTONOMY_SET] requested mode=${mode}, confirmUnrestricted=${confirmUnrestricted}`);
+
     if (mode === 'unrestricted' && !store.get('unrestrictedConfirmed') && !confirmUnrestricted) {
+      log.warn('[AUTONOMY_SET] Unrestricted mode blocked: missing confirmation');
       return { success: false, error: 'Unrestricted mode requires confirmation' };
     }
+
     if (confirmUnrestricted) {
       store.set('unrestrictedConfirmed', true);
+      log.info('[AUTONOMY_SET] Unrestricted mode confirmed');
     }
-    store.set('autonomyMode', mode as any);
-    log.info(`[AUTONOMY_SET] mode=${mode}`);
+
+    store.set('autonomyMode', mode);
+    log.info(`[AUTONOMY_SET] Mode updated to: ${mode}`);
     return { success: true, mode };
   });
 
@@ -1248,7 +1282,7 @@ function setupIpcHandlers(): void {
     return { success: true };
   });
 
-  handleValidated(IPC.APPROVAL_RESPONSE, ipcSchemas[IPC.APPROVAL_RESPONSE] || { type: 'object' }, async (_event, payload) => {
+  handleValidated(IPC.APPROVAL_RESPONSE, (ipcSchemas as any)[IPC.APPROVAL_RESPONSE], async (_event, payload: any) => {
     const { id, decision } = payload;
     const resolver = pendingApprovals.get(id);
     if (resolver) {
@@ -1259,6 +1293,21 @@ function setupIpcHandlers(): void {
     return { success: false, error: 'Approval request not found or expired' };
   });
 
+  handleValidated(IPC.AUTONOMY_GET_ALWAYS_APPROVALS, (ipcSchemas as any)[IPC.AUTONOMY_GET_ALWAYS_APPROVALS], async () => {
+    return (store.get('autonomyOverrides' as any) as AutonomyOverrides) || {};
+  });
+
+  handleValidated(IPC.AUTONOMY_REMOVE_ALWAYS_APPROVAL, (ipcSchemas as any)[IPC.AUTONOMY_REMOVE_ALWAYS_APPROVAL], async (_event, payload: any) => {
+    const { risk } = payload;
+    const current = (store.get('autonomyOverrides' as any) as AutonomyOverrides) || {};
+    const next = { ...current };
+    delete next[risk as RiskLevel];
+    store.set('autonomyOverrides' as any, next);
+    log.info(`[Autonomy] Removed global override for ${risk}`);
+    return { success: true };
+  });
+
+  log.info('[IPC] setupIpcHandlers() complete — all handlers registered');
 }
 
 const gotTheLock = app.requestSingleInstanceLock();
@@ -1271,6 +1320,8 @@ if (!gotTheLock) {
   });
 
   app.whenReady().then(async () => {
+    setupIpcHandlers();
+    setupBrowserIpc();
     setCdpPort(REMOTE_DEBUGGING_PORT);
     initSearchCache();
     initLearningSystem();
@@ -1284,9 +1335,10 @@ if (!gotTheLock) {
     }
 
     initHeadlessRunner({
-      getApiKey: getAnthropicApiKey,
-      getClient,
-      getDefaultModel: getSelectedModel,
+      getApiKey: () => getAnthropicApiKey() || '',
+      getClient: (key, mod) => getClient(key, mod),
+      getDefaultModel: () => getSelectedModel(),
+      requestApproval: solicitorApproval,
     });
     taskScheduler = new TaskScheduler({
       getApiKey: getAnthropicApiKey,
@@ -1312,8 +1364,6 @@ if (!gotTheLock) {
     });
     setSchedulerInstance(taskScheduler);
     taskScheduler.start();
-    setupIpcHandlers();
-    setupBrowserIpc();
     createTray();
     createWindow();
     initTelegramIfEnabled();

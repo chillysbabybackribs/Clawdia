@@ -487,6 +487,10 @@ const api = {
   sendApprovalResponse: (id: string, decision: ApprovalDecision) =>
     invokeChecked(IPC.APPROVAL_RESPONSE, { id, decision }),
 
+  getAutonomyAlwaysApprovals: () => invokeChecked(IPC.AUTONOMY_GET_ALWAYS_APPROVALS),
+
+  removeAutonomyAlwaysApproval: (risk: string) => invokeChecked(IPC.AUTONOMY_REMOVE_ALWAYS_APPROVAL, { risk }),
+
   // -------------------------------------------------------------------------
   // Telegram
   // -------------------------------------------------------------------------

@@ -201,7 +201,7 @@ NEVER say "I can't interact with your screen" or "I can only view." You CAN inte
 
 SYSTEM-LEVEL AWARENESS:
 You also have full access to the user's local system via shell_exec. For questions about the desktop/system (open windows, running processes, disk space, installed software, network status, clipboard, notifications), use shell_exec with appropriate commands (wmctrl -l, ps aux, df -h, dpkg -l, ip addr, xdotool, xclip, etc.). Don't limit your awareness to the browser panel — you can see and control the whole machine.
-If a system tool or package is missing, install it silently (e.g. sudo apt install -y wmctrl) and retry. Don't ask permission to install standard utilities. Act decisively — if the user asks a question, answer it. Don't offer alternatives or ask follow-up questions when you can solve the original request directly.
+Act decisively — if the user asks a question, answer it. Don't offer alternatives or ask follow-up questions when you can solve the original request directly.
 
 LAUNCHING APPLICATIONS:
 You CAN launch GUI desktop applications via shell_exec. Use & to background them so the command returns immediately. Examples:
@@ -360,6 +360,7 @@ export interface SystemPromptOptions {
   tier: PromptTier;
   modelLabel?: string;
   currentUrl?: string;
+  autonomyMode?: 'safe' | 'guided' | 'unrestricted';
 }
 
 /**
@@ -436,13 +437,19 @@ function getLearningContext(currentUrl?: string, currentMessage?: string): strin
   return context.trim();
 }
 
-export function getDynamicPrompt(modelLabel?: string, currentUrl?: string, currentMessage?: string): string {
+export function getDynamicPrompt(modelLabel?: string, currentUrl?: string, currentMessage?: string, autonomyMode?: string): string {
   const parts = [
     getDateContext(),
     getSystemContext(),
   ];
   if (modelLabel) {
     parts.push(`Running as: ${modelLabel}`);
+  }
+  if (autonomyMode) {
+    parts.push(`AUTONOMY MODE: ${autonomyMode.toUpperCase()}`);
+    if (autonomyMode === 'safe' || autonomyMode === 'guided') {
+      parts.push(`Note: You are in ${autonomyMode.toUpperCase()} mode. Sensitive actions (sudo, network exfil, sensitive sites) may require explicit user approval. If an action is blocked, inform the user why it might be sensitive.`);
+    }
   }
   const accountsCtx = getAccountsContext();
   if (accountsCtx) {
@@ -473,7 +480,8 @@ export function buildSystemPrompt(options?: SystemPromptOptions): string {
   const tier = options?.tier ?? 'standard';
   const modelLabel = options?.modelLabel;
   const currentUrl = options?.currentUrl;
-  return getStaticPrompt(tier) + '\n\n' + getDynamicPrompt(modelLabel, currentUrl);
+  const autonomyMode = options?.autonomyMode;
+  return getStaticPrompt(tier) + '\n\n' + getDynamicPrompt(modelLabel, currentUrl, undefined, autonomyMode);
 }
 
 /**

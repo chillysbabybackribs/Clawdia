@@ -172,16 +172,18 @@ export async function shouldAuthorize(
 
     // Request approval
     const request: ApprovalRequest = {
-        id: randomUUID(),
+        requestId: randomUUID(),
         tool,
         risk: classification.risk,
         reason: classification.reason,
         detail: classification.detail,
-        timestamp: Date.now()
+        autonomyMode: mode,
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 90000 // 90 second expiration
     };
 
     const decision = await requestApproval(request);
-    log.info(`[Gate] Decision for ${request.id}: ${decision}`);
+    log.info(`[Gate] Decision for ${request.requestId}: ${decision}`);
 
     switch (decision) {
         case 'APPROVE':

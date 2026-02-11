@@ -168,7 +168,103 @@ function renderPopoverList(): void {
     list.appendChild(item);
   }
 
+  // Separator
+  const sep = document.createElement('div');
+  sep.className = 'autonomy-sep';
+  list.appendChild(sep);
+
+  // Manage Approvals button
+  const manageBtn = document.createElement('button');
+  manageBtn.type = 'button';
+  manageBtn.className = 'autonomy-item autonomy-item--manage';
+  manageBtn.innerHTML = `
+    <span class="autonomy-item-check"></span>
+    <div class="autonomy-item-text">
+      <span class="autonomy-item-label">Manage approvals</span>
+      <span class="autonomy-item-desc">View or remove "Always approve" rules.</span>
+    </div>
+  `;
+  manageBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    void renderManageApprovalsList();
+  });
+  list.appendChild(manageBtn);
+
   popoverEl.appendChild(list);
+}
+
+// ---------------------------------------------------------------------------
+// Manage Approvals View
+// ---------------------------------------------------------------------------
+
+async function renderManageApprovalsList(): Promise<void> {
+  popoverEl.innerHTML = '';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'autonomy-manage';
+
+  const header = document.createElement('div');
+  header.className = 'autonomy-manage-header';
+
+  const backBtn = document.createElement('button');
+  backBtn.className = 'autonomy-manage-back';
+  backBtn.textContent = '\u2190';
+  backBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    renderPopoverList();
+  });
+
+  const title = document.createElement('span');
+  title.className = 'autonomy-manage-title';
+  title.textContent = 'Always Approvals';
+
+  header.appendChild(backBtn);
+  header.appendChild(title);
+  wrap.appendChild(header);
+
+  try {
+    const overrides = await window.api.getAutonomyAlwaysApprovals();
+    const risks = Object.keys(overrides || {});
+
+    if (risks.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'autonomy-manage-empty';
+      empty.textContent = 'No "Always approve" rules found.';
+      wrap.appendChild(empty);
+    } else {
+      const list = document.createElement('div');
+      list.className = 'autonomy-manage-list';
+
+      for (const risk of risks) {
+        const item = document.createElement('div');
+        item.className = 'autonomy-manage-item';
+
+        const label = document.createElement('span');
+        label.className = 'autonomy-manage-item-label';
+        label.textContent = risk;
+
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'autonomy-manage-item-remove';
+        removeBtn.textContent = 'Remove';
+        removeBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const result = await window.api.removeAutonomyAlwaysApproval(risk);
+          if (result?.success) {
+            void renderManageApprovalsList();
+          }
+        });
+
+        item.appendChild(label);
+        item.appendChild(removeBtn);
+        list.appendChild(item);
+      }
+      wrap.appendChild(list);
+    }
+  } catch (err) {
+    console.error('[autonomy] Failed to list approvals:', err);
+  }
+
+  popoverEl.appendChild(wrap);
 }
 
 // ---------------------------------------------------------------------------

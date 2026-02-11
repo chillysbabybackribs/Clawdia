@@ -49,16 +49,19 @@ export interface RiskClassification {
 export type ApprovalDecision = 'APPROVE' | 'TASK' | 'ALWAYS' | 'DENY';
 
 export interface ApprovalRequest {
-  id: string;
+  requestId: string;
   tool: string;
   risk: RiskLevel;
   reason: string;
   detail: string;
-  timestamp: number;
+  autonomyMode: AutonomyMode;
+  taskId?: string;
+  createdAt: number;
+  expiresAt: number;
 }
 
 export interface ApprovalResponse {
-  id: string;
+  requestId: string;
   decision: ApprovalDecision;
 }
 

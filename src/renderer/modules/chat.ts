@@ -18,6 +18,7 @@ import {
 } from './state';
 import { appendError, handleOutputWheel, hideThinking, isOutputNearBottom, scrollToBottom, setStreaming, showThought, updateOutputAutoFollowState } from './stream';
 import { startActivityFeed, renderStaticActivityFeed } from './activity-feed';
+import { startEnhancedActivityFeed } from './enhanced-activity-feed';
 
 // ============================================================
 // STRUCTURAL MAP (from pre-split renderer audit)
@@ -587,7 +588,8 @@ async function sendMessage(): Promise<void> {
   }));
 
   const userMessageEl = appendUserMessage(content, true, images, documentMetas);
-  startActivityFeed(userMessageEl);
+  // Use enhanced activity feed instead of standard one
+  startEnhancedActivityFeed(userMessageEl);
   showThought('Thinking...');
   elements.promptEl.value = '';
   elements.promptEl.focus();

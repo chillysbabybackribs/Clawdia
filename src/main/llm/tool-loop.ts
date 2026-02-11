@@ -60,6 +60,7 @@ const log = createLogger('tool-loop');
 const MAX_TOOL_CALLS = 150;
 const MAX_TOOL_ITERATIONS = 150;
 import { ConversationManager } from './conversation';
+import { store } from '../store';
 // Dynamically reads from ConversationManager so runtime changes apply everywhere
 const getMaxHistoryMessages = () => ConversationManager.getMaxPersistedMessages();
 const MAX_FINAL_RESPONSE_CONTINUATIONS = 3;
@@ -769,9 +770,10 @@ export class ToolLoop {
     const currentUrl = getActiveTabUrl() || undefined;
 
     // Build split prompts: static (cached) + dynamic (uncached, small)
+    const autonomyMode = (store.get('autonomyMode') as string) || 'guided';
     const minimalStatic = getStaticPrompt('minimal');
     const standardStatic = getStaticPrompt('standard');
-    const dynamicPrompt = getDynamicPrompt(modelLabel, currentUrl, userMessage);
+    const dynamicPrompt = getDynamicPrompt(modelLabel, currentUrl, userMessage, autonomyMode);
 
     // Combined prompts for backward-compat paths (forceFinalResponse, etc.)
     const minimalPrompt = minimalStatic + '\n\n' + dynamicPrompt;

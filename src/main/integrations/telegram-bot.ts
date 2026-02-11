@@ -223,6 +223,115 @@ export function notifyTaskResult(task: PersistentTask, result: {
   send(chatId, `${ok ? '\u2705' : '\u274C'} <b>${task.description.slice(0, 80)}</b>\n${(result.durationMs / 1000).toFixed(1)}s\n\n${body}`).catch(() => { });
 }
 
+import { ApprovalRequest, ApprovalDecision } from '../../shared/autonomy';
+
+const callbackRateLimits = new Map<number, number[]>(); // chatId -> timestamps
+const CALLBACK_LIMIT_WINDOW_MS = 60000;
+const CALLBACK_LIMIT_MAX = 10;
+
+function isRateLimited(chatId: number): boolean {
+  const now = Date.now();
+  const stamps = callbackRateLimits.get(chatId) || [];
+  const valid = stamps.filter(s => now - s < CALLBACK_LIMIT_WINDOW_MS);
+  if (valid.length >= CALLBACK_LIMIT_MAX) return true;
+  valid.push(now);
+  callbackRateLimits.set(chatId, valid);
+  return false;
+}
+
+export async function sendApprovalRequest(request: ApprovalRequest, onDecision: (decision: ApprovalDecision) => void): Promise<void> {
+  if (!bot || !deps) return;
+  const activeBot = bot;
+  const chatId = deps.getAuthorizedChatId();
+  if (!chatId) return;
+
+  const { requestId, tool, risk, reason, detail, autonomyMode } = request;
+
+  // Format detail: truncated but with full detail as code block if reasonable
+  const detailTruncated = detail.length > 200 ? detail.slice(0, 197) + '...' : detail;
+  const detailBlock = detail.length <= 1000 ? `\n\n<code>${detail}</code>` : `\n\n<code>${detailTruncated}</code>`;
+
+  const message = [
+    `\u26A0 <b>Approval Required</b>`,
+    `<b>Mode:</b> ${autonomyMode}`,
+    `<b>Risk:</b> ${risk}`,
+    `<b>Tool:</b> ${tool}`,
+    `<b>Reason:</b> ${reason}`,
+    detailBlock
+  ].join('\n');
+
+  const keyboard = {
+    inline_keyboard: [
+      [
+        { text: 'Approve', callback_data: `approve:${requestId}` },
+        { text: 'For this task', callback_data: `task:${requestId}` }
+      ],
+      [
+        { text: 'Always approve', callback_data: `always:${requestId}` },
+        { text: 'Deny', callback_data: `deny:${requestId}` }
+      ]
+    ]
+  };
+
+  try {
+    const sentMsg = await activeBot.sendMessage(chatId, message, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    });
+
+    const handler = async (query: TelegramBot.CallbackQuery) => {
+      if (query.message?.message_id !== sentMsg.message_id) return;
+      if (query.from.id !== chatId) {
+        await activeBot.answerCallbackQuery(query.id, { text: 'Unauthorized', show_alert: true });
+        return;
+      }
+
+      if (isRateLimited(chatId)) {
+        await activeBot.answerCallbackQuery(query.id, { text: 'Too many requests. Please slow down.', show_alert: true });
+        return;
+      }
+
+      const data = query.data || '';
+      const [action, reqId] = data.split(':');
+      if (reqId !== requestId) return;
+
+      let decision: ApprovalDecision;
+      switch (action) {
+        case 'approve': decision = 'APPROVE'; break;
+        case 'task': decision = 'TASK'; break;
+        case 'always': decision = 'ALWAYS'; break;
+        case 'deny':
+        default: decision = 'DENY'; break;
+      }
+
+      onDecision(decision);
+
+      // Update message to show decision
+      await activeBot.editMessageText(
+        message + `\n\n<b>Decision: ${decision}</b>`,
+        {
+          chat_id: chatId,
+          message_id: sentMsg.message_id,
+          parse_mode: 'HTML'
+        }
+      );
+
+      await activeBot.answerCallbackQuery(query.id, { text: `Decision: ${decision}` });
+      activeBot.off('callback_query', handler);
+    };
+
+    activeBot.on('callback_query', handler);
+
+    // Auto-cleanup handler after expiration + buffer
+    setTimeout(() => {
+      activeBot.off('callback_query', handler);
+    }, (request.expiresAt - Date.now()) + 10000);
+
+  } catch (err: any) {
+    log.error(`[Telegram] Failed to send approval request: ${sanitizeTelegramError(err.message)}`);
+  }
+}
+
 export function startTelegramBot(token: string, d: TelegramDeps): void {
   stopTelegramBot();
   deps = d;

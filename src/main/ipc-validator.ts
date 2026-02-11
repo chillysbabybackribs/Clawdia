@@ -673,9 +673,17 @@ export interface AutonomySetPayload {
   confirmUnrestricted?: boolean;
 }
 
+export interface AutonomyRemoveAlwaysApprovalPayload {
+  risk: string;
+}
+
 export const autonomySetSchema = isObject<AutonomySetPayload>({
   mode: isStringOneOf('mode', AUTONOMY_MODES),
   confirmUnrestricted: isOptional(isBoolean('confirmUnrestricted')),
+});
+
+export const autonomyRemoveAlwaysApprovalSchema = isObject<AutonomyRemoveAlwaysApprovalPayload>({
+  risk: isNonEmptyString('risk'),
 });
 
 // Task payloads
@@ -716,6 +724,7 @@ export function handleValidated<TInput, TOutput>(
   validator: Validator<TInput>,
   handler: (event: IpcMainInvokeEvent, data: TInput) => Promise<TOutput> | TOutput
 ): void {
+  log.info(`[IPC] Registering handler for channel: ${channel}`);
   ipcMain.handle(channel, async (event, ...rawArgs: unknown[]) => {
     const rawPayload = rawArgs.length === 0 ? undefined : rawArgs.length === 1 ? rawArgs[0] : rawArgs;
     try {
@@ -818,4 +827,6 @@ export const ipcSchemas = {
   [IPC.APPROVAL_RESPONSE]: approvalResponseSchema,
   [IPC.AUTONOMY_GET]: noPayload,
   [IPC.AUTONOMY_SET]: autonomySetSchema,
+  [IPC.AUTONOMY_GET_ALWAYS_APPROVALS]: noPayload,
+  [IPC.AUTONOMY_REMOVE_ALWAYS_APPROVAL]: autonomyRemoveAlwaysApprovalSchema,
 } as const;

@@ -133,6 +133,8 @@ export const IPC = {
 
   // Autonomy Approval
   APPROVAL_RESPONSE: 'autonomy:approval-response',
+  AUTONOMY_GET_ALWAYS_APPROVALS: 'autonomy:get-always-approvals',
+  AUTONOMY_REMOVE_ALWAYS_APPROVAL: 'autonomy:remove-always-approval',
 } as const;
 
 // Main → Renderer (send)
