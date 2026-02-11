@@ -14,6 +14,7 @@ import { maybeExtractMemories, flushBeforePrune } from '../learning';
 import { incrementSessionMessageCount } from '../dashboard/persistence';
 import { usageTracker } from '../usage-tracker';
 import type { ToolLoopEmitter, DocumentAttachment, DocumentMeta, ImageAttachment } from '../../shared/types';
+import type { ApprovalDecision, ApprovalRequest } from '../../shared/autonomy';
 
 export interface ChatPipelineOptions {
   /** The user's message text. */
@@ -52,6 +53,10 @@ export interface ChatPipelineOptions {
    * Called on error, before the error is re-thrown.
    */
   onError?: (error: Error) => void;
+  /**
+   * Request approval from the user.
+   */
+  requestApproval?: (request: ApprovalRequest) => Promise<ApprovalDecision>;
 }
 
 export interface ChatPipelineResult {
@@ -124,6 +129,7 @@ export async function processChatMessage(
       loop.run(message, history, images, documents, {
         conversationId: conversation.id,
         messageId,
+        requestApproval: options.requestApproval,
       })
     );
 

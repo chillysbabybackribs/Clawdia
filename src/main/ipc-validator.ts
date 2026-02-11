@@ -665,6 +665,19 @@ export const ambientSettingsSetSchema = isObject<AmbientSettingsSetPayload>({
   },
 });
 
+// Autonomy mode
+const AUTONOMY_MODES = ['safe', 'guided', 'unrestricted'] as const;
+
+export interface AutonomySetPayload {
+  mode: (typeof AUTONOMY_MODES)[number];
+  confirmUnrestricted?: boolean;
+}
+
+export const autonomySetSchema = isObject<AutonomySetPayload>({
+  mode: isStringOneOf('mode', AUTONOMY_MODES),
+  confirmUnrestricted: isOptional(isBoolean('confirmUnrestricted')),
+});
+
 // Task payloads
 export interface TaskIdPayload { taskId: string }
 export interface TaskRunIdPayload { runId: string }
@@ -685,6 +698,11 @@ export const telegramSetTokenSchema = isObject<TelegramSetTokenPayload>({
 });
 export const telegramSetEnabledSchema = isObject<TelegramSetEnabledPayload>({
   enabled: isBoolean('enabled'),
+});
+
+export const approvalResponseSchema = isObject<{ id: string; decision: string }>({
+  id: isNonEmptyString('id'),
+  decision: isStringOneOf('decision', ['APPROVE', 'TASK', 'ALWAYS', 'DENY']),
 });
 
 export function validate<T>(input: unknown, validator: Validator<T>): T {
@@ -797,4 +815,7 @@ export const ipcSchemas = {
   [IPC.TELEGRAM_SET_TOKEN]: telegramSetTokenSchema,
   [IPC.TELEGRAM_SET_ENABLED]: telegramSetEnabledSchema,
   [IPC.TELEGRAM_CLEAR_AUTH]: noPayload,
+  [IPC.APPROVAL_RESPONSE]: approvalResponseSchema,
+  [IPC.AUTONOMY_GET]: noPayload,
+  [IPC.AUTONOMY_SET]: autonomySetSchema,
 } as const;

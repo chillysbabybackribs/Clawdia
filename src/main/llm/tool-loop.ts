@@ -25,6 +25,8 @@ import { generateSynthesisThought, generateThought } from './thought-generator';
 import { classifyIntent, classifyToolClass, classifyEnriched, type ToolClass } from './intent-router';
 import { strategyCache, type CacheKey } from './strategy-cache';
 import { isToolAvailable } from './tool-bootstrap';
+import { shouldAuthorize } from '../autonomy-gate';
+import { ApprovalDecision, ApprovalRequest } from '../../shared/autonomy';
 import { validateAndBuild, FAST_PATH_ENTRIES, findFastPathEntryForUrl } from './fast-path-gate';
 import { buildStrategyHintBlock } from './system-prompt';
 import {
@@ -301,6 +303,7 @@ interface ToolExecutionResult {
 interface ToolLoopRunContext {
   conversationId: string;
   messageId: string;
+  requestApproval?: (request: ApprovalRequest) => Promise<ApprovalDecision>;
 }
 
 interface IterationLlmStats {
@@ -846,37 +849,37 @@ export class ToolLoop {
         mediaExtractAuthFallbackHint = true;
         applyMediaExtractAuthFallbackHint();
       } else {
-      const preExtractorMs = performance.now() - totalStart;
-      perfLog('media-extract', 'pre-extractor-delay', preExtractorMs, {
-        tool: 'yt-dlp',
-        host: (() => { try { return new URL(mediaExtractUrl).hostname.replace(/^www\./, ''); } catch { return null; } })(),
-        confidence: enriched.strategy.score,
-      });
+        const preExtractorMs = performance.now() - totalStart;
+        perfLog('media-extract', 'pre-extractor-delay', preExtractorMs, {
+          tool: 'yt-dlp',
+          host: (() => { try { return new URL(mediaExtractUrl).hostname.replace(/^www\./, ''); } catch { return null; } })(),
+          confidence: enriched.strategy.score,
+        });
 
-      const safeCmd = buildYtDlpCommand(mediaExtractUrl, mediaExtractPreferredTool, mediaExtractOutputDir);
-      if (safeCmd) {
-        log.info(`[FastPath] media-extract (high confidence) → ${safeCmd.argv.join(' ')}`);
-        this.emitThinking('Executing directly...');
-        try {
-          const result = await runYtDlpWithCookies(mediaExtractUrl, safeCmd);
-          const totalMs = performance.now() - totalStart;
-          perfLog('media-extract', 'total', totalMs, { tool: 'yt-dlp', success: true });
-          strategyCache.record(cacheKey, ['shell_exec'], 0, totalMs, true);
-          this.emitThinking('');
-          this.emitToolLoopComplete(1, totalMs, 0);
-          return result;
-        } catch (err: any) {
-          const totalMs = performance.now() - totalStart;
-          perfLog('media-extract', 'total', totalMs, { tool: 'yt-dlp', success: false });
-          log.warn(`[FastPath] yt-dlp failed: ${err?.message}, falling back to browser-auth`);
+        const safeCmd = buildYtDlpCommand(mediaExtractUrl, mediaExtractPreferredTool, mediaExtractOutputDir);
+        if (safeCmd) {
+          log.info(`[FastPath] media-extract (high confidence) → ${safeCmd.argv.join(' ')}`);
+          this.emitThinking('Executing directly...');
+          try {
+            const result = await runYtDlpWithCookies(mediaExtractUrl, safeCmd);
+            const totalMs = performance.now() - totalStart;
+            perfLog('media-extract', 'total', totalMs, { tool: 'yt-dlp', success: true });
+            strategyCache.record(cacheKey, ['shell_exec'], 0, totalMs, true);
+            this.emitThinking('');
+            this.emitToolLoopComplete(1, totalMs, 0);
+            return result;
+          } catch (err: any) {
+            const totalMs = performance.now() - totalStart;
+            perfLog('media-extract', 'total', totalMs, { tool: 'yt-dlp', success: false });
+            log.warn(`[FastPath] yt-dlp failed: ${err?.message}, falling back to browser-auth`);
+            mediaExtractAuthFallbackHint = true;
+            applyMediaExtractAuthFallbackHint();
+          }
+        } else {
+          log.info('[FastPath] yt-dlp unavailable or not allowed for URL, falling back to browser-auth');
           mediaExtractAuthFallbackHint = true;
           applyMediaExtractAuthFallbackHint();
         }
-      } else {
-        log.info('[FastPath] yt-dlp unavailable or not allowed for URL, falling back to browser-auth');
-        mediaExtractAuthFallbackHint = true;
-        applyMediaExtractAuthFallbackHint();
-      }
       }
     }
 
@@ -1575,6 +1578,43 @@ export class ToolLoop {
     }
 
     const tStart = performance.now();
+
+    // --- AUTONOMY GATE CHECK ---
+    const conversationId = this.runContext?.conversationId || 'default';
+    const requestApproval = this.runContext?.requestApproval;
+    if (requestApproval && !skip) {
+      const auth = await shouldAuthorize(toolCall.name, toolCall.input, conversationId, requestApproval);
+      if (!auth.allowed) {
+        const denyMsg = auth.error || 'Autonomy mode restricted this action.';
+        const entry: ToolActivityEntry = {
+          id: toolCall.id,
+          name: toolCall.name,
+          input: toolCall.input,
+          status: 'error',
+          error: denyMsg,
+          startedAt: Date.now(),
+          completedAt: Date.now(),
+          durationMs: 0,
+        };
+        this.activityLog.push(entry);
+        this.emitToolActivity(entry);
+        this.emitToolExecStart({
+          toolId: toolCall.id,
+          toolName: toolCall.name,
+          args: toolCall.input,
+          timestamp: entry.startedAt,
+        });
+        this.emitToolExecComplete({
+          toolId: toolCall.id,
+          status: 'error',
+          duration: 0,
+          summary: denyMsg,
+        });
+        return { id: toolCall.id, content: `ERROR: ${denyMsg}` };
+      }
+    }
+    // ----------------------------
+
     const entry: ToolActivityEntry = {
       id: toolCall.id,
       name: toolCall.name,

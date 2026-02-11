@@ -12,6 +12,7 @@ import { initAffirmationWidget } from './modules/affirmation-widget';
 import { initActivityFeed } from './modules/activity-feed';
 import { initTokenStats } from './modules/token-stats';
 import { initVaultUI } from './modules/vault-ui';
+import { initAutonomyMode } from './modules/autonomy-mode';
 import { initTaskView, showTaskView, hideTaskView, highlightTaskInView } from './modules/task-view';
 
 function initClock(): void {
@@ -110,6 +111,7 @@ async function init(): Promise<void> {
   initAffirmationWidget();
   initAffirmationWidget();
   initVaultUI();
+  void initAutonomyMode();
   initClock();
 
   requestAnimationFrame(() => syncBrowserBounds());

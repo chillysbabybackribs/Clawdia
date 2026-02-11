@@ -2,6 +2,7 @@ import Store from 'electron-store';
 import * as fs from 'fs';
 import { DEFAULT_MODEL } from '../shared/models';
 import type { UserAccount } from '../shared/accounts';
+import type { AutonomyMode } from '../shared/autonomy';
 import { createLogger } from './logger';
 
 const log = createLogger('store');
@@ -68,6 +69,11 @@ export interface ClawdiaStoreSchema {
   telegramEnabled?: boolean;
   telegramAuthorizedChatId?: number;
 
+  // Autonomy mode
+  autonomyMode?: AutonomyMode;
+  unrestrictedConfirmed?: boolean;
+  autonomyOverrides?: Record<string, boolean>;
+
   // Legacy key used by older builds before BYOK migration.
   anthropic_api_key?: string;
 }
@@ -77,7 +83,7 @@ export interface ClawdiaStoreSchema {
 // ============================================================================
 
 /** Increment this every time the store schema changes. */
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 export interface Migration {
   version: number;
@@ -126,6 +132,15 @@ export const migrations: Migration[] = [
     migrate: (s) => {
       if (!s.get('ambientSettings')) {
         s.set('ambientSettings', { ...DEFAULT_AMBIENT_SETTINGS });
+      }
+    },
+  },
+  {
+    version: 5,
+    description: 'Initialize autonomyOverrides',
+    migrate: (s) => {
+      if (!s.get('autonomyOverrides' as any)) {
+        s.set('autonomyOverrides' as any, {});
       }
     },
   },

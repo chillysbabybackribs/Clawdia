@@ -11,6 +11,7 @@ import { createTaskContext } from './task-browser';
 import type { PersistentTask, RunStatus } from '../../shared/task-types';
 import { resolveModelId } from '../../shared/models';
 import { createLogger } from '../logger';
+import { ApprovalDecision, ApprovalRequest } from '../../shared/autonomy';
 
 const log = createLogger('headless-runner');
 
@@ -36,6 +37,7 @@ interface RunnerDeps {
     getApiKey: () => string;
     getClient: (apiKey: string, model: string) => any; // AnthropicClient
     getDefaultModel: () => string;
+    requestApproval?: (request: ApprovalRequest) => Promise<ApprovalDecision>;
 }
 
 let deps: RunnerDeps | null = null;
@@ -226,6 +228,7 @@ async function executeFullLlmRun(task: PersistentTask, startTime: number): Promi
             {
                 conversationId: task.conversationId || `headless-${task.id}`,
                 messageId: randomUUID(),
+                requestApproval: deps.requestApproval,
             },
         );
 

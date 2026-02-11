@@ -45,6 +45,12 @@ import { ActionExecutor } from './actions/executor';
 import { ActionType, IngestionJob } from '../shared/vault-types';
 import { generateDashboardInsights, getCachedInsights } from './dashboard/suggestions';
 import { DashboardExecutor } from './dashboard/executor';
+import {
+  shouldAuthorize,
+  classifyAction,
+  clearTaskApprovals
+} from './autonomy-gate';
+import { ApprovalDecision, ApprovalRequest } from '../shared/autonomy';
 import { collectAmbientData, collectAmbientContext } from './dashboard/ambient';
 import { loadDashboardState, saveDashboardState, computeContextHash, sessionHadActivity } from './dashboard/persistence';
 import { buildProjectCards, buildActivityFeed } from './dashboard/state-builder';
@@ -112,6 +118,34 @@ let taskUnreadCount = 0;
 let cachedClient: AnthropicClient | null = null;
 let cachedClientApiKey: string | null = null;
 let cachedClientModel: string | null = null;
+
+// Autonomy approval tracking
+const pendingApprovals = new Map<string, (decision: ApprovalDecision) => void>();
+
+/** 
+ * Solicitor for autonomy approvals.
+ * Emits event to renderer and waits for response.
+ */
+async function solicitorApproval(request: ApprovalRequest): Promise<ApprovalDecision> {
+  if (!mainWindow || mainWindow.isDestroyed()) return 'DENY';
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      if (pendingApprovals.has(request.id)) {
+        log.warn(`[Autonomy] Approval ${request.id} timed out, defaulting to DENY`);
+        pendingApprovals.delete(request.id);
+        resolve('DENY');
+      }
+    }, 60000); // 1 minute timeout
+
+    pendingApprovals.set(request.id, (decision) => {
+      clearTimeout(timeout);
+      resolve(decision);
+    });
+
+    mainWindow!.webContents.send(IPC_EVENTS.APPROVAL_REQUEST, request);
+  });
+}
 
 export function getClient(apiKey: string, model: string): AnthropicClient {
   if (cachedClient && cachedClientApiKey === apiKey && cachedClientModel === model) return cachedClient;
@@ -830,6 +864,24 @@ function setupIpcHandlers(): void {
     return { success: true };
   });
 
+  handleValidated(IPC.AUTONOMY_GET, ipcSchemas[IPC.AUTONOMY_GET], async () => ({
+    mode: (store.get('autonomyMode') as string) || 'guided',
+    unrestrictedConfirmed: Boolean(store.get('unrestrictedConfirmed')),
+  }));
+
+  handleValidated(IPC.AUTONOMY_SET, ipcSchemas[IPC.AUTONOMY_SET], async (_event, payload) => {
+    const { mode, confirmUnrestricted } = payload;
+    if (mode === 'unrestricted' && !store.get('unrestrictedConfirmed') && !confirmUnrestricted) {
+      return { success: false, error: 'Unrestricted mode requires confirmation' };
+    }
+    if (confirmUnrestricted) {
+      store.set('unrestrictedConfirmed', true);
+    }
+    store.set('autonomyMode', mode as any);
+    log.info(`[AUTONOMY_SET] mode=${mode}`);
+    return { success: true, mode };
+  });
+
   handleValidated(IPC.SETTINGS_GET, ipcSchemas[IPC.SETTINGS_GET], async () => ({
     anthropic_api_key: getMaskedAnthropicApiKey(),
     anthropic_key_masked: getMaskedAnthropicApiKey(),
@@ -1194,6 +1246,17 @@ function setupIpcHandlers(): void {
   handleValidated(IPC.TELEGRAM_CLEAR_AUTH, ipcSchemas[IPC.TELEGRAM_CLEAR_AUTH], async () => {
     store.set('telegramAuthorizedChatId', undefined as any);
     return { success: true };
+  });
+
+  handleValidated(IPC.APPROVAL_RESPONSE, ipcSchemas[IPC.APPROVAL_RESPONSE] || { type: 'object' }, async (_event, payload) => {
+    const { id, decision } = payload;
+    const resolver = pendingApprovals.get(id);
+    if (resolver) {
+      pendingApprovals.delete(id);
+      resolver(decision as ApprovalDecision);
+      return { success: true };
+    }
+    return { success: false, error: 'Approval request not found or expired' };
   });
 
 }

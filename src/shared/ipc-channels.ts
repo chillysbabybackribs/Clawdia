@@ -119,6 +119,10 @@ export const IPC = {
   TELEGRAM_SET_ENABLED: 'telegram:set-enabled',
   TELEGRAM_CLEAR_AUTH: 'telegram:clear-auth',
 
+  // Autonomy mode
+  AUTONOMY_GET: 'autonomy:get',
+  AUTONOMY_SET: 'autonomy:set',
+
   // Actions
   ACTION_CREATE_PLAN: 'action:create-plan',
   ACTION_ADD_ITEM: 'action:add-item',
@@ -126,6 +130,9 @@ export const IPC = {
   ACTION_UNDO_PLAN: 'action:undo-plan',
   ACTION_GET_PLAN: 'action:get-plan',
   ACTION_GET_ITEMS: 'action:get-items',
+
+  // Autonomy Approval
+  APPROVAL_RESPONSE: 'autonomy:approval-response',
 } as const;
 
 // Main → Renderer (send)
@@ -177,4 +184,7 @@ export const IPC_EVENTS = {
   TASK_FOCUS: 'task:focus',
   TASK_APPROVAL_FOCUS: 'task:approval:focus',
   TASK_RUN_NOTIFICATION: 'task:run:notification',
+
+  // Autonomy Approval
+  APPROVAL_REQUEST: 'autonomy:approval-request',
 } as const;

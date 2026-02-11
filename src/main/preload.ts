@@ -13,6 +13,10 @@ import {
   ToolStepProgressEvent,
   ToolLoopCompleteEvent,
 } from '../shared/types';
+import {
+  ApprovalRequest,
+  ApprovalDecision,
+} from '../shared/autonomy';
 import { createLogger } from './logger';
 
 const log = createLogger('preload');
@@ -465,6 +469,23 @@ const api = {
 
   setAmbientSettings: (settings: Record<string, unknown>) =>
     invokeChecked(IPC.AMBIENT_SETTINGS_SET, { settings }),
+
+  // -------------------------------------------------------------------------
+  // Autonomy mode
+  // -------------------------------------------------------------------------
+  getAutonomyMode: () => invokeChecked(IPC.AUTONOMY_GET),
+
+  setAutonomyMode: (mode: string, confirmUnrestricted?: boolean) =>
+    invokeChecked(IPC.AUTONOMY_SET, { mode, confirmUnrestricted }),
+
+  onApprovalRequest: (callback: (request: ApprovalRequest) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, request: ApprovalRequest) => callback(request);
+    ipcRenderer.on(IPC_EVENTS.APPROVAL_REQUEST, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.APPROVAL_REQUEST, handler);
+  },
+
+  sendApprovalResponse: (id: string, decision: ApprovalDecision) =>
+    invokeChecked(IPC.APPROVAL_RESPONSE, { id, decision }),
 
   // -------------------------------------------------------------------------
   // Telegram
