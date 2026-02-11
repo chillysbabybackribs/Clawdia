@@ -224,6 +224,7 @@ export function updateRun(runId: string, updates: UpdateRunParams): void {
     if (updates.inputTokens !== undefined) { setClauses.push('input_tokens = ?'); params.push(updates.inputTokens); }
     if (updates.outputTokens !== undefined) { setClauses.push('output_tokens = ?'); params.push(updates.outputTokens); }
     if (updates.errorMessage !== undefined) { setClauses.push('error_message = ?'); params.push(updates.errorMessage); }
+    if (updates.runSource !== undefined) { setClauses.push('run_source = ?'); params.push(updates.runSource); }
 
     if (setClauses.length === 0) return;
 

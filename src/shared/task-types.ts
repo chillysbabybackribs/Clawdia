@@ -96,6 +96,7 @@ export interface UpdateRunParams {
     inputTokens?: number;
     outputTokens?: number;
     errorMessage?: string;
+    runSource?: 'full_llm' | 'executor';
 }
 
 // ── Executor Cache Types ─────────────────────────────────────
