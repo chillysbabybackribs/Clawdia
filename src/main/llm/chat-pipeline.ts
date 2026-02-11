@@ -237,8 +237,7 @@ export async function processChatMessage(
         log.warn(`[Pipeline] Failed to generate interactive executor: ${genErr?.message}`);
       }
     } else {
-      // Executor path: signal loop created/destroyed and count message
-      onToolLoopCreated?.(null);
+      // Executor path: count message (cleanup handled by finally block)
       incrementSessionMessageCount();
     }
 
