@@ -35,6 +35,7 @@ import { usageTracker } from './usage-tracker';
 import { createLogger, setLogLevel, type LogLevel } from './logger';
 import { handleValidated, ipcSchemas } from './ipc-validator';
 import { initSearchCache, closeSearchCache } from './cache/search-cache';
+import { initArchive, closeArchive } from './archive/writer';
 import { listAccounts, addAccount, removeAccount } from './accounts/account-store';
 import { initLearningSystem, shutdownLearningSystem, siteKnowledge, userMemory } from './learning';
 import { initVault } from './vault/db';
@@ -1206,6 +1207,19 @@ function setupIpcHandlers(): void {
       merged.browserHistoryHours = DEFAULT_AMBIENT_SETTINGS.browserHistoryHours;
     }
     store.set('ambientSettings', merged);
+
+    // Re-scan immediately so changes take effect without restart
+    void (async () => {
+      try {
+        const rawData = await collectAmbientData();
+        const compact = formatCompactSummary(rawData);
+        if (compact) setAmbientSummary(compact);
+        log.info('[Ambient] Re-scanned after settings change');
+      } catch (err: any) {
+        log.warn(`[Ambient] Re-scan failed: ${err?.message || err}`);
+      }
+    })();
+
     return { success: true };
   });
 
@@ -1389,6 +1403,7 @@ if (!gotTheLock) {
       }
     });
     initLearningSystem();
+    initArchive();
     initVault();
 
     // Clean up zombie task runs left over from a prior crash/quit.
@@ -1475,6 +1490,7 @@ app.on('window-all-closed', () => {
   taskScheduler?.stop();
   stopSessionReaper();
   closeSearchCache();
+  closeArchive();
   closeAuditStore();
   shutdownLearningSystem();
 });
@@ -1526,6 +1542,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
   try {
     await shutdownTaskBrowser();
     await closeBrowser();
+    closeArchive();
     shutdownLearningSystem();
   } catch (err: any) {
     log.warn(`closeBrowser error during shutdown: ${err?.message}`);

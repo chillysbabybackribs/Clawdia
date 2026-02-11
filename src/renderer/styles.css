@@ -723,6 +723,29 @@ body {
   }
 }
 
+/* Activity pulse status lines — appear during long tool-loop runs */
+.activity-pulse-line {
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 4px 0;
+  color: rgba(229, 192, 123, 0.4);
+  font-style: italic;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  user-select: none;
+  animation: pulse-fade-in 0.3s ease-out;
+}
+
+.activity-pulse-line.fading {
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
+
+@keyframes pulse-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 /* ============================================================================
    MESSAGES
    ============================================================================ */
@@ -3038,9 +3061,7 @@ button.danger:hover:not(:disabled) {
   letter-spacing: 0.02em;
 }
 
-.tool-activity-badge.has-errors {
-  color: var(--error);
-}
+/* Removed: .tool-activity-badge.has-errors — no red badge styling */
 
 .tool-activity-chevron {
   display: flex;
@@ -3164,9 +3185,9 @@ button.danger:hover:not(:disabled) {
 }
 
 .tool-activity-error-icon {
-  color: var(--error);
+  color: rgba(229, 192, 123, 0.5);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 400;
 }
 
 .tool-activity-skip {
@@ -3190,6 +3211,21 @@ button.danger:hover:not(:disabled) {
   }
 }
 
+/* Amber shimmer on the tool name for running tools — matches enhanced feed style */
+.tool-activity-item.tool-activity-status-running .tool-activity-name {
+  background: linear-gradient(90deg,
+      rgba(229, 192, 123, 0.8) 0%,
+      rgba(229, 192, 123, 0.8) 30%,
+      rgba(255, 255, 255, 0.95) 50%,
+      rgba(229, 192, 123, 0.8) 70%,
+      rgba(229, 192, 123, 0.8) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: pipeline-shimmer 2s ease-in-out infinite;
+}
+
 .tool-activity-input {
   font-size: 10px;
   color: var(--text-tertiary);
@@ -3202,7 +3238,7 @@ button.danger:hover:not(:disabled) {
 
 .tool-activity-error {
   font-size: 10px;
-  color: var(--error);
+  color: rgba(229, 192, 123, 0.4);
   padding: 2px 0 0 24px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3802,9 +3838,11 @@ input:focus-visible+.toggle-slider {
   background: rgba(255, 255, 255, 0.03);
 }
 
-.pipeline-header--failed {
-  border-color: rgba(248, 113, 113, 0.2);
-  background: rgba(248, 113, 113, 0.03);
+/* Legacy .pipeline-header--failed kept as no-op for safety */
+.pipeline-header--failed,
+.pipeline-header--retry {
+  border-color: rgba(229, 192, 123, 0.15);
+  background: rgba(229, 192, 123, 0.03);
 }
 
 .pipeline-header--blocked {
@@ -3813,8 +3851,8 @@ input:focus-visible+.toggle-slider {
 }
 
 .pipeline-header--denied {
-  border-color: rgba(248, 113, 113, 0.2);
-  background: rgba(248, 113, 113, 0.03);
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .pipeline-status {
@@ -3852,6 +3890,14 @@ input:focus-visible+.toggle-slider {
   -webkit-text-fill-color: transparent;
   background-clip: text;
   animation: pipeline-shimmer 2.5s ease-in-out infinite;
+}
+
+/* Retry/denied status: no uppercase, softer weight */
+.pipeline-header--retry .pipeline-status-text,
+.pipeline-header--denied .pipeline-status-text {
+  text-transform: none;
+  font-weight: 400;
+  color: rgba(229, 192, 123, 0.5);
 }
 
 .pipeline-progress-text {
@@ -3985,7 +4031,7 @@ input:focus-visible+.toggle-slider {
 }
 
 .pipeline-phase--error {
-  background: rgba(248, 113, 113, 0.02);
+  background: rgba(229, 192, 123, 0.02);
 }
 
 .pipeline-phase--blocked {
@@ -3993,7 +4039,7 @@ input:focus-visible+.toggle-slider {
 }
 
 .pipeline-phase--denied {
-  background: rgba(248, 113, 113, 0.02);
+  background: rgba(255, 255, 255, 0.01);
 }
 
 .pipeline-phase-header {
@@ -4022,7 +4068,7 @@ input:focus-visible+.toggle-slider {
 }
 
 .pipeline-phase--error .pipeline-phase-icon {
-  color: rgba(248, 113, 113, 0.6);
+  color: rgba(229, 192, 123, 0.4);
 }
 
 .pipeline-phase-title {
@@ -4170,11 +4216,11 @@ input:focus-visible+.toggle-slider {
 }
 
 .activity-feed__step--error {
-  color: rgba(248, 113, 113, 0.7);
+  color: rgba(229, 192, 123, 0.5);
 }
 
 .activity-feed__step--error .activity-feed__icon {
-  color: rgba(248, 113, 113, 0.6);
+  color: rgba(229, 192, 123, 0.4);
 }
 
 .activity-feed__step--warning {
@@ -4190,7 +4236,7 @@ input:focus-visible+.toggle-slider {
 }
 
 .activity-feed__step--denied {
-  color: rgba(248, 113, 113, 0.5);
+  color: rgba(255, 255, 255, 0.3);
   opacity: 0.9;
 }
 
@@ -5573,6 +5619,31 @@ input:focus-visible+.toggle-slider {
   font-size: 0;
 }
 
+/* New Chat button — sits above chat icon */
+.sidebar-new-chat-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid rgba(14, 166, 144, 0.3) !important;
+  border-left: 1px solid rgba(14, 166, 144, 0.3) !important;
+  color: var(--accent);
+  background: rgba(14, 166, 144, 0.06);
+  margin-bottom: 2px;
+  transition: all 0.2s ease;
+}
+
+.sidebar-new-chat-btn:hover {
+  background: rgba(14, 166, 144, 0.15) !important;
+  color: #fff !important;
+  border-color: rgba(14, 166, 144, 0.5) !important;
+  transform: scale(1.05);
+}
+
+.sidebar-new-chat-btn svg {
+  width: 16px !important;
+  height: 16px !important;
+}
+
 /* ============================================================================
    View Panels (conversations, readme, settings — rendered in main panel)
    ============================================================================ */
@@ -5738,6 +5809,47 @@ input:focus-visible+.toggle-slider {
   opacity: 1 !important;
   color: var(--error);
   background: rgba(248, 113, 113, 0.1);
+}
+
+/* Delete slide-out animation */
+@keyframes conv-slide-out {
+  0% { opacity: 1; transform: translateX(0); max-height: 60px; }
+  60% { opacity: 0; transform: translateX(40px); max-height: 60px; }
+  100% { opacity: 0; transform: translateX(40px); max-height: 0; padding: 0; margin: 0; }
+}
+
+.conv-view-item--deleting {
+  animation: conv-slide-out 0.28s ease-out forwards;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* Conversations header actions row */
+.conv-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Clear All button */
+.conv-clear-all-btn {
+  display: flex;
+  align-items: center;
+  background: transparent;
+  color: var(--text-tertiary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.conv-clear-all-btn:hover {
+  color: var(--error);
+  border-color: rgba(248, 113, 113, 0.4);
+  background: rgba(248, 113, 113, 0.08);
 }
 
 .conv-view-empty {

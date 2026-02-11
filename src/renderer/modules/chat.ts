@@ -19,6 +19,7 @@ import {
 import { appendError, handleOutputWheel, hideThinking, isOutputNearBottom, scrollToBottom, setStreaming, showThought, updateOutputAutoFollowState } from './stream';
 import { startActivityFeed, renderStaticActivityFeed } from './activity-feed';
 import { startEnhancedActivityFeed } from './enhanced-activity-feed';
+import { resetActivityPulse } from './activity-pulse';
 
 // ============================================================
 // STRUCTURAL MAP (from pre-split renderer audit)
@@ -61,6 +62,32 @@ export function initChat(): void {
     const switchEvent = new CustomEvent('clawdia:switch-view', { detail: 'chat' });
     document.dispatchEvent(switchEvent);
   });
+
+  // Sidebar new-chat button event
+  document.addEventListener('clawdia:new-chat', async () => {
+    await createNewChatTab();
+    const switchEvent = new CustomEvent('clawdia:switch-view', { detail: 'chat' });
+    document.dispatchEvent(switchEvent);
+  });
+
+  // Clear all conversations button
+  const clearAllBtn = document.getElementById('clear-all-conversations-btn');
+  if (clearAllBtn) {
+    clearAllBtn.addEventListener('click', async () => {
+      const conversations = await window.api.listConversations();
+      if (conversations.length === 0) return;
+      // Close all open chat tabs, delete every conversation
+      for (const conv of conversations) {
+        const tabIdx = getChatTabIndex(conv.id);
+        if (tabIdx >= 0) {
+          await closeChatTab(conv.id);
+        }
+        await window.api.deleteConversation(conv.id);
+      }
+      await createNewChatTab();
+      void loadConversationsView();
+    });
+  }
 
   // Conversations search
   elements.conversationsSearch.addEventListener('input', () => {
@@ -605,6 +632,7 @@ async function sendMessage(): Promise<void> {
   }
 
   setStreaming(true);
+  resetActivityPulse();
   appState.fullStreamBuffer = '';
   const requestMessageId = crypto.randomUUID();
 
@@ -769,20 +797,21 @@ export async function loadConversationsView(): Promise<void> {
         document.dispatchEvent(switchEvent);
       });
 
-      // Delete button
+      // Delete button — instant, no confirmation
       const deleteBtn = row.querySelector('.conv-view-item-delete');
       if (deleteBtn) {
         deleteBtn.addEventListener('click', async (e) => {
           e.stopPropagation();
-          const confirmed = window.confirm('Delete this conversation?');
-          if (!confirmed) return;
-          await window.api.deleteConversation(conv.id);
-          // Remove from open tabs if present
-          const tabIdx = getChatTabIndex(conv.id);
-          if (tabIdx >= 0) {
-            await closeChatTab(conv.id);
-          }
-          void loadConversationsView();
+          // Animate out
+          row.classList.add('conv-view-item--deleting');
+          row.addEventListener('animationend', async () => {
+            await window.api.deleteConversation(conv.id);
+            const tabIdx = getChatTabIndex(conv.id);
+            if (tabIdx >= 0) {
+              await closeChatTab(conv.id);
+            }
+            void loadConversationsView();
+          }, { once: true });
         });
       }
 

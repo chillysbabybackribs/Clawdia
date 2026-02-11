@@ -17,3 +17,4 @@ Thumbs.db
 config.json
 readme_env/
 release/
+.vercel

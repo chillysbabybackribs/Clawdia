@@ -11,6 +11,7 @@ import { homedir } from 'os';
 import * as path from 'path';
 import { isToolAvailable } from './tool-bootstrap';
 import { createLogger } from '../logger';
+import { store } from '../store';
 
 const log = createLogger('fast-path-gate');
 
@@ -160,6 +161,7 @@ export function validateAndBuild(
   const cfg: FastPathConfig = { ...DEFAULT_CONFIG, ...config };
   const url = params.url || '';
   const outputDir = params.outputDir || cfg.allowedOutputDirs[0];
+  const isUnrestricted = (store.get('autonomyMode') as string) === 'unrestricted';
 
   // 1. URL must be valid HTTP(S)
   if (!isValidUrl(url)) {
@@ -167,14 +169,14 @@ export function validateAndBuild(
     return null;
   }
 
-  // 2. Reject shell-dangerous characters in URL
+  // 2. Reject shell-dangerous characters in URL (always enforced — injection prevention)
   if (SHELL_DANGEROUS.test(url)) {
     log.warn(`[Gate] Rejected: URL contains shell-dangerous chars`);
     return null;
   }
 
-  // 3. Output directory must be whitelisted
-  if (!isOutputDirAllowed(outputDir, cfg)) {
+  // 3. Output directory must be whitelisted (skip in unrestricted mode)
+  if (!isUnrestricted && !isOutputDirAllowed(outputDir, cfg)) {
     log.warn(`[Gate] Rejected: output dir "${outputDir}" not in allowlist`);
     return null;
   }
@@ -186,11 +188,13 @@ export function validateAndBuild(
       .replace(/\{outputDir\}/g, outputDir)
   );
 
-  // 5. Scan argv for forbidden commands
-  for (const arg of argv) {
-    if (FORBIDDEN_COMMANDS.has(arg.toLowerCase())) {
-      log.warn(`[Gate] Rejected: forbidden command "${arg}" in argv`);
-      return null;
+  // 5. Scan argv for forbidden commands (skip in unrestricted mode)
+  if (!isUnrestricted) {
+    for (const arg of argv) {
+      if (FORBIDDEN_COMMANDS.has(arg.toLowerCase())) {
+        log.warn(`[Gate] Rejected: forbidden command "${arg}" in argv`);
+        return null;
+      }
     }
   }
 

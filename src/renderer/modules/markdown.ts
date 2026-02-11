@@ -119,10 +119,18 @@ export function renderMarkdown(text: string, skipCache: boolean = false): string
   const cached = getCachedMarkdown(cacheKey);
   if (cached) return cached;
 
-  // Extract URLs from raw text BEFORE escaping so they aren't mangled
+  // Extract markdown links [text](url) BEFORE bare URLs so they aren't split up
+  const linkPlaceholders: { placeholder: string; url: string; display: string }[] = [];
+  let textWithPlaceholders = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (match, linkText, url, offset) => {
+    const placeholder = `\x00MDLINK${offset}\x00`;
+    linkPlaceholders.push({ placeholder, url, display: linkText });
+    return placeholder;
+  });
+
+  // Extract bare URLs from raw text BEFORE escaping so they aren't mangled
   // (escapeHtml turns & → &amp; which breaks query strings)
   const urlPlaceholders: { placeholder: string; url: string }[] = [];
-  let textWithPlaceholders = text.replace(/(https?:\/\/[^\s<]+)/g, (match, _p1, offset) => {
+  textWithPlaceholders = textWithPlaceholders.replace(/(https?:\/\/[^\s<\x00]+)/g, (match, _p1, offset) => {
     const placeholder = `\x00URL${offset}\x00`;
     urlPlaceholders.push({ placeholder, url: match });
     return placeholder;
@@ -144,7 +152,13 @@ export function renderMarkdown(text: string, skipCache: boolean = false): string
     .replace(/\n\n/g, '</p><p>')
     .replace(/\n/g, '<br>');
 
-  // Restore URLs as proper link elements with clean (un-escaped) href/data attrs
+  // Restore markdown links [text](url) — use the author's display text
+  for (const { placeholder, url, display } of linkPlaceholders) {
+    const link = `<a href="${escapeHtml(url)}" class="source-link" data-source-url="${escapeHtml(url)}" data-source-title="${escapeHtml(display)}" title="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(display)}</a>`;
+    html = html.replace(placeholder, link);
+  }
+
+  // Restore bare URLs as proper link elements with clean (un-escaped) href/data attrs
   for (const { placeholder, url } of urlPlaceholders) {
     const display = generateFriendlyUrlDisplay(url);
     const link = `<a href="${escapeHtml(url)}" class="source-link" data-source-url="${escapeHtml(url)}" data-source-title="${escapeHtml(display)}" title="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(display)}</a>`;

@@ -1,5 +1,6 @@
 import { hideArcade } from '../arcade/menu';
 import { renderMarkdown } from './markdown';
+import { cleanupPulseLines } from './activity-pulse';
 import {
   appState,
   AUTO_SCROLL_BOTTOM_THRESHOLD_PX,
@@ -325,6 +326,7 @@ function finalizeAssistantMessage(fullText: string): void {
     appState.streamFlushRafId = null;
   }
   flushPendingStreamText();
+  cleanupPulseLines();
 
   appState.streamingContainer.classList.remove('streaming');
   const finalText = fullText || appState.fullStreamBuffer;

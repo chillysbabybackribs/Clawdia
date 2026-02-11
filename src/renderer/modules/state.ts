@@ -255,11 +255,11 @@ export const elements = {} as {
   maxBtn: HTMLElement | null;
   closeBtn: HTMLElement | null;
   sidebarNav: HTMLElement;
+  navNewChatBtn: HTMLButtonElement;
   navChatBtn: HTMLButtonElement;
   navTasksBtn: HTMLButtonElement;
   navTasksBadge: HTMLSpanElement;
   navTimelineBtn: HTMLButtonElement;
-  navConversationsBtn: HTMLButtonElement;
   navReadmeBtn: HTMLButtonElement;
   navSettingsBtn: HTMLButtonElement;
   taskView: HTMLDivElement;
@@ -383,11 +383,11 @@ export function initElements(): void {
   elements.maxBtn = document.getElementById('max-btn');
   elements.closeBtn = document.getElementById('close-btn');
   elements.sidebarNav = required<HTMLElement>('sidebar-nav');
+  elements.navNewChatBtn = required<HTMLButtonElement>('nav-new-chat');
   elements.navChatBtn = required<HTMLButtonElement>('nav-chat');
   elements.navTasksBtn = required<HTMLButtonElement>('nav-tasks');
   elements.navTasksBadge = required<HTMLSpanElement>('nav-tasks-badge');
   elements.navTimelineBtn = required<HTMLButtonElement>('nav-timeline');
-  elements.navConversationsBtn = required<HTMLButtonElement>('nav-conversations');
   elements.navReadmeBtn = required<HTMLButtonElement>('nav-readme');
   elements.navSettingsBtn = required<HTMLButtonElement>('nav-settings');
   elements.taskView = required<HTMLDivElement>('task-view');

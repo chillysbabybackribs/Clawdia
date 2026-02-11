@@ -11,6 +11,7 @@ import { initStream } from './modules/stream';
 import { initAffirmationWidget } from './modules/affirmation-widget';
 import { initActivityFeed } from './modules/activity-feed';
 import { initEnhancedActivityFeed } from './modules/enhanced-activity-feed';
+import { initActivityPulse } from './modules/activity-pulse';
 import { initTokenStats } from './modules/token-stats';
 import { initVaultUI } from './modules/vault-ui';
 import { initAutonomyMode } from './modules/autonomy-mode';
@@ -40,17 +41,17 @@ function switchView(view: 'chat' | 'tasks' | 'conversations' | 'readme' | 'setti
   if (appState.activeView === view) return;
   appState.activeView = view;
 
-  // Update sidebar buttons
+  // Update sidebar buttons — chat and conversations share the same nav button
+  const chatOrConvActive = view === 'chat' || view === 'conversations';
   const navBtns = [
-    { btn: elements.navChatBtn, id: 'chat' },
-    { btn: elements.navTasksBtn, id: 'tasks' },
-    { btn: elements.navTimelineBtn, id: 'timeline' },
-    { btn: elements.navConversationsBtn, id: 'conversations' },
-    { btn: elements.navReadmeBtn, id: 'readme' },
-    { btn: elements.navSettingsBtn, id: 'settings' },
+    { btn: elements.navChatBtn, active: chatOrConvActive },
+    { btn: elements.navTasksBtn, active: view === 'tasks' },
+    { btn: elements.navTimelineBtn, active: view === 'timeline' },
+    { btn: elements.navReadmeBtn, active: view === 'readme' },
+    { btn: elements.navSettingsBtn, active: view === 'settings' },
   ];
-  for (const { btn, id } of navBtns) {
-    btn.classList.toggle('sidebar-nav-btn--active', view === id);
+  for (const { btn, active } of navBtns) {
+    btn.classList.toggle('sidebar-nav-btn--active', active);
   }
 
   // Toggle views — all hide/show via class
@@ -82,10 +83,24 @@ function switchView(view: 'chat' | 'tasks' | 'conversations' | 'readme' | 'setti
 }
 
 function initSidebarNav(): void {
-  elements.navChatBtn.addEventListener('click', () => switchView('chat'));
+  // Chat icon toggles between chat view and conversations list
+  elements.navChatBtn.addEventListener('click', () => {
+    if (appState.activeView === 'chat') {
+      switchView('conversations');
+    } else if (appState.activeView === 'conversations') {
+      switchView('chat');
+    } else {
+      switchView('chat');
+    }
+  });
+
+  // New Chat button — always creates a new conversation and switches to chat
+  elements.navNewChatBtn.addEventListener('click', () => {
+    document.dispatchEvent(new CustomEvent('clawdia:new-chat'));
+  });
+
   elements.navTasksBtn.addEventListener('click', () => switchView('tasks'));
   elements.navTimelineBtn.addEventListener('click', () => switchView('timeline'));
-  elements.navConversationsBtn.addEventListener('click', () => switchView('conversations'));
   elements.navReadmeBtn.addEventListener('click', () => switchView('readme'));
   elements.navSettingsBtn.addEventListener('click', () => switchView('settings'));
 
@@ -111,6 +126,7 @@ async function init(): Promise<void> {
   initStream();
   initActivityFeed();
   initEnhancedActivityFeed(); // Initialize enhanced activity feed
+  initActivityPulse();
   initTokenStats();
   initBrowser();
   initSettings();

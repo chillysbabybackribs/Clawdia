@@ -7,11 +7,57 @@ const POST_NAV_DISMISS_DELAY_MS = 800;
 const INITIAL_POPUP_RENDER_DELAY_MS = 500;
 const POPUP_SECOND_PASS_DELAY_MS = 300;
 
+/**
+ * Domains where popup dismissal must be completely skipped.
+ * Auth/banking/financial sites use modals, overlays, and consent dialogs
+ * that are part of their login flow — dismissing them breaks authentication.
+ */
+const SENSITIVE_DOMAIN_RE = /\b(login|signin|sign-in|auth|sso|saml|oauth|secure|account|banking|my\.|portal)\b/i;
+const SENSITIVE_HOSTS = new Set([
+  'wellsfargo.com', 'connect.secure.wellsfargo.com',
+  'bankofamerica.com', 'secure.bankofamerica.com',
+  'chase.com', 'secure.chase.com',
+  'citi.com', 'online.citi.com',
+  'usbank.com', 'onlinebanking.usbank.com',
+  'capitalone.com', 'verified.capitalone.com',
+  'schwab.com', 'client.schwab.com',
+  'fidelity.com', 'digital.fidelity.com',
+  'vanguard.com', 'personal.vanguard.com',
+  'tdameritrade.com', 'auth.tdameritrade.com',
+  'paypal.com', 'www.paypal.com',
+  'venmo.com',
+  'mint.com', 'accounts.intuit.com',
+]);
+
+function isSensitivePage(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    // Check explicit host list
+    for (const sensitive of SENSITIVE_HOSTS) {
+      if (host === sensitive || host.endsWith('.' + sensitive)) return true;
+    }
+    // Check URL patterns that indicate auth flows
+    if (SENSITIVE_DOMAIN_RE.test(host) || SENSITIVE_DOMAIN_RE.test(parsed.pathname)) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 const wiredPages = new WeakSet<Page>();
 
 function schedulePopupDismiss(page: Page, delayMs: number = POST_NAV_DISMISS_DELAY_MS): void {
   setTimeout(() => {
     if (page.isClosed()) return;
+    // Skip popup dismissal on sensitive pages (banks, auth, login)
+    try {
+      const url = page.url();
+      if (isSensitivePage(url)) {
+        log.debug(`[PopupDismiss] Skipping on sensitive page: ${url}`);
+        return;
+      }
+    } catch { /* page might be navigating */ }
     void dismissPopups(page);
   }, delayMs);
 }
@@ -49,6 +95,14 @@ export function wireUniversalPopupDismissal(page: Page): void {
 export async function dismissPopups(page: Page): Promise<void> {
   try {
     if (page.isClosed()) return;
+
+    // Skip on sensitive pages (banks, auth, SAML, login flows)
+    try {
+      if (isSensitivePage(page.url())) {
+        log.debug(`[PopupDismiss] Skipping dismissPopups on sensitive page: ${page.url()}`);
+        return;
+      }
+    } catch { /* page navigating */ }
 
     await page.waitForTimeout(INITIAL_POPUP_RENDER_DELAY_MS);
     if (page.isClosed()) return;

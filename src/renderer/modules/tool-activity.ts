@@ -152,7 +152,7 @@ function renderEntries(): void {
     const statusIndicator =
       entry.status === 'running' ? '<span class="tool-activity-spinner"></span>' :
         entry.status === 'success' ? '<span class="tool-activity-check">✓</span>' :
-          entry.status === 'error' ? '<span class="tool-activity-error-icon">✗</span>' :
+          entry.status === 'error' ? '<span class="tool-activity-error-icon">↻</span>' :
             '<span class="tool-activity-skip">—</span>';
 
     item.innerHTML = `
@@ -207,10 +207,10 @@ function updateBadge(): void {
 
   let text = `${count} tool call${count !== 1 ? 's' : ''}`;
   if (running > 0) text += ` (${running} running)`;
-  if (errors > 0) text += ` (${errors} failed)`;
+  if (errors > 0) text += ` (${errors} retried)`;
 
   badgeEl.textContent = text;
-  badgeEl.className = 'tool-activity-badge' + (errors > 0 ? ' has-errors' : '');
+  badgeEl.className = 'tool-activity-badge';
 }
 
 function updateWarning(): void {

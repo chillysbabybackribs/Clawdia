@@ -70,8 +70,7 @@ export async function exportElectronCookies(url?: string): Promise<PlaywrightCoo
 
       let sameSite: 'Strict' | 'Lax' | 'None' = 'Lax';
       if (c.sameSite === 'strict') sameSite = 'Strict';
-      else if (c.sameSite === 'no_restriction') sameSite = 'None';
-      // 'unspecified' → keep as Lax (safest default for cross-context injection)
+      else if (c.sameSite === 'no_restriction' || c.sameSite === 'unspecified') sameSite = 'None';
 
       const expires = typeof c.expirationDate === 'number' ? c.expirationDate : -1;
 
@@ -127,7 +126,7 @@ export async function exportChromeCookies(url?: string): Promise<PlaywrightCooki
           expires: c.expires > 0 ? c.expires : -1,
           httpOnly: c.httpOnly,
           secure: c.secure,
-          sameSite: 'Lax',
+          sameSite: c.sameSite || 'Lax',
         });
       }
     }

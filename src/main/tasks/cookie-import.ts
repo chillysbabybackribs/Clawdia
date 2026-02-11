@@ -18,6 +18,8 @@ export interface ImportedCookie {
     expires: number;
     secure: boolean;
     httpOnly: boolean;
+    /** Chrome samesite column: -1=unspecified, 0=None, 1=Lax, 2=Strict */
+    sameSite?: 'Strict' | 'Lax' | 'None';
 }
 
 // ── Chrome cookie DB path detection ──────────────────────────
@@ -174,7 +176,7 @@ export async function importCookiesForDomain(domain: string): Promise<ImportedCo
         // Match the domain and its parent (.domain.com)
         const cleanDomain = domain.replace(/^\./, '');
         const rows = db.prepare(`
-            SELECT host_key, name, encrypted_value, path, expires_utc, is_secure, is_httponly
+            SELECT host_key, name, encrypted_value, path, expires_utc, is_secure, is_httponly, samesite
             FROM cookies
             WHERE host_key = ? OR host_key = ?
         `).all(cleanDomain, `.${cleanDomain}`) as Array<{
@@ -185,6 +187,7 @@ export async function importCookiesForDomain(domain: string): Promise<ImportedCo
             expires_utc: number;
             is_secure: number;
             is_httponly: number;
+            samesite: number; // -1=unspecified, 0=no_restriction(None), 1=lax, 2=strict
         }>;
 
         db.close();
@@ -210,6 +213,15 @@ export async function importCookiesForDomain(domain: string): Promise<ImportedCo
                 ? Math.floor(row.expires_utc / 1000000) - chromeEpochOffset
                 : 0;
 
+            // Map Chrome's samesite int to Playwright format
+            const sameSiteMap: Record<number, 'Strict' | 'Lax' | 'None'> = {
+                [-1]: 'None', // unspecified → treat as None (cross-site compatible)
+                0: 'None',    // no_restriction
+                1: 'Lax',
+                2: 'Strict',
+            };
+            const sameSite = sameSiteMap[row.samesite] ?? 'Lax';
+
             cookies.push({
                 name: row.name,
                 value,
@@ -218,6 +230,7 @@ export async function importCookiesForDomain(domain: string): Promise<ImportedCo
                 expires: expiresUnix,
                 secure: row.is_secure === 1,
                 httpOnly: row.is_httponly === 1,
+                sameSite,
             });
         }
 
@@ -260,7 +273,7 @@ export async function injectCookiesIntoContext(
                 expires: c.expires > 0 ? c.expires : undefined,
                 secure: c.secure,
                 httpOnly: c.httpOnly,
-                sameSite: 'Lax' as const,
+                sameSite: (c.sameSite || 'Lax') as 'Strict' | 'Lax' | 'None',
             }));
 
         await context.addCookies(playwrightCookies);

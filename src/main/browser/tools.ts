@@ -595,6 +595,27 @@ function domExtractJs(maxLen = 8_000): string {
  *   When provided, all page-dependent tools use this instead of the interactive BrowserView page.
  *   When omitted, falls back to getActivePage() (existing interactive behavior).
  */
+/** Produce an actionable hint from a navigation error so the LLM can adapt. */
+function diagnoseNavError(error: string | undefined, url: string): string {
+  if (!error) return '';
+  const e = error.toLowerCase();
+  if (e.includes('timeout') || e.includes('timed out'))
+    return '[Hint: Page load timed out. Try again or use browser_search to find a working URL.]';
+  if (e.includes('err_name_not_resolved') || e.includes('could not resolve'))
+    return '[Hint: Domain not found. Check the URL spelling or search for the correct domain.]';
+  if (e.includes('err_connection_refused'))
+    return '[Hint: Connection refused. The server may be down or the port is wrong.]';
+  if (e.includes('err_cert') || e.includes('ssl'))
+    return '[Hint: SSL/certificate error. Try http:// instead of https:// or verify the domain.]';
+  if (e.includes('404') || e.includes('not found'))
+    return '[Hint: Page not found (404). The URL may be incorrect — use browser_search to find the right page.]';
+  if (e.includes('403') || e.includes('forbidden'))
+    return '[Hint: Access forbidden. You may need to log in first or the page blocks automated access.]';
+  if (e.includes('net::err_'))
+    return `[Hint: Network error. Verify the URL "${url}" is correct and the site is reachable.]`;
+  return '';
+}
+
 export async function executeTool(name: string, input: any, overridePage?: Page | null): Promise<string> {
   // Set module-level override so getActiveOrCreatePage() returns the isolated page
   _overridePage = overridePage ?? null;
@@ -774,7 +795,7 @@ async function toolNavigate(url: string): Promise<string> {
     try {
       await _overridePage.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 });
     } catch (err: any) {
-      return `Failed to navigate to ${targetUrl}: ${err?.message || 'unknown error'}`;
+      return `Failed to navigate to ${targetUrl}: ${err?.message || 'unknown error'}. ${diagnoseNavError(err?.message, targetUrl)}`;
     }
     await dismissPopups(_overridePage);
     return getPageSnapshot(_overridePage);
@@ -783,7 +804,7 @@ async function toolNavigate(url: string): Promise<string> {
   // Interactive path: navigate via BrowserView (always works).
   const result = await managerNavigate(targetUrl);
   if (!result.success) {
-    return `Failed to navigate to ${targetUrl}: ${result.error || 'unknown error'}`;
+    return `Failed to navigate to ${targetUrl}: ${result.error || 'unknown error'}. ${diagnoseNavError(result.error, targetUrl)}`;
   }
 
   // Wait for BrowserView to finish loading (event-driven, up to 3s timeout).
@@ -1240,6 +1261,10 @@ const VISUAL_TAB_BLOCKLIST = new Set([
 
 function shouldShowVisualTab(url: string): boolean {
   try {
+    // In unrestricted mode, allow all domains in visual tabs
+    const autonomyMode = (store.get('autonomyMode') as string) || 'guided';
+    if (autonomyMode === 'unrestricted') return true;
+
     const hostname = new URL(url).hostname.toLowerCase();
     // Check exact match and parent domain
     if (VISUAL_TAB_BLOCKLIST.has(hostname)) return false;

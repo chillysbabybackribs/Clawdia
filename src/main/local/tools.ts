@@ -340,7 +340,7 @@ export const LOCAL_TOOL_DEFINITIONS: LocalToolDefinition[] = [
   {
     name: 'shell_exec',
     description:
-      'Execute a shell command on the local system. Has full access to filesystem, network, installed programs, system utilities, and can launch GUI desktop applications (use & to background them). Examples: open files with xdg-open, launch apps like firefox, code, gimp, or any installed program.',
+      'Execute a shell command on the local system. Has full access to filesystem, network, installed programs, and system utilities. Can launch GUI desktop applications (use & to background them). NEVER use this to open URLs — use browser_navigate instead. URLs opened via xdg-open/firefox/chrome will be blocked.',
     input_schema: {
       type: 'object',
       properties: {
@@ -507,17 +507,102 @@ export async function executeLocalTool(
   }
 }
 
+/**
+ * Block commands that would open a URL in the system browser.
+ * Matches: xdg-open <url>, firefox <url>, google-chrome <url>, open <url> (macOS), etc.
+ * Also blocks CLIs known to auto-open browsers (vercel, netlify, gh auth login, npm login, etc.)
+ * unless BROWSER=none is set.
+ */
+const BROWSER_OPEN_RE = /(?:^|\s|&&|\|\||;)\s*(?:xdg-open|sensible-browser|gnome-open|kde-open|x-www-browser)\s+https?:\/\//i;
+const BROWSER_BIN_URL_RE = /(?:^|\s|&&|\|\||;)\s*(?:firefox|google-chrome(?:-stable)?|chromium(?:-browser)?|brave-browser|microsoft-edge|opera|safari|open)\s+https?:\/\//i;
+// CLIs that auto-open a system browser for OAuth/verification unless we suppress it
+const BROWSER_SPAWNING_CMDS = /(?:^|\s|&&|\|\||;)\s*(?:vercel(?:\s|$)|netlify\s+(?:login|init|deploy)|gh\s+auth\s+login|npm\s+login|npm\s+adduser|npx\s+vercel)/i;
+
+function sanitizeShellCommand(command: string): string {
+  // Inject BROWSER=none prefix for CLIs that auto-open browsers.
+  // This env var is respected by xdg-open, vercel, netlify, gh, etc.
+  if (BROWSER_SPAWNING_CMDS.test(command)) {
+    return `BROWSER=none ${command}`;
+  }
+  return command;
+}
+
+/** Map common exit codes + stderr patterns to actionable hints for the LLM. */
+function diagnoseExitCode(code: number, output: string, command: string): string | null {
+  const lower = output.toLowerCase();
+  // Exit 127: command not found
+  if (code === 127) {
+    const cmd = command.trim().split(/\s+/)[0];
+    return `"${cmd}" is not installed. Install it first (e.g. sudo apt-get install ${cmd}) or use a different approach.`;
+  }
+  // Exit 126: permission denied on executable
+  if (code === 126) return 'Permission denied — the file is not executable. Try chmod +x or run with bash.';
+  // Exit 1: generic — narrow with stderr patterns
+  if (code === 1) {
+    if (lower.includes('permission denied')) return 'Permission denied. Try with sudo or check file ownership.';
+    if (lower.includes('no such file or directory')) return 'Path does not exist. Verify the path with ls first.';
+    if (lower.includes('connection refused') || lower.includes('econnrefused')) return 'Connection refused — the service may not be running. Check with systemctl or start the service.';
+    if (lower.includes('already exists')) return 'Resource already exists. Check current state before creating/overwriting.';
+    if (lower.includes('not found') && lower.includes('npm')) return 'npm package or script not found. Check package.json scripts with cat package.json.';
+  }
+  // Exit 2: misuse of shell command
+  if (code === 2) {
+    if (lower.includes('no such file')) return 'File not found. Verify the path exists.';
+    return 'Invalid command syntax or missing argument. Check the command usage.';
+  }
+  // Exit 128+N: killed by signal
+  if (code > 128 && code <= 192) {
+    const sig = code - 128;
+    if (sig === 9) return 'Process was killed (SIGKILL) — likely OOM or manual kill.';
+    if (sig === 15) return 'Process was terminated (SIGTERM).';
+    if (sig === 11) return 'Segmentation fault (SIGSEGV) — the program crashed.';
+  }
+  // Network tool specific
+  if (lower.includes('could not resolve host') || lower.includes('err_name_not_resolved'))
+    return 'Domain not found. Check the URL spelling.';
+  if (lower.includes('ssl') && (lower.includes('error') || lower.includes('certificate')))
+    return 'SSL/TLS error. The site may have an invalid certificate or require a different protocol.';
+  if (lower.includes('401') || lower.includes('unauthorized'))
+    return 'Authentication required. You may need to log in or provide credentials.';
+  if (lower.includes('403') || lower.includes('forbidden'))
+    return 'Access forbidden. The server rejected the request — try a different approach or check permissions.';
+  if (lower.includes('404') || lower.includes('not found'))
+    return 'Resource not found (404). Verify the URL or path is correct.';
+  return null;
+}
+
+function isExternalBrowserCommand(command: string): string | null {
+  if (BROWSER_OPEN_RE.test(command)) {
+    return 'Use browser_navigate instead of xdg-open for URLs. All browsing must stay inside the embedded browser.';
+  }
+  if (BROWSER_BIN_URL_RE.test(command)) {
+    return 'Do not open URLs in external browsers (firefox, chrome, etc.). Use browser_navigate to open URLs inside the app.';
+  }
+  return null;
+}
+
 export async function toolShellExec(input: {
   command: string;
   working_directory?: string;
   timeout?: number;
 }, context?: LocalToolExecutionContext): Promise<string> {
+  const rawCommand = String(input?.command || '');
+
+  // Block commands that would open a URL in an external browser
+  const browserBlock = isExternalBrowserCommand(rawCommand);
+  if (browserBlock) {
+    return `[Blocked] ${browserBlock}`;
+  }
+
+  // Sanitize commands that spawn browsers for OAuth (add BROWSER=none)
+  const command = sanitizeShellCommand(rawCommand);
+
   const cwd = input?.working_directory || homedir();
   const timeoutMs = input?.timeout === 0 ? 0 : (input?.timeout || 30) * 1000;
 
   try {
     const { stdout, stderr } = await runInPersistentShell(
-      String(input?.command || ''),
+      command,
       cwd,
       timeoutMs,
       context?.onOutput,
@@ -544,9 +629,12 @@ export async function toolShellExec(input: {
     if (err?.stderr) output += (output ? '\n\n[stderr]\n' : '[stderr]\n') + err.stderr;
 
     if (err?.killed) {
-      output += `\n\n[Process killed - timeout after ${input?.timeout || 30}s]`;
+      output += `\n\n[Process killed - timeout after ${input?.timeout || 30}s. Hint: increase timeout param or simplify the command]`;
     } else if (typeof err?.code !== 'undefined') {
       output += `\n\n[Exit code: ${err.code}]`;
+      // Add actionable hints for common exit codes
+      const hint = diagnoseExitCode(err.code, output, rawCommand);
+      if (hint) output += `\n[Hint: ${hint}]`;
     } else {
       output += `\n\n[Error: ${err?.message || 'unknown error'}]`;
     }

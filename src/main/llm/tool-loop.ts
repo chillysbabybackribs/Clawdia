@@ -80,10 +80,12 @@ const KEEP_FULL_TOOL_RESULTS = 4; // keep last N tool_result messages uncompress
 const LOCAL_TOOL_NAMES = new Set(LOCAL_TOOL_DEFINITIONS.map((tool) => tool.name));
 import { VAULT_TOOL_DEFINITIONS, executeVaultTool } from '../vault/tools';
 import { TASK_TOOL_DEFINITIONS, executeTaskTool } from '../tasks/task-tools';
+import { ARCHIVE_TOOL_DEFINITIONS, executeArchiveTool } from '../archive/tools';
 
-const ALL_TOOLS = [...BROWSER_TOOL_DEFINITIONS, ...LOCAL_TOOL_DEFINITIONS, SEQUENTIAL_THINKING_TOOL_DEFINITION, ...VAULT_TOOL_DEFINITIONS, ...TASK_TOOL_DEFINITIONS];
+const ALL_TOOLS = [...BROWSER_TOOL_DEFINITIONS, ...LOCAL_TOOL_DEFINITIONS, SEQUENTIAL_THINKING_TOOL_DEFINITION, ...VAULT_TOOL_DEFINITIONS, ...TASK_TOOL_DEFINITIONS, ...ARCHIVE_TOOL_DEFINITIONS];
 const VAULT_TOOL_NAMES = new Set(VAULT_TOOL_DEFINITIONS.map(t => t.name));
 const TASK_TOOL_NAMES = new Set(TASK_TOOL_DEFINITIONS.map(t => t.name));
+const ARCHIVE_TOOL_NAMES = new Set(ARCHIVE_TOOL_DEFINITIONS.map(t => t.name));
 
 const LOCAL_WRITE_TOOL_NAMES = new Set(['file_write', 'file_edit']);
 
@@ -209,6 +211,10 @@ async function executeTool_deprecated(
 
   if (TASK_TOOL_NAMES.has(name)) {
     return executeTaskTool(name, input);
+  }
+
+  if (ARCHIVE_TOOL_NAMES.has(name)) {
+    return executeArchiveTool(name, input);
   }
 
   if (LOCAL_TOOL_NAMES.has(name)) {
@@ -585,6 +591,10 @@ async function executeTool(
     return executeTaskTool(name, input);
   }
 
+  if (ARCHIVE_TOOL_NAMES.has(name)) {
+    return executeArchiveTool(name, input);
+  }
+
   if (LOCAL_TOOL_NAMES.has(name)) {
     return executeLocalTool(name, input, context);
   }
@@ -716,6 +726,13 @@ export class ToolLoop {
   private activityLog: ToolActivityEntry[] = [];
   /** True if any visible text was streamed to the renderer in this run. */
   private hasStreamedText = false;
+  /** Tracks consecutive failures per tool+target to detect repeated errors. */
+  private failureTracker = new Map<string, { count: number; lastError: string }>();
+
+  // ---- Heartbeat: keeps thinking indicator alive during long runs ----
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private currentPhase: 'api-calling' | 'tools-running' | 'synthesizing' = 'api-calling';
+  private heartbeatCycleIndex = 0;
 
   /**
    * Isolated Playwright Page for headless task execution.
@@ -751,11 +768,59 @@ export class ToolLoop {
 
   abort(): void {
     this.aborted = true;
+    this.stopHeartbeat();
     this.abortController?.abort();
     for (const ctrl of this.activeTools) {
       ctrl.abort();
     }
     this.activeTools.clear();
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeatCycleIndex = 0;
+    this.heartbeatTimer = setInterval(() => {
+      if (this.aborted || this.emitter.isDestroyed()) {
+        this.stopHeartbeat();
+        return;
+      }
+      const elapsedSec = Math.round((performance.now() - this.runStartedAt) / 1000);
+      const apiMessages = [
+        'Thinking...',
+        'Analyzing...',
+        'Working through this...',
+        'Processing...',
+      ];
+      const toolMessages = [
+        'Running tools...',
+        'Working...',
+        'Executing tasks...',
+        'Making progress...',
+      ];
+      const synthMessages = [
+        'Putting it together...',
+        'Reviewing findings...',
+        'Synthesizing...',
+        'Wrapping up...',
+      ];
+      let pool: string[];
+      switch (this.currentPhase) {
+        case 'api-calling': pool = apiMessages; break;
+        case 'tools-running': pool = toolMessages; break;
+        case 'synthesizing': pool = synthMessages; break;
+      }
+      const base = pool[this.heartbeatCycleIndex % pool.length];
+      const suffix = elapsedSec > 10 ? ` (${elapsedSec}s)` : '';
+      this.emitThinking(base + suffix);
+      this.heartbeatCycleIndex++;
+    }, 12_000);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer !== null) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
   }
 
   async run(
@@ -776,6 +841,7 @@ export class ToolLoop {
     this.documentProgressEnabled = looksLikeDocumentRequest(userMessage);
     this.activityLog = [];
     this.hasStreamedText = false;
+    this.failureTracker.clear();
     // Only manage session invalidation for interactive loops (no isolatedPage).
     // Headless loops with isolated pages don't share the BrowserView CDP session.
     if (!this._isolatedPage) {
@@ -784,6 +850,8 @@ export class ToolLoop {
     this.thinkingState.reset(); // Fresh per-instance thinking state
     resetSequentialThinking(); // Also reset legacy global state for interactive loops
     this.emitThinking(generateSynthesisThought(0));
+    this.currentPhase = 'api-calling';
+    this.startHeartbeat();
     if (this.documentProgressEnabled) {
       this.emitDocProgress({
         stage: 'generating',
@@ -902,6 +970,7 @@ export class ToolLoop {
             const totalMs = performance.now() - totalStart;
             perfLog('media-extract', 'total', totalMs, { tool: 'yt-dlp', success: true });
             strategyCache.record(cacheKey, ['shell_exec'], 0, totalMs, true);
+            this.stopHeartbeat();
             this.emitThinking('');
             this.emitToolLoopComplete(1, totalMs, 0);
             return result;
@@ -943,6 +1012,7 @@ export class ToolLoop {
             });
             const totalMs = performance.now() - totalStart;
             strategyCache.record(cacheKey, ['shell_exec'], 0, totalMs, true);
+            this.stopHeartbeat();
             this.emitThinking('');
             this.emitToolLoopComplete(1, totalMs, 0);
             return result;
@@ -1023,6 +1093,7 @@ export class ToolLoop {
           );
         } else {
           const text = await this.forceFinalResponseAtToolLimit(messages, systemPrompt, systemDynamic);
+          this.stopHeartbeat();
           this.emitThinking('');
           this.emitToolActivitySummary(text);
           const totalMs = performance.now() - totalStart; log.info(`Total wall time: ${totalMs.toFixed(0)}ms, iterations: ${iteration + 1}, toolCalls: ${toolCallCount}`); perfLog("tool-loop", "total-wall-time", totalMs, { iterations: iteration + 1, toolCalls: toolCallCount });
@@ -1058,10 +1129,10 @@ export class ToolLoop {
           let filteredTools = ALL_TOOLS as typeof ALL_TOOLS;
           if (toolClass === 'browser') {
             const ALWAYS_INCLUDE_LOCAL = new Set(['create_document']);
-            filteredTools = ALL_TOOLS.filter(t => !LOCAL_TOOL_NAMES.has(t.name) || t.name === 'shell_exec' || ALWAYS_INCLUDE_LOCAL.has(t.name) || TASK_TOOL_NAMES.has(t.name));
+            filteredTools = ALL_TOOLS.filter(t => !LOCAL_TOOL_NAMES.has(t.name) || t.name === 'shell_exec' || ALWAYS_INCLUDE_LOCAL.has(t.name) || TASK_TOOL_NAMES.has(t.name) || ARCHIVE_TOOL_NAMES.has(t.name));
             log.info(`Intent router: browser-only — ${filteredTools.length} tools (skipped ${ALL_TOOLS.length - filteredTools.length} local, kept task tools)`);
           } else if (toolClass === 'local') {
-            filteredTools = ALL_TOOLS.filter(t => LOCAL_TOOL_NAMES.has(t.name) || t.name === 'sequential_thinking' || TASK_TOOL_NAMES.has(t.name));
+            filteredTools = ALL_TOOLS.filter(t => LOCAL_TOOL_NAMES.has(t.name) || t.name === 'sequential_thinking' || TASK_TOOL_NAMES.has(t.name) || ARCHIVE_TOOL_NAMES.has(t.name));
             log.info(`Intent router: local-only — ${filteredTools.length} tools (skipped ${ALL_TOOLS.length - filteredTools.length} browser, kept task tools)`);
           }
 
@@ -1104,6 +1175,7 @@ export class ToolLoop {
 
       // First pass keeps a full budget for quality; intermediate tool loops stay small for speed.
       const maxTokens = this.getMaxTokens(tools.length > 0, toolCallCount);
+      this.currentPhase = 'api-calling';
       this.abortController = new AbortController();
       const apiStart = performance.now();
       let response;
@@ -1132,7 +1204,7 @@ export class ToolLoop {
               'file_read', 'directory_tree', 'process_manager',
               'browser_search', 'browser_news', 'browser_shopping',
               'browser_places', 'browser_images', 'browser_search_rich',
-              'cache_read', 'sequential_thinking',
+              'cache_read', 'sequential_thinking', 'memory_search',
             ]);
             if (SPECULATIVE_SAFE.has(toolUse.name)) {
               log.debug(`Speculative exec starting: ${toolUse.name} (id=${toolUse.id})`);
@@ -1146,6 +1218,7 @@ export class ToolLoop {
         // AbortError from AbortController — user cancelled
         if (err?.name === 'AbortError' || err?.name === 'APIUserAbortError' || this.aborted) {
           log.info('API call aborted by user');
+          this.stopHeartbeat();
           this.emitThinking('');
           return '[Stopped]';
         }
@@ -1199,6 +1272,7 @@ export class ToolLoop {
         maxTokens,
       });
       if (this.aborted) {
+        this.stopHeartbeat();
         this.emitThinking('');
         if (interceptor.documentOpen) {
           this.enqueue(() => closeLiveHtml());
@@ -1302,6 +1376,7 @@ export class ToolLoop {
           this.streamed = true;
         }
 
+        this.stopHeartbeat();
         this.emitThinking('');
         const finalText = finalResponseParts.join('\n').trim();
         this.emitToolActivitySummary(finalText);
@@ -1340,8 +1415,10 @@ export class ToolLoop {
 
       // Build execution tasks, handling search dedup inline
       const execTasks: ExecutionTask[] = [];
+      const currentAutonomyMode = (store.get('autonomyMode') as string) || 'guided';
       for (const toolCall of toolCalls) {
         if (
+          currentAutonomyMode !== 'unrestricted' &&
           enriched.strategy.archetype === 'media-extract' &&
           MEDIA_EXTRACT_FORBIDDEN_BROWSER_TOOLS.has(toolCall.name)
         ) {
@@ -1352,6 +1429,7 @@ export class ToolLoop {
           continue;
         }
         if (
+          currentAutonomyMode !== 'unrestricted' &&
           toolCall.name === 'shell_exec' &&
           enriched.strategy.archetype === 'media-extract'
         ) {
@@ -1416,6 +1494,7 @@ export class ToolLoop {
         this.emitThinking(generateThought(execTasks[0].toolCall.name, execTasks[0].toolCall.input));
       }
 
+      this.currentPhase = 'tools-running';
       const toolsStart = performance.now();
       const results = await this.executeToolsParallel(execTasks);
       const toolsBatchMs = performance.now() - toolsStart;
@@ -1423,17 +1502,36 @@ export class ToolLoop {
       perfLog('tool-loop', `tools-batch-iter-${iteration + 1}`, toolsBatchMs, { count: toolCalls.length });
 
       if (this.aborted) {
+        this.stopHeartbeat();
         this.emitThinking('');
         return '[Stopped]';
       }
 
       const resultMap = new Map(results.map((r) => [r.id, r.content]));
+      let errorNudge: string | null = null;
       for (const toolCall of toolCalls) {
         const rawResult = resultMap.get(toolCall.id);
         let resultContent = (rawResult && rawResult.trim() !== '') ? rawResult : 'Tool execution failed';
         const recorded = this.activityLog.find((e) => e.id === toolCall.id);
-        if (recorded?.status === 'error') {
-          toolFailures += 1;
+        if (recorded?.status === 'error' || recorded?.status === 'warning') {
+          if (recorded?.status === 'error') toolFailures += 1;
+
+          // Track repeated failures per tool+target to inject recovery guidance
+          const target = String(toolCall.input?.command || toolCall.input?.url || toolCall.input?.query || '').slice(0, 80);
+          const failKey = `${toolCall.name}:${target}`;
+          const existing = this.failureTracker.get(failKey);
+          const count = (existing?.count || 0) + 1;
+          this.failureTracker.set(failKey, { count, lastError: resultContent.slice(0, 200) });
+
+          if (count === 2) {
+            errorNudge = `[System] The tool "${toolCall.name}" has failed twice on a similar target. Consider a different approach — use a different tool, change the URL/command, or simplify the request.`;
+          } else if (count >= 3) {
+            errorNudge = `[System] "${toolCall.name}" has failed ${count} times on a similar target. This is likely a structural issue, not a transient one. STOP retrying the same approach. Try: (1) a completely different tool, (2) break the task into smaller steps, (3) verify the target exists first with a simpler check, or (4) report what you found so far and ask the user for guidance.`;
+          }
+        } else {
+          // Clear failure tracker on success for this tool
+          const target = String(toolCall.input?.command || toolCall.input?.url || toolCall.input?.query || '').slice(0, 80);
+          this.failureTracker.delete(`${toolCall.name}:${target}`);
         }
 
         if (
@@ -1564,6 +1662,7 @@ export class ToolLoop {
         }
       }
 
+      this.currentPhase = 'synthesizing';
       this.emitThinking(generateSynthesisThought(toolCallCount));
       // Guard: never push an empty tool_results array — would cause empty content error
       if (toolResults.length > 0) {
@@ -1572,11 +1671,18 @@ export class ToolLoop {
         log.warn('[SANITIZE] No tool results to push — adding placeholder');
         messages.push(makeMessage('user', '[All tool results were empty]'));
       }
+
+      // Inject error recovery nudge after tool results so the LLM sees it
+      if (errorNudge) {
+        log.info(`[ErrorRecovery] Injecting nudge: ${errorNudge.slice(0, 100)}`);
+        messages.push(makeMessage('user', errorNudge));
+      }
     }
 
     // Iteration limit reached — force a final response
     log.warn(`Iteration limit (${maxIterations}) reached, toolCalls: ${toolCallCount}`);
     const text = await this.forceFinalResponseAtToolLimit(messages, systemPrompt, systemDynamic);
+    this.stopHeartbeat();
     this.emitThinking('');
     this.emitToolActivitySummary(text);
     const totalMsMax = performance.now() - totalStart;

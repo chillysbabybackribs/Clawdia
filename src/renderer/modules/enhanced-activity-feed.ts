@@ -106,10 +106,10 @@ function summarizeArgs(args: Record<string, unknown>): string {
 function iconForStatus(status: StepStatus): string {
   if (status === 'success') return '›';
   if (status === 'warning') return '›';
-  if (status === 'error') return '×';
+  if (status === 'error') return '↻';
   if (status === 'skipped') return '·';
   if (status === 'blocked') return '‖';
-  if (status === 'denied') return '×';
+  if (status === 'denied') return '·';
   return '›';
 }
 
@@ -228,21 +228,23 @@ class EnhancedActivityFeed {
       const statusLabels = {
         running: 'running',
         success: 'done',
-        failed: 'failed',
+        failed: 'trying another angle',
         blocked: 'awaiting approval',
-        denied: 'denied'
+        denied: 'skipped'
       };
       statusTextEl.textContent = statusLabels[this.pipelineStatus];
-      this.pipelineHeader.className = `pipeline-header pipeline-header--${this.pipelineStatus}`;
+      // Map 'failed' to 'retry' CSS class for softer styling
+      const cssStatus = this.pipelineStatus === 'failed' ? 'retry' : this.pipelineStatus;
+      this.pipelineHeader.className = `pipeline-header pipeline-header--${cssStatus}`;
     }
 
     if (statusIconEl) {
       const icons = {
         running: '▸',
         success: '—',
-        failed: '×',
+        failed: '↻',
         blocked: '‖',
-        denied: '×'
+        denied: '·'
       };
       statusIconEl.textContent = icons[this.pipelineStatus];
     }

@@ -13,6 +13,7 @@ import { AnthropicClient } from './client';
 import { maybeExtractMemories, flushBeforePrune } from '../learning';
 import { incrementSessionMessageCount } from '../dashboard/persistence';
 import { usageTracker } from '../usage-tracker';
+import { archiveMessage } from '../archive/writer';
 import type { ToolLoopEmitter, DocumentAttachment, DocumentMeta, ImageAttachment } from '../../shared/types';
 import type { ApprovalDecision, ApprovalRequest } from '../../shared/autonomy';
 
@@ -155,6 +156,25 @@ export async function processChatMessage(
       role: 'assistant',
       content: response || '[No response]',
     });
+
+    // 4c-2. Archive messages permanently (fire-and-forget, never breaks pipeline)
+    try {
+      const convTitle = conversationManager.get(conversation.id)?.title || 'New Chat';
+      archiveMessage(conversation.id, convTitle, {
+        id: messageId,
+        role: 'user',
+        content: message || '[Empty message]',
+        createdAt: new Date().toISOString(),
+        hasImages: !!(images && images.length > 0),
+        hasDocuments: !!(documents && documents.length > 0),
+      });
+      archiveMessage(conversation.id, convTitle, {
+        id: randomUUID(),
+        role: 'assistant',
+        content: response || '[No response]',
+        createdAt: new Date().toISOString(),
+      });
+    } catch (_) { /* never break chat pipeline */ }
 
     // 4d. Extract learnings from the updated conversation
     const updatedConversation = conversationManager.get(conversation.id);
