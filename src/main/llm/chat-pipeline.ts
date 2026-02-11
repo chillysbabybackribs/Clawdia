@@ -13,8 +13,23 @@ import { AnthropicClient } from './client';
 import { maybeExtractMemories, flushBeforePrune } from '../learning';
 import { incrementSessionMessageCount } from '../dashboard/persistence';
 import { usageTracker } from '../usage-tracker';
+import { TracingEmitter } from './tracing-emitter';
+import { ExecutorRunner } from '../tasks/executor-runner';
+import { generateExecutor } from '../tasks/executor-generator';
+import {
+    lookupInteractiveExecutor,
+    saveInteractiveExecutor,
+    updateInteractiveExecutorStats,
+} from './interactive-executor-store';
+import { estimateExecutorCost } from '../tasks/cost-estimator';
+import { classifyEnriched } from './intent-router';
+import { strategyCache, type CacheKey } from './strategy-cache';
+import { IPC_EVENTS } from '../../shared/ipc-channels';
+import { createLogger } from '../logger';
 import type { ToolLoopEmitter, DocumentAttachment, DocumentMeta, ImageAttachment } from '../../shared/types';
 import type { ApprovalDecision, ApprovalRequest } from '../../shared/autonomy';
+
+const log = createLogger('chat-pipeline');
 
 export interface ChatPipelineOptions {
   /** The user's message text. */
@@ -105,11 +120,6 @@ export async function processChatMessage(
     conversation = conversationManager.create();
   }
 
-  // 2. Create ToolLoop
-  const loop = new ToolLoop(emitter, client);
-  onToolLoopCreated?.(loop);
-  incrementSessionMessageCount();
-
   // Convert DocumentAttachment[] to DocumentMeta[] for storage (strip extracted text)
   const documentMetas: DocumentMeta[] | undefined = documents?.map((d) => ({
     filename: d.filename,
@@ -124,19 +134,115 @@ export async function processChatMessage(
   const history = conversation.messages;
 
   try {
-    // 3. Run the tool loop (contains ALL pipeline logic)
-    const response = await usageTracker.runWithConversation(conversation.id, () =>
-      loop.run(message, history, images, documents, {
-        conversationId: conversation.id,
-        messageId,
-        requestApproval: options.requestApproval,
-      })
-    );
+    // 2. Wrap emitter in TracingEmitter to capture execution traces
+    const tracingEmitter = new TracingEmitter(emitter);
 
-    // 4a. Transport-specific response handling
-    onResponse?.(response, loop);
+    // 3. Build archetype cache key for executor lookup/save
+    const enriched = classifyEnriched(message, history.map(m => ({
+      role: m.role,
+      content: typeof m.content === 'string' ? m.content : '',
+    })), undefined);
+    const cacheKey: CacheKey = {
+      archetype: enriched.strategy.archetype,
+      primaryHost: enriched.strategy.extractedParams.url
+        ? (() => { try { return new URL(enriched.strategy.extractedParams.url as string).hostname.replace(/^www\./, ''); } catch { return null; } })()
+        : null,
+      toolClass: enriched.toolClass,
+    };
 
-    // 4b. Pre-prune flush: extract memories from messages about to be deleted
+    // 4. Check for cached executor (only for tool-intent requests with known archetype)
+    let response: string | null = null;
+
+    if (enriched.intent === 'tools' && enriched.strategy.archetype !== 'unknown') {
+      const cachedStrategy = strategyCache.lookup(cacheKey);
+      if (cachedStrategy) {
+        const executor = lookupInteractiveExecutor(cacheKey, cachedStrategy.toolSequence);
+        if (executor) {
+          log.info(`[Pipeline] Found interactive executor v${executor.version} for ${cacheKey.archetype}|${cacheKey.primaryHost}`);
+          try {
+            const runner = new ExecutorRunner(client);
+            const execResult = await runner.run(executor);
+
+            if (execResult.success && execResult.result) {
+              response = execResult.result;
+              const costSaved = 0.12 - estimateExecutorCost(executor);
+              updateInteractiveExecutorStats(executor.id, true, costSaved);
+              emitter.send(IPC_EVENTS.CHAT_EXECUTOR_USED, {
+                executorVersion: executor.version,
+                costSaved: costSaved.toFixed(4),
+                stepsReplayed: executor.stats.total_steps,
+              });
+              log.info(`[Pipeline] Executor v${executor.version} succeeded, saved ~$${costSaved.toFixed(4)}`);
+            } else {
+              log.warn(`[Pipeline] Executor v${executor.version} failed at step ${execResult.failedAt}, falling back to LLM`);
+              updateInteractiveExecutorStats(executor.id, false, 0);
+            }
+          } catch (err: any) {
+            log.warn(`[Pipeline] Executor error: ${err?.message}, falling back to LLM`);
+          }
+        }
+      }
+    }
+
+    // 5. Normal LLM path if executor didn't handle it
+    if (!response) {
+      const loop = new ToolLoop(tracingEmitter, client);
+      onToolLoopCreated?.(loop);
+      incrementSessionMessageCount();
+
+      response = await usageTracker.runWithConversation(conversation.id, () =>
+        loop.run(message, history, images, documents, {
+          conversationId: conversation.id,
+          messageId,
+          requestApproval: options.requestApproval,
+        })
+      );
+
+      onResponse?.(response, loop);
+
+      // 6. Generate executor from trace (fire-and-forget, non-critical)
+      try {
+        const trace = tracingEmitter.getExecutionTrace();
+        const toolSeq = tracingEmitter.getToolSequence();
+        if (trace.length > 0 && toolSeq.length > 0) {
+          const syntheticTask = {
+            id: 'interactive',
+            description: message.slice(0, 200),
+            triggerType: 'scheduled' as const,
+            triggerConfig: null,
+            executionPlan: '{}',
+            status: 'active' as const,
+            approvalMode: 'auto' as const,
+            allowedTools: '[]',
+            maxIterations: 30,
+            model: null,
+            tokenBudget: 50000,
+            createdAt: Math.floor(Date.now() / 1000),
+            updatedAt: Math.floor(Date.now() / 1000),
+            lastRunAt: null,
+            nextRunAt: null,
+            runCount: 0,
+            failureCount: 0,
+            maxFailures: 3,
+            conversationId: conversation.id,
+            metadataJson: '{}',
+          };
+          const newExecutor = generateExecutor(syntheticTask, trace, messageId);
+          if (newExecutor && newExecutor.stats.deterministic_steps > 0) {
+            saveInteractiveExecutor(cacheKey, toolSeq, newExecutor);
+            log.info(`[Pipeline] Generated interactive executor: ${newExecutor.stats.deterministic_steps} deterministic, ${newExecutor.stats.llm_steps} LLM steps`);
+          }
+        }
+      } catch (genErr: any) {
+        log.warn(`[Pipeline] Failed to generate interactive executor: ${genErr?.message}`);
+      }
+    } else {
+      // Executor path: signal loop created/destroyed and count message
+      onToolLoopCreated?.(null);
+      incrementSessionMessageCount();
+    }
+
+    // 7a. Pre-prune flush: extract memories from messages about to be deleted
     const currentMsgs = conversationManager.get(conversation.id)?.messages || [];
     const willPruneCount = (currentMsgs.length + 2) - ConversationManager.getMaxPersistedMessages();
     if (willPruneCount > 0) {
@@ -144,7 +250,7 @@ export async function processChatMessage(
       flushBeforePrune(conversation.id, doomed, client).catch(() => { });
     }
 
-    // 4c. Save messages to conversation history
+    // 7b. Save messages to conversation history
     conversationManager.addMessage(conversation.id, {
       role: 'user',
       content: message || '[Empty message]',
@@ -156,13 +262,13 @@ export async function processChatMessage(
       content: response || '[No response]',
     });
 
-    // 4d. Extract learnings from the updated conversation
+    // 7c. Extract learnings from the updated conversation
     const updatedConversation = conversationManager.get(conversation.id);
     if (updatedConversation) {
       maybeExtractMemories(conversation.id, updatedConversation.messages, client);
     }
 
-    // 4e. Transport-specific post-save notification
+    // 7d. Transport-specific post-save notification
     onConversationUpdated?.(conversation.id);
 
     return { conversationId: conversation.id, response };
