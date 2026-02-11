@@ -135,7 +135,8 @@ CREATE TABLE IF NOT EXISTS task_runs (
     input_tokens INTEGER DEFAULT 0,
     output_tokens INTEGER DEFAULT 0,
     error_message TEXT,
-    trigger_source TEXT NOT NULL DEFAULT 'scheduled' CHECK(trigger_source IN ('scheduled', 'condition', 'manual', 'system'))
+    trigger_source TEXT NOT NULL DEFAULT 'scheduled' CHECK(trigger_source IN ('scheduled', 'condition', 'manual', 'system')),
+    run_source TEXT CHECK(run_source IN ('full_llm', 'executor'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id);
@@ -157,3 +158,25 @@ CREATE TABLE IF NOT EXISTS task_executors (
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_executors_task ON task_executors(task_id);
+
+-- 10. INTERACTIVE EXECUTOR CACHE
+-- Caches executors for interactive LLM calls, keyed by archetype+host+toolSequence hash.
+-- Separate from task_executors which are keyed by task_id for scheduled tasks.
+CREATE TABLE IF NOT EXISTS interactive_executors (
+    id TEXT PRIMARY KEY,
+    cache_key_hash TEXT NOT NULL,
+    cache_key_json TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    executor_json TEXT NOT NULL,
+    success_count INTEGER DEFAULT 0,
+    failure_count INTEGER DEFAULT 0,
+    total_cost_saved REAL DEFAULT 0,
+    last_used_at INTEGER,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    superseded_at INTEGER
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_interactive_executors_key
+    ON interactive_executors(cache_key_hash) WHERE superseded_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_interactive_executors_used
+    ON interactive_executors(last_used_at);

@@ -14,6 +14,9 @@ import type {
 
 const log = createLogger('executor-runner');
 
+const RETRY_BACKOFF_MS = 1000;
+const MAX_ATTEMPTS = 2;
+
 /**
  * Runs a cached TaskExecutor WITHOUT the full LLM tool loop.
  * Steps through the executor's steps array sequentially, routing
@@ -44,22 +47,39 @@ export class ExecutorRunner {
                 }
             }
 
-            try {
-                const result = await this.executeStep(step, i, totalSteps);
+            let lastError: any = null;
+            let stepSucceeded = false;
 
-                // Check expect conditions if present
-                if ('expect' in step && step.expect && !this.checkExpect(step.expect, result)) {
-                    log.warn(`[Executor] Step ${i + 1}/${totalSteps}: ${this.stepLabel(step)} — expect condition failed`);
-                    return { success: false, failedAt: i, reason: 'expect_failed' };
-                }
+            for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+                try {
+                    const result = await this.executeStep(step, i, totalSteps);
 
-                // Store result if step has store_as
-                if ('store_as' in step && step.store_as) {
-                    this.variables.set(step.store_as, result);
+                    // Check expect conditions if present
+                    if ('expect' in step && step.expect && !this.checkExpect(step.expect, result)) {
+                        log.warn(`[Executor] Step ${i + 1}/${totalSteps}: ${this.stepLabel(step)} — expect condition failed`);
+                        return { success: false, failedAt: i, reason: 'expect_failed' };
+                    }
+
+                    // Store result if step has store_as
+                    if ('store_as' in step && step.store_as) {
+                        this.variables.set(step.store_as, result);
+                    }
+
+                    stepSucceeded = true;
+                    break;
+                } catch (error: any) {
+                    lastError = error;
+                    if (attempt < MAX_ATTEMPTS) {
+                        log.warn(`[Executor] Step ${i + 1}/${totalSteps}: ${this.stepLabel(step)} — attempt ${attempt} failed: ${error?.message || error}, retrying in ${RETRY_BACKOFF_MS}ms`);
+                        await sleep(RETRY_BACKOFF_MS);
+                    } else {
+                        log.error(`[Executor] Step ${i + 1}/${totalSteps}: ${this.stepLabel(step)} — error: ${error?.message || error}`);
+                    }
                 }
-            } catch (error: any) {
-                log.error(`[Executor] Step ${i + 1}/${totalSteps}: ${this.stepLabel(step)} — error: ${error?.message || error}`);
-                return { success: false, failedAt: i, reason: 'step_error', error };
+            }
+
+            if (!stepSucceeded) {
+                return { success: false, failedAt: i, reason: 'step_error', error: lastError };
             }
         }
 
@@ -208,4 +228,8 @@ export class ExecutorRunner {
             case 'result': return 'result';
         }
     }
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
 }

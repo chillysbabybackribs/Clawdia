@@ -166,6 +166,7 @@ export const IPC_EVENTS = {
   CHAT_UPDATED: 'chat:updated',
   API_USAGE_WARNING: 'api:usage:warning',
   CHAT_ROUTE_INFO: 'chat:route:info',
+  CHAT_EXECUTOR_USED: 'chat:executor:used',
   CHAT_TOOL_LIMIT_REACHED: 'chat:tool-limit:reached',
 
   // Browser state

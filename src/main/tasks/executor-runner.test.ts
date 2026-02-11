@@ -151,9 +151,12 @@ describe('ExecutorRunner', () => {
         expect(secondCall[1].url).toBe('Navigated to https://example.com/page2');
     });
 
-    it('returns failure when a tool throws', async () => {
+    it('returns failure when a tool throws (after retry exhaustion)', async () => {
         const { executeTool } = await import('../browser/tools');
-        (executeTool as any).mockRejectedValueOnce(new Error('Selector not found'));
+        // Both attempts must fail to exhaust retries
+        (executeTool as any)
+            .mockRejectedValueOnce(new Error('Selector not found'))
+            .mockRejectedValueOnce(new Error('Selector not found'));
 
         const executor = makeExecutor([
             { type: 'tool', tool_name: 'browser_navigate', tool_input: { url: 'https://broken.com' } },
@@ -292,5 +295,54 @@ describe('ExecutorRunner', () => {
 
         expect(result.success).toBe(false);
         expect(result.reason).toBe('expect_failed');
+    });
+});
+
+describe('ExecutorRunner retry logic', () => {
+    let client: ReturnType<typeof makeMockClient>;
+
+    beforeEach(() => {
+        client = makeMockClient();
+        vi.clearAllMocks();
+    });
+
+    it('retries a failed step once before succeeding', async () => {
+        const { executeTool } = await import('../browser/tools');
+
+        // First call fails, second call (retry) succeeds via default mock
+        (executeTool as any).mockRejectedValueOnce(new Error('Transient network error'));
+
+        const executor = makeExecutor([
+            { type: 'tool', tool_name: 'browser_navigate', tool_input: { url: 'https://example.com' }, store_as: 'nav' },
+            { type: 'result', template: '{{nav}}' },
+        ]);
+
+        const runner = new ExecutorRunner(client);
+        const result = await runner.run(executor);
+
+        expect(result.success).toBe(true);
+        // executeTool should have been called twice for the first step (1 failure + 1 retry success)
+        expect(executeTool).toHaveBeenCalledTimes(2);
+    });
+
+    it('aborts after retry exhaustion (2 failures)', async () => {
+        const { executeTool } = await import('../browser/tools');
+
+        // Both attempts fail
+        (executeTool as any)
+            .mockRejectedValueOnce(new Error('Persistent failure'))
+            .mockRejectedValueOnce(new Error('Persistent failure'));
+
+        const executor = makeExecutor([
+            { type: 'tool', tool_name: 'browser_navigate', tool_input: { url: 'https://broken.com' } },
+            { type: 'tool', tool_name: 'browser_read_page', tool_input: {} },
+        ]);
+
+        const runner = new ExecutorRunner(client);
+        const result = await runner.run(executor);
+
+        expect(result.success).toBe(false);
+        expect(result.failedAt).toBe(0);
+        expect(result.reason).toBe('step_error');
     });
 });
