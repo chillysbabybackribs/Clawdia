@@ -4,10 +4,12 @@ import * as fs from 'fs/promises';
 import { homedir } from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
+import { createLogger } from '../logger';
 import { createDocument, type LlmGenerationMetrics } from '../documents/creator';
 import type { DocProgressEvent } from '../../shared/types';
 
 const execAsync = promisify(exec);
+const log = createLogger('local-tools');
 
 // ---------------------------------------------------------------------------
 // Directory tree cache — avoids repeated fs.readdir+stat walks for the same path.
@@ -61,8 +63,9 @@ function getOrCreateShell(): PersistentShell {
     try { persistentShell.proc.kill(); } catch { /* ignore */ }
   }
 
-  const proc = spawn('/bin/bash', ['--norc', '--noprofile', '-i'], {
+  const proc = spawn('/bin/bash', ['--norc', '--noprofile'], {
     stdio: ['pipe', 'pipe', 'pipe'],
+    detached: true, // Start in a new process group
     env: {
       ...process.env,
       HOME: homedir(),
@@ -75,6 +78,13 @@ function getOrCreateShell(): PersistentShell {
   });
 
   persistentShell = { proc, busy: false, ready: true };
+
+  proc.stdin!.on('error', (err: any) => {
+    log.error(`Persistent shell stdin error: ${err.message}`);
+    if (persistentShell?.proc === proc) {
+      persistentShell = null;
+    }
+  });
 
   proc.on('exit', () => {
     if (persistentShell?.proc === proc) {
@@ -89,24 +99,15 @@ function runInPersistentShell(
   command: string,
   cwd: string,
   timeoutMs: number,
+  onOutput?: (chunk: string) => void,
+  signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const shell = getOrCreateShell();
 
     if (shell.busy) {
-      // Fall back to execAsync if shell is busy (concurrent calls)
-      execAsync(command, {
-        cwd,
-        timeout: timeoutMs || undefined,
-        maxBuffer: 10 * 1024 * 1024,
-        shell: '/bin/bash',
-        env: {
-          ...process.env,
-          HOME: homedir(),
-          PATH: process.env.PATH,
-          TERM: 'xterm-256color',
-        },
-      }).then(resolve).catch(reject);
+      // Fall back to standalone spawn if shell is busy (concurrent calls)
+      runStandaloneCommand(command, cwd, timeoutMs, onOutput, signal).then(resolve).catch(reject);
       return;
     }
 
@@ -131,16 +132,41 @@ function runInPersistentShell(
       resolve({ stdout, stderr });
     };
 
+    const abortHandler = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      // Kill the shell process group to ensure children are gone
+      if (shell.proc.pid) {
+        try {
+          if (process.platform !== 'win32') {
+            process.kill(-shell.proc.pid, 'SIGINT');
+          } else {
+            shell.proc.kill();
+          }
+        } catch { /* ignore */ }
+      }
+      // Force kill shell wrapper to ensure clean slate for next command
+      try { process.kill(shell.proc.pid!); } catch { }
+      persistentShell = null;
+      reject(new Error('Command aborted by user'));
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        abortHandler();
+        return;
+      }
+      signal.addEventListener('abort', abortHandler);
+    }
+
     const onStdout = (data: Buffer) => {
       const text = data.toString();
+      if (onOutput) onOutput(text.replace(SHELL_SENTINEL, ''));
+
       if (text.includes(SHELL_SENTINEL)) {
-        // Extract everything before sentinel, strip the echo line
         const parts = text.split(SHELL_SENTINEL);
-        const before = parts[0] || '';
-        // Remove the echo command line itself from output
-        const lines = before.split('\n');
-        const filtered = lines.filter(l => !l.includes('echo') || !l.includes(SHELL_SENTINEL));
-        stdout += filtered.join('\n');
+        stdout += parts[0] || '';
         finish();
       } else {
         stdout += text;
@@ -148,7 +174,9 @@ function runInPersistentShell(
     };
 
     const onStderr = (data: Buffer) => {
-      stderr += data.toString();
+      const text = data.toString();
+      if (onOutput) onOutput(text);
+      stderr += text;
     };
 
     shell.proc.stdout!.on('data', onStdout);
@@ -159,6 +187,19 @@ function runInPersistentShell(
         if (!settled) {
           settled = true;
           cleanup();
+          // Kill the shell process group on timeout
+          if (shell.proc.pid) {
+            try {
+              if (process.platform !== 'win32') {
+                process.kill(-shell.proc.pid, 'SIGINT');
+              } else {
+                shell.proc.kill();
+              }
+            } catch { /* ignore */ }
+          }
+          // Force new shell
+          try { process.kill(shell.proc.pid!); } catch { }
+          persistentShell = null;
           reject({ killed: true, stdout, stderr, message: `Timeout after ${timeoutMs}ms` });
         }
       }, timeoutMs);
@@ -166,7 +207,117 @@ function runInPersistentShell(
 
     // Send command + sentinel marker
     const fullCmd = `cd ${shellSingleQuote(cwd)} 2>/dev/null; ${command}\necho "${SHELL_SENTINEL}"\n`;
-    shell.proc.stdin!.write(fullCmd);
+    try {
+      shell.proc.stdin!.write(fullCmd);
+    } catch (err: any) {
+      shell.busy = false;
+      reject(err);
+    }
+  });
+}
+
+function runStandaloneCommand(
+  command: string,
+  cwd: string,
+  timeoutMs: number,
+  onOutput?: (chunk: string) => void,
+  signal?: AbortSignal,
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const proc = spawn('/bin/bash', ['-c', command], {
+      cwd,
+      detached: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        HOME: homedir(),
+        PATH: process.env.PATH,
+        TERM: 'xterm-256color',
+      },
+    });
+
+    const cleanup = () => {
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (signal) signal.removeEventListener('abort', abortHandler);
+    };
+
+    const abortHandler = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (proc.pid) {
+        try {
+          if (process.platform !== 'win32') {
+            process.kill(-proc.pid, 'SIGINT');
+          } else {
+            proc.kill();
+          }
+        } catch { /* ignore */ }
+      }
+      reject(new Error('Command aborted by user'));
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        abortHandler();
+        return;
+      }
+      signal.addEventListener('abort', abortHandler);
+    }
+
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          if (proc.pid) {
+            try {
+              if (process.platform !== 'win32') {
+                process.kill(-proc.pid, 'SIGINT');
+              } else {
+                proc.kill();
+              }
+            } catch { /* ignore */ }
+          }
+          reject({ killed: true, stdout, stderr, message: `Timeout after ${timeoutMs}ms` });
+        }
+      }, timeoutMs);
+    }
+
+    proc.stdout!.on('data', (data) => {
+      const text = data.toString();
+      if (onOutput) onOutput(text);
+      stdout += text;
+    });
+
+    proc.stderr!.on('data', (data) => {
+      const text = data.toString();
+      if (onOutput) onOutput(text);
+      stderr += text;
+    });
+
+    proc.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        reject({ code, stdout, stderr, message: `Exit code: ${code}` });
+      }
+    });
+
+    proc.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject({ stdout, stderr, message: err.message });
+    });
   });
 }
 
@@ -181,6 +332,8 @@ export interface LocalToolExecutionContext {
   messageId?: string;
   llmMetrics?: LlmGenerationMetrics;
   onDocProgress?: (event: DocProgressEvent) => void;
+  onOutput?: (chunk: string) => void;
+  signal?: AbortSignal;
 }
 
 export const LOCAL_TOOL_DEFINITIONS: LocalToolDefinition[] = [
@@ -336,7 +489,7 @@ export async function executeLocalTool(
 ): Promise<string> {
   switch (toolName) {
     case 'shell_exec':
-      return toolShellExec(input);
+      return toolShellExec(input, context);
     case 'file_read':
       return toolFileRead(input);
     case 'file_write':
@@ -354,11 +507,11 @@ export async function executeLocalTool(
   }
 }
 
-async function toolShellExec(input: {
+export async function toolShellExec(input: {
   command: string;
   working_directory?: string;
   timeout?: number;
-}): Promise<string> {
+}, context?: LocalToolExecutionContext): Promise<string> {
   const cwd = input?.working_directory || homedir();
   const timeoutMs = input?.timeout === 0 ? 0 : (input?.timeout || 30) * 1000;
 
@@ -367,6 +520,8 @@ async function toolShellExec(input: {
       String(input?.command || ''),
       cwd,
       timeoutMs,
+      context?.onOutput,
+      context?.signal,
     );
 
     let output = '';
@@ -650,8 +805,8 @@ async function toolProcessManager(input: {
         const { stdout: cmdline } = await execAsync(`ps -p ${pid} -o command= 2>/dev/null`, { timeout: 3000 });
         const cmd = (cmdline || '').toLowerCase();
         if (cmd.includes('electron') && cmd.includes('clawdia') ||
-            cmd.includes('concurrently') ||
-            (cmd.includes('node') && cmd.includes('clawdia'))) {
+          cmd.includes('concurrently') ||
+          (cmd.includes('node') && cmd.includes('clawdia'))) {
           return `[BLOCKED: PID ${pid} appears to be part of the Clawdia process tree. Refusing to kill.]`;
         }
       } catch {

@@ -1,7 +1,7 @@
 import { homedir } from 'os';
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import { execSync } from 'child_process';
+import { spawn } from 'child_process';
 import { createLogger } from '../../logger';
 
 const log = createLogger('ambient-fs');
@@ -47,18 +47,23 @@ function computeHeatScore(lastModifiedMs: number, filesChanged24h: number): numb
 // Platform-specific helpers
 // ---------------------------------------------------------------------------
 
-function shellExec(cmd: string): string | null {
-  try {
-    return execSync(cmd, { timeout: SHELL_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-  } catch {
-    return null;
-  }
+async function shellExec(cmd: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    let stdout = '';
+    const proc = spawn('/bin/bash', ['-c', cmd], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: SHELL_TIMEOUT_MS,
+    });
+    proc.stdout!.on('data', d => stdout += d.toString());
+    proc.on('close', () => resolve(stdout.trim() || null));
+    proc.on('error', () => resolve(null));
+  });
 }
 
 /** Get the most recent mtime of any file under `dir` (unix: find + stat). */
-function getLastModifiedUnix(dir: string): number | null {
+async function getLastModifiedUnix(dir: string): Promise<number | null> {
   // find the single most recently modified file and print its epoch mtime
-  const out = shellExec(
+  const out = await shellExec(
     `find ${JSON.stringify(dir)} -maxdepth 3 -not -path '*/node_modules/*' -not -path '*/.git/*' -type f -printf '%T@\\n' 2>/dev/null | sort -rn | head -1`
   );
   if (!out) return null;
@@ -67,8 +72,8 @@ function getLastModifiedUnix(dir: string): number | null {
 }
 
 /** Count files modified in the last 24 hours under `dir` (unix: find -mtime). */
-function getChurn24hUnix(dir: string): number | null {
-  const out = shellExec(
+async function getChurn24hUnix(dir: string): Promise<number | null> {
+  const out = await shellExec(
     `find ${JSON.stringify(dir)} -maxdepth 3 -not -path '*/node_modules/*' -not -path '*/.git/*' -type f -mtime -1 2>/dev/null | wc -l`
   );
   if (out === null) return null;
@@ -131,8 +136,8 @@ async function scanProject(projectPath: string, useShell: boolean): Promise<Proj
   let filesChangedLast24h: number;
 
   if (useShell) {
-    const lm = getLastModifiedUnix(projectPath);
-    const churn = getChurn24hUnix(projectPath);
+    const lm = await getLastModifiedUnix(projectPath);
+    const churn = await getChurn24hUnix(projectPath);
     // If shell failed, fall back to Node for this project
     if (lm === null || churn === null) {
       const stats = await walkStats(projectPath, 3);

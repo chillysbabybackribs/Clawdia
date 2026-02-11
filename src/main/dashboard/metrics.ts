@@ -1,4 +1,5 @@
-import { execSync } from 'child_process';
+import { spawn } from 'child_process';
+import { promisify } from 'util';
 import * as dns from 'dns';
 import type { SystemMetrics, ExtendedMetrics } from '../../shared/dashboard-types';
 import { createLogger } from '../logger';
@@ -19,18 +20,25 @@ const EMPTY_METRICS: SystemMetrics = {
   uptime: 'unknown',
 };
 
-function exec(cmd: string): string {
-  try {
-    return execSync(cmd, { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-  } catch {
-    return '';
-  }
+const sleep = promisify(setTimeout);
+
+async function exec(cmd: string): Promise<string> {
+  return new Promise((resolve) => {
+    let stdout = '';
+    const proc = spawn('/bin/bash', ['-c', cmd], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 5000,
+    });
+    proc.stdout!.on('data', d => stdout += d.toString());
+    proc.on('close', () => resolve(stdout.trim()));
+    proc.on('error', () => resolve(''));
+  });
 }
 
-function getCpu(): SystemMetrics['cpu'] {
-  const cores = parseInt(exec('nproc'), 10) || 1;
+async function getCpu(): Promise<SystemMetrics['cpu']> {
+  const cores = parseInt(await exec('nproc'), 10) || 1;
   // /proc/stat gives cumulative CPU ticks — take a 200ms sample
-  const raw1 = exec("head -1 /proc/stat");
+  const raw1 = await exec("head -1 /proc/stat");
   if (!raw1) return { usagePercent: 0, cores };
 
   const parse = (line: string) => {
@@ -41,8 +49,8 @@ function getCpu(): SystemMetrics['cpu'] {
   };
 
   const s1 = parse(raw1);
-  exec('sleep 0.2');
-  const raw2 = exec("head -1 /proc/stat");
+  await sleep(200);
+  const raw2 = await exec("head -1 /proc/stat");
   if (!raw2) return { usagePercent: 0, cores };
   const s2 = parse(raw2);
 
@@ -53,8 +61,8 @@ function getCpu(): SystemMetrics['cpu'] {
   return { usagePercent, cores };
 }
 
-function getMemory(): SystemMetrics['memory'] {
-  const raw = exec('free -m');
+async function getMemory(): Promise<SystemMetrics['memory']> {
+  const raw = await exec('free -m');
   if (!raw) return { totalMB: 0, usedMB: 0, usagePercent: 0 };
 
   const memLine = raw.split('\n').find(l => l.startsWith('Mem:'));
@@ -68,8 +76,8 @@ function getMemory(): SystemMetrics['memory'] {
   return { totalMB, usedMB, usagePercent };
 }
 
-function getDisk(): SystemMetrics['disk'] {
-  const raw = exec("df -BG / | tail -1");
+async function getDisk(): Promise<SystemMetrics['disk']> {
+  const raw = await exec("df -BG / | tail -1");
   if (!raw) return { totalGB: 0, usedGB: 0, usagePercent: 0, mountPoint: '/' };
 
   const parts = raw.split(/\s+/);
@@ -81,21 +89,21 @@ function getDisk(): SystemMetrics['disk'] {
   return { totalGB, usedGB, usagePercent, mountPoint };
 }
 
-function getBattery(): SystemMetrics['battery'] {
-  const capacityRaw = exec('cat /sys/class/power_supply/BAT0/capacity 2>/dev/null || cat /sys/class/power_supply/BAT1/capacity 2>/dev/null');
+async function getBattery(): Promise<SystemMetrics['battery']> {
+  const capacityRaw = await exec('cat /sys/class/power_supply/BAT0/capacity 2>/dev/null || cat /sys/class/power_supply/BAT1/capacity 2>/dev/null');
   if (!capacityRaw) return null;
 
   const percent = parseInt(capacityRaw, 10);
   if (isNaN(percent)) return null;
 
-  const statusRaw = exec('cat /sys/class/power_supply/BAT0/status 2>/dev/null || cat /sys/class/power_supply/BAT1/status 2>/dev/null');
+  const statusRaw = await exec('cat /sys/class/power_supply/BAT0/status 2>/dev/null || cat /sys/class/power_supply/BAT1/status 2>/dev/null');
   const charging = statusRaw.toLowerCase() === 'charging' || statusRaw.toLowerCase() === 'full';
 
   return { percent, charging };
 }
 
-function getTopProcesses(): SystemMetrics['topProcesses'] {
-  const raw = exec("ps aux --sort=-%cpu | head -6 | tail -5");
+async function getTopProcesses(): Promise<SystemMetrics['topProcesses']> {
+  const raw = await exec("ps aux --sort=-%cpu | head -6 | tail -5");
   if (!raw) return [];
 
   return raw.split('\n').map(line => {
@@ -107,25 +115,34 @@ function getTopProcesses(): SystemMetrics['topProcesses'] {
   }).filter(p => p.cpu > 0 || p.mem > 0);
 }
 
-function getUptime(): string {
-  const raw = exec('uptime -p');
+async function getUptime(): Promise<string> {
+  const raw = await exec('uptime -p');
   return raw.replace(/^up\s+/, '') || 'unknown';
 }
 
-export function collectMetrics(): SystemMetrics {
+export async function collectMetrics(): Promise<SystemMetrics> {
   if (process.platform !== 'linux') {
     log.warn('Metrics collection only supported on Linux');
     return { ...EMPTY_METRICS };
   }
 
   const start = Date.now();
+  const [cpu, memory, disk, battery, topProcesses, uptime] = await Promise.all([
+    getCpu(),
+    getMemory(),
+    getDisk(),
+    getBattery(),
+    getTopProcesses(),
+    getUptime(),
+  ]);
+
   const metrics: SystemMetrics = {
-    cpu: getCpu(),
-    memory: getMemory(),
-    disk: getDisk(),
-    battery: getBattery(),
-    topProcesses: getTopProcesses(),
-    uptime: getUptime(),
+    cpu,
+    memory,
+    disk,
+    battery,
+    topProcesses,
+    uptime,
   };
   log.debug(`Metrics collected in ${Date.now() - start}ms`);
   return metrics;
@@ -145,23 +162,23 @@ function getNetworkUp(): Promise<boolean> {
   });
 }
 
-function getProcessCount(): number {
-  const raw = exec('ps -e --no-headers | wc -l');
+async function getProcessCount(): Promise<number> {
+  const raw = await exec('ps -e --no-headers | wc -l');
   return parseInt(raw, 10) || 0;
 }
 
-function getGitMetrics(dir?: string): { uncommitted: number | null; hoursSinceCommit: number | null } {
+async function getGitMetrics(dir?: string): Promise<{ uncommitted: number | null; hoursSinceCommit: number | null }> {
   const cwd = dir || process.cwd();
   try {
     // Check if inside a git repo
-    execSync('git rev-parse --is-inside-work-tree', { cwd, encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] });
+    await exec(`git -C ${cwd} rev-parse --is-inside-work-tree`);
   } catch {
     return { uncommitted: null, hoursSinceCommit: null };
   }
 
   let uncommitted: number | null = null;
   try {
-    const raw = execSync('git status --porcelain', { cwd, encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    const raw = await exec(`git -C ${cwd} status --porcelain`);
     uncommitted = raw ? raw.split('\n').length : 0;
   } catch {
     uncommitted = null;
@@ -169,7 +186,7 @@ function getGitMetrics(dir?: string): { uncommitted: number | null; hoursSinceCo
 
   let hoursSinceCommit: number | null = null;
   try {
-    const raw = execSync('git log -1 --format=%ct', { cwd, encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    const raw = await exec(`git -C ${cwd} log -1 --format=%ct`);
     const ts = parseInt(raw, 10);
     if (!isNaN(ts)) {
       hoursSinceCommit = Math.round((Date.now() / 1000 - ts) / 3600 * 10) / 10;
@@ -181,9 +198,9 @@ function getGitMetrics(dir?: string): { uncommitted: number | null; hoursSinceCo
   return { uncommitted, hoursSinceCommit };
 }
 
-function getActiveProject(): string | null {
+async function getActiveProject(): Promise<string | null> {
   try {
-    const raw = execSync('git rev-parse --show-toplevel', { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    const raw = await exec('git rev-parse --show-toplevel');
     if (!raw) return null;
     // Return just the directory name
     return raw.split('/').pop() || null;
@@ -197,7 +214,13 @@ export interface ExtendedMetricsOpts {
 }
 
 export async function collectExtendedMetrics(opts: ExtendedMetricsOpts): Promise<ExtendedMetrics> {
-  const base = collectMetrics();
+  const [base, networkUp, gitMetrics, processCount, activeProject] = await Promise.all([
+    collectMetrics(),
+    getNetworkUp(),
+    getGitMetrics(),
+    getProcessCount(),
+    getActiveProject(),
+  ]);
 
   const cpuDelta = previousCpuPercent !== null
     ? base.cpu.usagePercent - previousCpuPercent
@@ -214,22 +237,17 @@ export async function collectExtendedMetrics(opts: ExtendedMetricsOpts): Promise
     ? Math.round((Date.now() - lastMsg) / 60_000)
     : null;
 
-  const [networkUp, gitMetrics] = await Promise.all([
-    getNetworkUp(),
-    Promise.resolve(getGitMetrics()),
-  ]);
-
   return {
     ...base,
     cpu_delta: cpuDelta,
     network_up: networkUp,
-    process_count: getProcessCount(),
+    process_count: processCount,
     hour: now.getHours(),
     minute: now.getMinutes(),
     day_of_week: dayOfWeek,
     session_duration_minutes: Math.round((Date.now() - APP_START) / 60_000),
     minutes_since_last_message: minutesSinceLastMessage,
-    active_project: getActiveProject(),
+    active_project: activeProject,
     git_uncommitted_changes: gitMetrics.uncommitted,
     git_hours_since_last_commit: gitMetrics.hoursSinceCommit,
   };

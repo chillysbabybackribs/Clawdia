@@ -4,7 +4,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { homedir, tmpdir } from 'os';
-import { execSync } from 'child_process';
+import { spawn } from 'child_process';
 import { session } from 'electron';
 import { createLogger } from '../logger';
 
@@ -75,7 +75,7 @@ function copyToTemp(sourcePath: string): string | null {
 
 let cachedDecryptionKey: Buffer | null = null;
 
-function getLinuxDecryptionKey(): Buffer | null {
+async function getLinuxDecryptionKey(): Promise<Buffer | null> {
     if (cachedDecryptionKey) return cachedDecryptionKey;
 
     let password = 'peanuts'; // Chromium default on Linux
@@ -88,7 +88,13 @@ function getLinuxDecryptionKey(): Buffer | null {
 
     for (const cmd of secretToolQueries) {
         try {
-            const result = execSync(cmd, { timeout: 5000, encoding: 'utf8' }).trim();
+            const result = await new Promise<string>((resolve, reject) => {
+                let stdout = '';
+                const proc = spawn('/bin/bash', ['-c', cmd], { timeout: 5000 });
+                proc.stdout.on('data', d => stdout += d.toString());
+                proc.on('close', code => code === 0 ? resolve(stdout.trim()) : reject(new Error(`Exit ${code}`)));
+                proc.on('error', reject);
+            });
             if (result) {
                 password = result;
                 log.info('[Cookie] Retrieved encryption key from GNOME Keyring');
@@ -109,7 +115,7 @@ function getLinuxDecryptionKey(): Buffer | null {
     }
 }
 
-function decryptCookieValue(encryptedValue: Buffer): string | null {
+async function decryptCookieValue(encryptedValue: Buffer): Promise<string | null> {
     if (!encryptedValue || encryptedValue.length === 0) return '';
 
     // Chrome prefixes encrypted values with 'v10' or 'v11'
@@ -126,7 +132,7 @@ function decryptCookieValue(encryptedValue: Buffer): string | null {
         return null;
     }
 
-    const key = getLinuxDecryptionKey();
+    const key = await getLinuxDecryptionKey();
     if (!key) return null;
 
     try {
@@ -151,7 +157,7 @@ function decryptCookieValue(encryptedValue: Buffer): string | null {
  * @param domain - The domain to import cookies for (e.g., "github.com")
  * @returns Array of decrypted cookies, or empty array on failure
  */
-export function importCookiesForDomain(domain: string): ImportedCookie[] {
+export async function importCookiesForDomain(domain: string): Promise<ImportedCookie[]> {
     const dbInfo = findCookieDb();
     if (!dbInfo) {
         log.info('[Cookie] No Chrome cookie database found');
@@ -191,7 +197,7 @@ export function importCookiesForDomain(domain: string): ImportedCookie[] {
         let decryptionFailures = 0;
 
         for (const row of rows) {
-            const value = decryptCookieValue(row.encrypted_value);
+            const value = await decryptCookieValue(row.encrypted_value);
             if (value === null) {
                 decryptionFailures++;
                 continue;

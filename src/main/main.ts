@@ -1466,7 +1466,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
     log.warn(`closeBrowser error during shutdown: ${err?.message}`);
   } finally {
     clearTimeout(shutdownTimer);
-    killOrphanedCDPProcesses();
+    await killOrphanedCDPProcesses();
     app.quit();
   }
 }

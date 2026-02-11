@@ -168,6 +168,12 @@ const api = {
     return () => ipcRenderer.removeListener(IPC_EVENTS.TOOL_STEP_PROGRESS, handler);
   },
 
+  onToolOutput: (callback: (data: { toolId: string; chunk: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on(IPC_EVENTS.TOOL_OUTPUT, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.TOOL_OUTPUT, handler);
+  },
+
   onToolLoopComplete: (callback: (payload: ToolLoopCompleteEvent) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: ToolLoopCompleteEvent) => callback(payload);
     ipcRenderer.on(IPC_EVENTS.TOOL_LOOP_COMPLETE, handler);

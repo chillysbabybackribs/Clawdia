@@ -164,6 +164,7 @@ function renderEntries(): void {
       </div>
       ${inputSummary ? `<div class="tool-activity-input">${escapeText(inputSummary)}</div>` : ''}
       ${entry.error ? `<div class="tool-activity-error">${escapeText(entry.error)}</div>` : ''}
+      ${entry.liveOutput && entry.status === 'running' ? `<div class="tool-activity-live-output">${escapeText(entry.liveOutput)}</div>` : ''}
       ${entry.resultPreview && entry.status === 'success' ? `<div class="tool-activity-result">${escapeText(entry.resultPreview.slice(0, 150))}${entry.resultPreview.length > 150 ? '...' : ''}</div>` : ''}
     `;
 
@@ -229,6 +230,11 @@ function handleToolActivity(entry: ToolActivityEntry): void {
   // Update or add entry
   const idx = currentEntries.findIndex(e => e.id === entry.id);
   if (idx >= 0) {
+    // Preserve live output if the incoming entry doesn't have it
+    const existing = currentEntries[idx];
+    if (!entry.liveOutput && existing.liveOutput) {
+      entry.liveOutput = existing.liveOutput;
+    }
     currentEntries[idx] = entry;
   } else {
     currentEntries.push(entry);
@@ -237,6 +243,18 @@ function handleToolActivity(entry: ToolActivityEntry): void {
   updateBadge();
   if (expanded) renderEntries();
   if (panelEl) panelEl.classList.remove('hidden');
+}
+
+function handleToolOutput(data: { toolId: string; chunk: string }): void {
+  const entry = currentEntries.find(e => e.id === data.toolId);
+  if (entry) {
+    entry.liveOutput = (entry.liveOutput || '') + data.chunk;
+    // Cap live output for UI performance
+    if (entry.liveOutput.length > 5000) {
+      entry.liveOutput = entry.liveOutput.slice(-5000);
+    }
+    if (expanded) renderEntries();
+  }
 }
 
 function handleToolActivitySummary(summary: ToolActivitySummary): void {
@@ -277,6 +295,7 @@ export function initToolActivity(): void {
 
   window.api.onToolActivity(handleToolActivity);
   window.api.onToolActivitySummary(handleToolActivitySummary);
+  window.api.onToolOutput(handleToolOutput);
 
   // Reset when a new message starts streaming
   window.api.onStreamText(() => {

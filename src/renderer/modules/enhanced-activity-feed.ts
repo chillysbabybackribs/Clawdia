@@ -1,7 +1,7 @@
 import { elements } from './state';
 import type { ApprovalRequest } from '../../shared/autonomy';
 
-type StepStatus = 'running' | 'success' | 'error' | 'skipped' | 'blocked';
+type StepStatus = 'running' | 'success' | 'error' | 'skipped' | 'blocked' | 'denied';
 
 interface StepRow {
   el: HTMLDivElement;
@@ -104,11 +104,12 @@ function summarizeArgs(args: Record<string, unknown>): string {
 }
 
 function iconForStatus(status: StepStatus): string {
-  if (status === 'success') return '✓';
-  if (status === 'error') return '✗';
+  if (status === 'success') return '›';
+  if (status === 'error') return '×';
   if (status === 'skipped') return '·';
-  if (status === 'blocked') return '⏸';
-  return '◌';
+  if (status === 'blocked') return '‖';
+  if (status === 'denied') return '×';
+  return '›';
 }
 
 function detectPhase(toolName: string, args: Record<string, unknown>): string {
@@ -151,7 +152,7 @@ class EnhancedActivityFeed {
   private failedSteps = 0;
   private verboseMode = false;
   private currentPhase: string | null = null;
-  private pipelineStatus: 'running' | 'success' | 'failed' | 'blocked' = 'running';
+  private pipelineStatus: 'running' | 'success' | 'failed' | 'blocked' | 'denied' = 'running';
   private currentApprovalRequest: ApprovalRequest | null = null;
 
   constructor(anchor: HTMLElement) {
@@ -207,11 +208,11 @@ class EnhancedActivityFeed {
     header.className = 'pipeline-header';
     header.innerHTML = `
       <div class="pipeline-status">
-        <span class="pipeline-status-icon">⚡</span>
-        <span class="pipeline-status-text">Running</span>
+        <span class="pipeline-status-icon">▸</span>
+        <span class="pipeline-status-text">running</span>
       </div>
       <div class="pipeline-progress">
-        <span class="pipeline-progress-text">Step 0/0</span>
+        <span class="pipeline-progress-text">0/0</span>
       </div>
     `;
     return header;
@@ -224,10 +225,11 @@ class EnhancedActivityFeed {
 
     if (statusTextEl) {
       const statusLabels = {
-        running: 'Running',
-        success: 'Succeeded',
-        failed: 'Failed',
-        blocked: 'Blocked'
+        running: 'running',
+        success: 'done',
+        failed: 'failed',
+        blocked: 'awaiting approval',
+        denied: 'denied'
       };
       statusTextEl.textContent = statusLabels[this.pipelineStatus];
       this.pipelineHeader.className = `pipeline-header pipeline-header--${this.pipelineStatus}`;
@@ -235,16 +237,17 @@ class EnhancedActivityFeed {
 
     if (statusIconEl) {
       const icons = {
-        running: '⚡',
-        success: '✓',
-        failed: '✗',
-        blocked: '⏸'
+        running: '▸',
+        success: '—',
+        failed: '×',
+        blocked: '‖',
+        denied: '×'
       };
       statusIconEl.textContent = icons[this.pipelineStatus];
     }
 
     if (progressTextEl) {
-      progressTextEl.textContent = `Step ${this.completedSteps}/${this.totalSteps}`;
+      progressTextEl.textContent = `${this.completedSteps}/${this.totalSteps}`;
     }
   }
 
@@ -303,13 +306,16 @@ class EnhancedActivityFeed {
     const phaseSteps = phase.steps.map(id => this.steps.get(id)).filter(Boolean) as StepRow[];
     const hasRunning = phaseSteps.some(s => s.status === 'running');
     const hasBlocked = phaseSteps.some(s => s.status === 'blocked');
+    const hasDenied = phaseSteps.some(s => s.status === 'denied');
     const hasFailed = phaseSteps.some(s => s.status === 'error');
-    const allComplete = phaseSteps.every(s => s.status === 'success' || s.status === 'error' || s.status === 'skipped');
+    const allComplete = phaseSteps.every(s => s.status === 'success' || s.status === 'error' || s.status === 'skipped' || s.status === 'denied');
 
     if (hasBlocked) {
       phase.status = 'blocked';
     } else if (hasRunning) {
       phase.status = 'running';
+    } else if (hasDenied) {
+      phase.status = 'denied';
     } else if (hasFailed) {
       phase.status = 'error';
     } else if (allComplete) {
@@ -322,7 +328,7 @@ class EnhancedActivityFeed {
     const statusEl = phase.headerEl.querySelector('.pipeline-phase-status');
     if (statusEl) {
       if (hasBlocked && this.currentApprovalRequest) {
-        statusEl.textContent = `Awaiting approval (${this.currentApprovalRequest.risk})`;
+        statusEl.textContent = 'Awaiting approval';
         statusEl.className = 'pipeline-phase-status pipeline-phase-status--blocked';
       } else {
         statusEl.textContent = '';
@@ -447,11 +453,30 @@ class EnhancedActivityFeed {
     }
 
     // Store stderr for error pattern detection
-    if (stderr) {
+    if (stderr && stderr.length > 0) {
       step.stderr = stderr;
       const actionCard = detectActionRequired(stderr);
       if (actionCard && !this.actionCards.has(actionCard.id)) {
         this.addActionRequiredCard(actionCard);
+      }
+
+      // Add collapsible technical details if there's stderr output
+      if (status === 'error' && !step.substeps) {
+        const detailsToggle = document.createElement('div');
+        detailsToggle.className = 'activity-feed__details-toggle';
+        detailsToggle.textContent = '▸ details';
+
+        const detailsContent = document.createElement('pre');
+        detailsContent.className = 'activity-feed__details-content hidden';
+        detailsContent.textContent = stderr.join('\n');
+
+        detailsToggle.addEventListener('click', () => {
+          const isHidden = detailsContent.classList.toggle('hidden');
+          detailsToggle.textContent = isHidden ? '▸ details' : '▾ details';
+        });
+
+        step.el.appendChild(detailsToggle);
+        step.el.appendChild(detailsContent);
       }
     }
 
@@ -554,19 +579,19 @@ class EnhancedActivityFeed {
         const logLine = document.createElement('div');
         logLine.className = 'approval-log-line';
         logLine.textContent = decision === 'DENY'
-          ? '❌ Denied by user'
+          ? '× denied'
           : decision === 'ALWAYS'
-            ? '✓ Always approved'
+            ? '› always approved'
             : decision === 'TASK'
-              ? '✓ Approved (For this task)'
-              : '✓ Approved (Approve once)';
+              ? '› approved (task)'
+              : '› approved (once)';
         phase.contentEl.appendChild(logLine);
       }
     }
 
-    // Resume or fail based on decision
+    // Resume or deny based on decision
     if (decision === 'DENY') {
-      this.pipelineStatus = 'failed';
+      this.pipelineStatus = 'denied';
     } else {
       this.pipelineStatus = 'running';
     }
@@ -574,8 +599,9 @@ class EnhancedActivityFeed {
     // Update all blocked steps
     for (const step of this.steps.values()) {
       if (step.status === 'blocked') {
-        step.status = decision === 'DENY' ? 'error' : 'running';
+        step.status = decision === 'DENY' ? 'denied' : 'running';
         step.el.classList.remove('activity-feed__step--blocked');
+        step.el.classList.toggle('activity-feed__step--denied', decision === 'DENY');
         const phaseName = detectPhase(step.toolName, step.args);
         this.updatePhaseStatus(phaseName);
       }
@@ -589,7 +615,7 @@ class EnhancedActivityFeed {
     cardEl.className = 'action-required-card';
     cardEl.innerHTML = `
       <div class="action-required-header">
-        <span class="action-required-icon">⚠️</span>
+        <span class="action-required-icon">!</span>
         <span class="action-required-title">${card.title}</span>
       </div>
       <div class="action-required-description">${card.description}</div>
@@ -627,7 +653,7 @@ class EnhancedActivityFeed {
     // Dismiss button
     const dismissBtn = document.createElement('button');
     dismissBtn.className = 'action-required-btn action-required-btn--dismiss';
-    dismissBtn.textContent = '✕';
+    dismissBtn.textContent = '×';
     dismissBtn.title = 'Dismiss';
     dismissBtn.addEventListener('click', () => {
       cardEl.remove();
@@ -652,9 +678,24 @@ class EnhancedActivityFeed {
   }
 
   complete(totalDuration: number): void {
-    if (this.failedSteps === 0 && this.pipelineStatus === 'running') {
-      this.pipelineStatus = 'success';
+    // Only mark as success if:
+    // 1. No failed steps
+    // 2. Pipeline is currently running (not blocked, denied, or failed)
+    // 3. At least one step actually completed successfully
+    const hasSuccessfulSteps = Array.from(this.steps.values()).some(s => s.status === 'success');
+
+    if (this.pipelineStatus === 'running') {
+      if (this.failedSteps === 0 && hasSuccessfulSteps) {
+        this.pipelineStatus = 'success';
+      } else if (!hasSuccessfulSteps) {
+        // No steps completed - likely all were skipped or cancelled
+        this.pipelineStatus = 'failed';
+      }
+    } else if (this.pipelineStatus === 'blocked') {
+      // If still blocked when completing, treat as incomplete
+      this.pipelineStatus = 'failed';
     }
+    // If pipelineStatus is already 'failed' or 'denied', keep it that way
 
     this.updatePipelineHeader();
 
@@ -692,7 +733,7 @@ export function initEnhancedActivityFeed(): void {
 
   window.api.onToolExecComplete((payload) => {
     if (!activeFeed) return;
-    activeFeed.updateStep(payload.toolId, payload.status, payload.duration, payload.summary);
+    activeFeed.updateStep(payload.toolId, payload.status, payload.duration, payload.summary, payload.stderr);
   });
 
   window.api.onToolStepProgress((payload) => {

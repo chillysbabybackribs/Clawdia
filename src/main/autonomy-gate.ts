@@ -15,14 +15,113 @@ const log = createLogger('autonomy-gate');
 // In-memory task approvals (cleared on app restart or new task)
 const taskApprovals = new Map<string, Set<RiskLevel>>();
 
+// ---------------------------------------------------------------------------
+// Shell command classification helpers
+// ---------------------------------------------------------------------------
+
+/** Read-only commands that never modify system state */
+const READ_ONLY_COMMANDS = new Set([
+    'ls', 'pwd', 'whoami', 'date', 'uname', 'id', 'echo',
+    'cat', 'head', 'tail', 'wc', 'stat', 'du', 'file',
+    'which', 'type', 'env', 'printenv', 'hostname', 'uptime',
+    'df', 'free', 'lsb_release', 'arch', 'nproc', 'basename',
+    'dirname', 'realpath', 'readlink', 'tee',
+]);
+
+/** Shell operators/chaining that could allow piping to destructive commands */
+const SHELL_OPERATOR_RE = /[|;&`]|&&|\|\||>>|>\s|<\s|\$\(|\$\{/;
+
+/** Sensitive paths that require approval even for reads */
+const SENSITIVE_PATH_PATTERNS = [
+    /~\/\.ssh\b/,
+    /~\/\.aws\b/,
+    /~\/\.gnupg\b/,
+    /~\/\.gpg\b/,
+    /~\/\.config\b/,
+    /\/\.ssh\//,
+    /\/\.aws\//,
+    /\/\.gnupg\//,
+    /\/\.config\//,
+    /\/\.mozilla\//,
+    /\/\.chrome\//,
+    /\/\.chromium\//,
+    /\/\.firefox\//,
+    /\/\.thunderbird\//,
+    /\.env\b/,
+    /credential/i,
+    /secret/i,
+    /token/i,
+    /api[_-]?key/i,
+    /password/i,
+    /\.pem\b/,
+    /\.key\b/,
+    /id_rsa\b/,
+    /id_ed25519\b/,
+    /id_ecdsa\b/,
+    /known_hosts\b/,
+    /authorized_keys\b/,
+];
+
+/**
+ * Extract the first executable token from a shell command (ignoring env var assignments).
+ * e.g. "FOO=bar ls -la" → "ls", "ls -la /home" → "ls"
+ */
+function extractFirstCommand(command: string): string {
+    const trimmed = command.trim();
+    // Skip leading env assignments like "FOO=bar BAZ=qux cmd ..."
+    const tokens = trimmed.split(/\s+/);
+    for (const tok of tokens) {
+        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) continue;
+        return tok.toLowerCase();
+    }
+    return '';
+}
+
+/** Check if `find` is used without destructive flags */
+function isSafeFind(command: string): boolean {
+    const lower = command.toLowerCase();
+    if (!/\bfind\b/.test(lower)) return false;
+    // Dangerous find flags
+    return !/-delete\b/.test(lower) && !/-exec\b/.test(lower) && !/-execdir\b/.test(lower);
+}
+
 /**
  * Classify a tool execution for risk.
  */
 export function classifyAction(tool: string, input: Record<string, unknown>): RiskClassification {
     // Shell rules
     if (tool === 'shell_exec') {
-        const command = String(input.command || '').toLowerCase();
+        const rawCommand = String(input.command || '');
+        const command = rawCommand.toLowerCase();
 
+        // 1. Check for sensitive path reads FIRST — takes priority over EXFIL
+        //    (e.g. "cat ~/.ssh/id_rsa" should be SENSITIVE_READ, not EXFIL)
+        if (SENSITIVE_PATH_PATTERNS.some(re => re.test(rawCommand))) {
+            return {
+                risk: 'SENSITIVE_READ',
+                reason: 'Accessing sensitive path (credentials, keys, or config).',
+                detail: rawCommand
+            };
+        }
+
+        // 2. Check EXFIL patterns — network tools only as first command token
+        const firstCmd = extractFirstCommand(rawCommand);
+        const EXFIL_COMMANDS = new Set([
+            'curl', 'wget', 'httpie', 'nc', 'ncat', 'scp', 'rsync',
+            'ssh', 'sftp', 'ftp', 'telnet',
+        ]);
+        // Also check for upload keywords anywhere
+        const EXFIL_KEYWORD_RE = /\bupload\b/;
+
+        if (EXFIL_COMMANDS.has(firstCmd) || EXFIL_KEYWORD_RE.test(command)) {
+            return {
+                risk: 'EXFIL',
+                reason: 'Network tool detected which could be used to exfiltrate data.',
+                detail: rawCommand
+            };
+        }
+
+        // 3. Check ELEVATED patterns (destructive/privileged)
         const ELEVATED_PATTERNS = [
             /\bsudo\b/,
             /\bapt(-get)?\b/,
@@ -31,43 +130,69 @@ export function classifyAction(tool: string, input: Record<string, unknown>): Ri
             /\bnpm\b/,
             /\byarn\b/,
             /\bpnpm\b/,
-            /\brm\b\s+(-r|--recursive)/,
+            /\brm\b/,
+            /\bmv\b/,
+            /\bcp\b/,
+            /\bmkdir\b/,
+            /\btouch\b/,
             /\bmkfs\b/,
             /\bdd\b/,
             /\bpasswd\b/,
             /\bchown\b/,
             /\bchmod\b/,
             /\bsystemctl\b/,
-            /\bsysctl\b/
-        ];
-
-        const EXFIL_PATTERNS = [
-            /\bcurl\b/,
-            /\bwget\b/,
-            /\bhttpie\b/,
-            /\bnc\b/,
-            /\bscp\b/,
-            /\brsync\b/,
-            /\bssh\b/,
-            /\bfp\b/,
-            /\bupload\b/
+            /\bsysctl\b/,
+            /\bkill\b/,
+            /\bkillall\b/,
+            /\bpkill\b/,
+            /\breboot\b/,
+            /\bshutdown\b/,
+            /\bservice\b/,
+            /\bmount\b/,
+            /\bumount\b/,
+            /\bfdisk\b/,
+            /\bparted\b/,
+            /\biptables\b/,
+            /\bufw\b/,
         ];
 
         if (ELEVATED_PATTERNS.some(re => re.test(command))) {
             return {
                 risk: 'ELEVATED',
                 reason: 'Sudo, package manager, or potentially destructive system command detected.',
-                detail: input.command as string
+                detail: rawCommand
             };
         }
 
-        if (EXFIL_PATTERNS.some(re => re.test(command))) {
+        // 4. Check for shell operators/chaining — these can bypass read-only classification
+        if (SHELL_OPERATOR_RE.test(rawCommand)) {
             return {
-                risk: 'EXFIL',
-                reason: 'Network tool detected which could be used to exfiltrate data.',
-                detail: input.command as string
+                risk: 'ELEVATED',
+                reason: 'Shell operators or command chaining detected. Requires approval for safety.',
+                detail: rawCommand
             };
         }
+
+        // 5. Read-only allowlist — must be a known safe command with no operators
+        if (READ_ONLY_COMMANDS.has(firstCmd) || (firstCmd === 'find' && isSafeFind(command))) {
+            return { risk: 'SAFE', reason: '', detail: '' };
+        }
+
+        // 6. Git read-only commands
+        if (firstCmd === 'git') {
+            const gitReadOps = ['status', 'log', 'diff', 'branch', 'show', 'remote', 'describe', 'rev-parse', 'ls-files', 'ls-tree', 'shortlog', 'tag', 'stash list'];
+            const gitSubCmd = command.replace(/^\s*git\s+/, '').split(/\s+/)[0];
+            if (gitReadOps.includes(gitSubCmd)) {
+                return { risk: 'SAFE', reason: '', detail: '' };
+            }
+        }
+
+        // 7. Unknown command — classify as ELEVATED to be safe
+        return {
+            risk: 'ELEVATED',
+            reason: 'Unrecognized command. Requires approval in safe mode.',
+            detail: rawCommand
+        };
     }
 
     // Browser rules
@@ -142,12 +267,12 @@ export async function shouldAuthorize(
     // Check enforcement rules
     let levelRequired = false;
     if (mode === 'safe') {
-        // Require approval for ELEVATED, EXFIL, SENSITIVE_DOMAIN
+        // Require approval for ELEVATED, EXFIL, SENSITIVE_DOMAIN, SENSITIVE_READ
         levelRequired = true;
     } else if (mode === 'guided') {
-        // Require approval for EXFIL and SENSITIVE_DOMAIN
+        // Require approval for EXFIL, SENSITIVE_DOMAIN, and SENSITIVE_READ
         // Allow ELEVATED automatically
-        if (classification.risk === 'EXFIL' || classification.risk === 'SENSITIVE_DOMAIN') {
+        if (classification.risk === 'EXFIL' || classification.risk === 'SENSITIVE_DOMAIN' || classification.risk === 'SENSITIVE_READ') {
             levelRequired = true;
         }
     }

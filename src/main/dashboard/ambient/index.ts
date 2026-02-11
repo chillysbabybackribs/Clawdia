@@ -93,7 +93,7 @@ export async function collectAmbientData(): Promise<AmbientData> {
   if (fsResult.status === 'fulfilled') {
     projects = fsResult.value?.projects ?? [];
     if (settings.gitScan && projects.length > 0) {
-      const gitScan = scanGitRepos(projects);
+      const gitScan = await scanGitRepos(projects);
       gitRepos = gitScan.repos;
     }
   } else {
@@ -144,7 +144,7 @@ export async function collectAmbientContext(): Promise<AmbientContext> {
     if (fsScan) {
       projectActivity = formatProjectActivity(fsScan);
       if (settings.gitScan) {
-        const gitScan = scanGitRepos(fsScan.projects);
+        const gitScan = await scanGitRepos(fsScan.projects);
         gitActivity = formatGitActivity(gitScan);
       }
     }

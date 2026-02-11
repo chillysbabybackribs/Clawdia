@@ -37,8 +37,8 @@ export function initStream(): void {
 
 export function setStreaming(streaming: boolean): void {
   appState.isStreaming = streaming;
-  elements.sendBtn.disabled = streaming;
-  elements.cancelBtn.disabled = !streaming;
+  elements.sendBtn.classList.toggle('hidden', streaming);
+  elements.cancelBtn.classList.toggle('hidden', !streaming);
   elements.promptEl.disabled = streaming;
 }
 

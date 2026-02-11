@@ -149,6 +149,7 @@ export const IPC_EVENTS = {
   TOOL_EXEC_START: 'chat:tool-exec:start',
   TOOL_EXEC_COMPLETE: 'chat:tool-exec:complete',
   TOOL_STEP_PROGRESS: 'chat:tool-exec:step-progress',
+  TOOL_OUTPUT: 'chat:tool-exec:output',
   TOOL_LOOP_COMPLETE: 'chat:tool-exec:loop-complete',
   TOKEN_USAGE_UPDATE: 'chat:token-usage:update',
   CHAT_ERROR: 'chat:error',

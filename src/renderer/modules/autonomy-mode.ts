@@ -92,7 +92,17 @@ export async function initAutonomyMode(): Promise<void> {
 function syncLabel(): void {
   if (!triggerEl) return;
   const opt = AUTONOMY_MODES.find((m) => m.id === currentMode);
-  triggerEl.textContent = opt ? opt.label : 'Guided';
+
+  if (currentMode === 'safe') {
+    triggerEl.textContent = '🛡 Safety: High';
+    triggerEl.title = 'All system-level changes require approval';
+  } else if (currentMode === 'unrestricted') {
+    triggerEl.textContent = '🔓 Unrestricted';
+    triggerEl.title = 'Full autonomy. All actions execute without confirmation.';
+  } else {
+    triggerEl.textContent = `🚀 ${opt ? opt.label : 'Guided'}`;
+    triggerEl.title = opt ? opt.description : 'Autonomy mode';
+  }
 }
 
 // ---------------------------------------------------------------------------

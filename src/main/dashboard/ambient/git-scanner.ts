@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { spawn } from 'child_process';
 import { createLogger } from '../../logger';
 import type { ProjectActivity } from './filesystem-scan';
 
@@ -34,26 +34,27 @@ export interface GitScanResult {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function gitExec(repoPath: string, args: string): string | null {
-  try {
-    return execSync(`git -C ${JSON.stringify(repoPath)} ${args}`, {
-      timeout: GIT_TIMEOUT_MS,
-      encoding: 'utf-8',
+async function gitExec(repoPath: string, args: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    let stdout = '';
+    const proc = spawn('git', ['-C', repoPath, ...args.split(' ').filter(a => a.length > 0)], {
       stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-  } catch {
-    return null;
-  }
+      timeout: GIT_TIMEOUT_MS,
+    });
+    proc.stdout!.on('data', d => stdout += d.toString());
+    proc.on('close', () => resolve(stdout.trim() || null));
+    proc.on('error', () => resolve(null));
+  });
 }
 
-function scanRepo(project: ProjectActivity): GitRepoStatus | null {
+async function scanRepo(project: ProjectActivity): Promise<GitRepoStatus | null> {
   const dir = project.fullPath;
 
   // Branch name
-  const branch = gitExec(dir, 'rev-parse --abbrev-ref HEAD') || 'unknown';
+  const branch = (await gitExec(dir, 'rev-parse --abbrev-ref HEAD')) || 'unknown';
 
   // Uncommitted changes (working tree + staged combined from porcelain)
-  const statusRaw = gitExec(dir, 'status --porcelain');
+  const statusRaw = await gitExec(dir, 'status --porcelain');
   let uncommittedCount = 0;
   let stagedCount = 0;
   if (statusRaw) {
@@ -70,14 +71,14 @@ function scanRepo(project: ProjectActivity): GitRepoStatus | null {
 
   // Unpushed commits — fails gracefully if no upstream
   let unpushedCount = 0;
-  const unpushedRaw = gitExec(dir, 'rev-list @{u}..HEAD --count 2>/dev/null');
+  const unpushedRaw = await gitExec(dir, 'rev-list @{u}..HEAD --count');
   if (unpushedRaw !== null) {
     const n = parseInt(unpushedRaw, 10);
     if (isFinite(n)) unpushedCount = n;
   }
 
   // Last commit info
-  const lastLogRaw = gitExec(dir, 'log -1 --format=%s%n%ct');
+  const lastLogRaw = await gitExec(dir, 'log -1 --format=%s%n%ct');
   let lastCommitMessage = '';
   let lastCommitTimestampMs = 0;
   if (lastLogRaw) {
@@ -94,7 +95,7 @@ function scanRepo(project: ProjectActivity): GitRepoStatus | null {
     : -1;
 
   // Recent 5 commits
-  const recentRaw = gitExec(dir, 'log -5 --format=%s|||%ct');
+  const recentRaw = await gitExec(dir, 'log -5 --format=%s|||%ct');
   const recentCommits: GitCommitInfo[] = [];
   if (recentRaw) {
     for (const line of recentRaw.split('\n')) {
@@ -126,7 +127,7 @@ function scanRepo(project: ProjectActivity): GitRepoStatus | null {
 // Main scanner
 // ---------------------------------------------------------------------------
 
-export function scanGitRepos(projects: ProjectActivity[]): GitScanResult {
+export async function scanGitRepos(projects: ProjectActivity[]): Promise<GitScanResult> {
   const t0 = Date.now();
   const errors: string[] = [];
   const repos: GitRepoStatus[] = [];
@@ -134,12 +135,13 @@ export function scanGitRepos(projects: ProjectActivity[]): GitScanResult {
   const gitProjects = projects.filter(p => p.hasGit);
   log.info(`[Ambient:Git] Scanning ${gitProjects.length} git repos out of ${projects.length} projects`);
 
-  for (const project of gitProjects) {
-    try {
-      const status = scanRepo(project);
-      if (status) repos.push(status);
-    } catch (err: any) {
-      errors.push(`${project.name}: ${err?.message || err}`);
+  const results = await Promise.allSettled(gitProjects.map(p => scanRepo(p)));
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    if (r.status === 'fulfilled' && r.value) {
+      repos.push(r.value);
+    } else if (r.status === 'rejected') {
+      errors.push(`${gitProjects[i].name}: ${r.reason?.message || r.reason}`);
     }
   }
 

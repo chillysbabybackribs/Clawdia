@@ -16,17 +16,17 @@ export const AUTONOMY_MODES: AutonomyModeOption[] = [
   {
     id: 'safe',
     label: 'Safe',
-    description: 'Asks before installs, sudo, exfiltration, sensitive sites.',
+    description: 'All system-level changes require approval.',
   },
   {
     id: 'guided',
     label: 'Guided',
-    description: 'Runs most actions; asks for exfiltration + sensitive sites.',
+    description: 'Most actions run automatically. Sensitive operations require approval.',
   },
   {
     id: 'unrestricted',
     label: 'Unrestricted',
-    description: 'No guardrails. Full autonomy. You accept the risk.',
+    description: 'Full autonomy. All actions execute without confirmation.',
   },
 ];
 
@@ -34,7 +34,7 @@ export const AUTONOMY_MODES: AutonomyModeOption[] = [
 // RISK CLASSIFICATION
 // ============================================================================
 
-export type RiskLevel = 'SAFE' | 'ELEVATED' | 'EXFIL' | 'SENSITIVE_DOMAIN';
+export type RiskLevel = 'SAFE' | 'ELEVATED' | 'EXFIL' | 'SENSITIVE_DOMAIN' | 'SENSITIVE_READ';
 
 export interface RiskClassification {
   risk: RiskLevel;

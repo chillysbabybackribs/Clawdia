@@ -10,7 +10,7 @@ import { pathToFileURL } from 'url';
 import { homedir } from 'os';
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import { execSync } from 'child_process';
+import { spawn } from 'child_process';
 import { createLogger } from '../logger';
 import { withTimeout, withSoftTimeout } from '../utils/timeout';
 import { handleValidated, ipcSchemas } from '../ipc-validator';
@@ -692,18 +692,25 @@ export function stopSessionReaper(): void {
  * Kill orphaned processes on CDP ports from a prior crashed session.
  * Skips our own CDP port to avoid self-killing.
  */
-export function killOrphanedCDPProcesses(): void {
+export async function killOrphanedCDPProcesses(): Promise<void> {
   const ownPort = cdpPort();
   const candidates = [9222, 9223, 9224, 9225, 9226, 9227];
+
+  const execPromise = (cmd: string) => new Promise<void>((resolve, reject) => {
+    const proc = spawn('/bin/bash', ['-c', cmd], { stdio: 'ignore' });
+    proc.on('close', code => code === 0 ? resolve() : reject());
+    proc.on('error', reject);
+  });
+
   for (const port of candidates) {
     if (port === ownPort) continue; // Don't kill our own process
     try {
-      execSync(`ss -tln | grep -qE ':${port}\\b'`, { stdio: 'ignore' });
+      await execPromise(`ss -tln | grep -qE ':${port}\\b'`);
       log.info(`Killing orphaned process on CDP port ${port}`);
       // Send SIGTERM first for graceful shutdown; fall back to SIGKILL
-      execSync(`fuser -TERM ${port}/tcp 2>/dev/null || fuser -k ${port}/tcp 2>/dev/null || true`, { stdio: 'ignore' });
+      await execPromise(`fuser -TERM ${port}/tcp 2>/dev/null || fuser -k ${port}/tcp 2>/dev/null || true`);
     } catch {
-      // Port not in use — nothing to clean up
+      // Port not in use or command failed — nothing to clean up
     }
   }
 }

@@ -86,6 +86,7 @@ export interface ToolExecCompleteEvent {
   status: 'success' | 'error';
   duration: number;
   summary: string;
+  stderr?: string[];
 }
 
 export interface ToolStepProgressEvent {
@@ -129,6 +130,7 @@ export interface ToolActivityEntry {
   completedAt?: number;
   durationMs?: number;
   resultPreview?: string;
+  liveOutput?: string;
   error?: string;
 }
 

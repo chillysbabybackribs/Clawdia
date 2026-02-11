@@ -684,6 +684,7 @@ export class ToolLoop {
   private earlyToolQueue: Promise<void> = Promise.resolve();
   /** Holds stream-started tool execution promises keyed by tool_use id. */
   private earlyToolResults = new Map<string, Promise<string>>();
+  private activeTools = new Set<AbortController>();
   private runContext: ToolLoopRunContext | null = null;
   private runStartedAt = 0;
   private documentProgressEnabled = false;
@@ -727,6 +728,10 @@ export class ToolLoop {
   abort(): void {
     this.aborted = true;
     this.abortController?.abort();
+    for (const ctrl of this.activeTools) {
+      ctrl.abort();
+    }
+    this.activeTools.clear();
   }
 
   async run(
@@ -1534,6 +1539,11 @@ export class ToolLoop {
     });
   }
 
+  private emitToolOutput(toolId: string, chunk: string): void {
+    if (this.emitter.isDestroyed()) return;
+    this.emitter.send(IPC_EVENTS.TOOL_OUTPUT, { toolId, chunk });
+  }
+
   // -------------------------------------------------------------------------
   // Tool scheduling — parallel where safe, sequential where stateful
   // -------------------------------------------------------------------------
@@ -1580,10 +1590,14 @@ export class ToolLoop {
     }
 
     const tStart = performance.now();
+    const toolAbortController = new AbortController();
+    this.activeTools.add(toolAbortController);
 
     // --- AUTONOMY GATE CHECK ---
     const conversationId = this.runContext?.conversationId || 'default';
     const requestApproval = this.runContext?.requestApproval;
+    const autonomyMode = (store.get('autonomyMode') as string) || 'guided';
+
     if (requestApproval && !skip) {
       const auth = await shouldAuthorize(toolCall.name, toolCall.input, conversationId, requestApproval);
       if (!auth.allowed) {
@@ -1612,6 +1626,7 @@ export class ToolLoop {
           duration: 0,
           summary: denyMsg,
         });
+        this.activeTools.delete(toolAbortController);
         return { id: toolCall.id, content: `ERROR: ${denyMsg}` };
       }
     }
@@ -1633,11 +1648,80 @@ export class ToolLoop {
       timestamp: entry.startedAt,
     });
 
-    try {
+    // --- EXECUTION WITH TIMEOUT PROMPT ---
+    const executeOnce = async () => {
+      const localCtx = {
+        ...task.localContext,
+        onOutput: (chunk: string) => this.emitToolOutput(toolCall.id, chunk),
+        signal: toolAbortController.signal,
+      };
+
       const earlyStarted = this.earlyToolResults.get(toolCall.id);
-      let result = earlyStarted
-        ? await earlyStarted
-        : await executeTool(toolCall.name, toolCall.input, task.localContext, this._isolatedPage, this.thinkingState);
+      if (earlyStarted) {
+        this.earlyToolResults.delete(toolCall.id);
+        return await earlyStarted;
+      }
+
+      return await executeTool(toolCall.name, toolCall.input, localCtx, this._isolatedPage, this.thinkingState);
+    };
+
+    const defaultTimeoutSeconds = autonomyMode === 'unrestricted' ? 300 : 60;
+    const clientTimeoutSeconds = Number(toolCall.input?.timeout) || 0;
+    const timeoutMs = (clientTimeoutSeconds > 0 ? clientTimeoutSeconds : defaultTimeoutSeconds) * 1000;
+
+    let result: string;
+    let completed = false;
+
+    try {
+      const runWithPrompts = async (): Promise<string> => {
+        while (!completed) {
+          let timeoutId: any;
+          const execPromise = executeOnce().then(res => {
+            if (timeoutId) clearTimeout(timeoutId);
+            return res;
+          });
+          const timeoutPromise = new Promise<string>((resolve) => {
+            timeoutId = setTimeout(() => resolve('__CLAWDIA_TIMEOUT__'), timeoutMs);
+          });
+
+          const winner = await Promise.race([execPromise, timeoutPromise]);
+          if (winner === '__CLAWDIA_TIMEOUT__' && !completed) {
+            log.info(`Tool ${toolCall.name} (${toolCall.id}) still running after ${timeoutMs}ms`);
+            if (requestApproval) {
+              const decision = await requestApproval({
+                requestId: randomUUID(),
+                tool: toolCall.name,
+                risk: 'ELEVATED',
+                reason: 'Command is taking longer than expected.',
+                detail: `The command is still running after ${Math.round(timeoutMs / 1000)}s. Do you want to continue waiting or cancel it?`,
+                autonomyMode: autonomyMode as any,
+                createdAt: Date.now(),
+                expiresAt: Date.now() + 30000,
+              });
+
+              if (decision === 'APPROVE' || decision === 'TASK' || decision === 'ALWAYS') {
+                log.info(`User chose to continue ${toolCall.name}`);
+                // Loop again to wait another timeout period
+                continue;
+              } else {
+                log.info(`User chose to cancel ${toolCall.name}`);
+                toolAbortController.abort();
+                return '[Cancelled by user]';
+              }
+            } else {
+              // No approval solicitor — continue
+              continue;
+            }
+          } else {
+            completed = true;
+            return winner;
+          }
+        }
+        return '[Error in timeout loop]';
+      };
+
+      result = await runWithPrompts();
+      completed = true;
       // Guard: ensure tool result is never empty
       if (!result || result.trim() === '') {
         log.warn(`[SANITIZE] Tool ${toolCall.name} returned empty result — substituting placeholder`);
@@ -1656,34 +1740,58 @@ export class ToolLoop {
         result = result.slice(0, MAX_TOOL_RESULT_CHARS) + `\n\n[... result truncated from ${result.length} chars to ${MAX_TOOL_RESULT_CHARS} ...]`;
       }
 
-      entry.status = 'success';
+      // Detect shell_exec soft failures — the tool returns a string (no throw)
+      // but the output contains error markers indicating the command failed.
+      const isShellSoftFail = toolCall.name === 'shell_exec' && (
+        /\[Exit code: [1-9]\d*\]/.test(result) ||
+        /\[Process killed/.test(result) ||
+        /\[Error: /.test(result)
+      );
+
+      const effectiveStatus = isShellSoftFail ? 'error' : 'success';
+
+      entry.status = effectiveStatus;
       entry.completedAt = Date.now();
       entry.durationMs = Math.round(toolMs);
       entry.resultPreview = result.slice(0, 200);
+      let shellStderr: string[] | undefined;
+      if (isShellSoftFail) {
+        entry.error = result.match(/\[(Exit code: \d+|Process killed[^\]]*|Error: [^\]]*)\]/)?.[0] || 'Command failed';
+        // Extract stderr section from shell output if present
+        const stderrMatch = result.match(/\[stderr\]\n([\s\S]*?)(?:\n\n\[|$)/);
+        if (stderrMatch?.[1]) {
+          shellStderr = stderrMatch[1].split('\n').filter(Boolean);
+        }
+      }
       this.emitToolActivity(entry);
       this.emitToolExecComplete({
         toolId: toolCall.id,
-        status: 'success',
+        status: effectiveStatus,
         duration: entry.durationMs,
         summary: entry.resultPreview ?? '[Tool completed]',
+        ...(shellStderr ? { stderr: shellStderr } : {}),
       });
 
       return { id: toolCall.id, content: result };
     } catch (error: any) {
       const toolErrMs = performance.now() - tStart;
-      log.warn(`Tool: ${toolCall.name}: ${toolErrMs.toFixed(0)}ms (error)`);
+      log.warn(`Tool ${toolCall.name} failed: ${error?.message || 'unknown error'}`);
       perfLog('tool-exec', toolCall.name + ' (ERROR)', toolErrMs);
 
-      entry.status = 'error';
-      entry.completedAt = Date.now();
-      entry.durationMs = Math.round(toolErrMs);
-      entry.error = error?.message || 'unknown error';
-      this.emitToolActivity(entry);
+      const idx = this.activityLog.findIndex(e => e.id === toolCall.id);
+      if (idx >= 0) {
+        this.activityLog[idx].status = 'error';
+        this.activityLog[idx].completedAt = Date.now();
+        this.activityLog[idx].durationMs = Math.round(toolErrMs);
+        this.activityLog[idx].error = error?.message || 'unknown error';
+        this.emitToolActivity(this.activityLog[idx]);
+      }
+
       this.emitToolExecComplete({
         toolId: toolCall.id,
         status: 'error',
-        duration: entry.durationMs,
-        summary: entry.error ?? 'unknown error',
+        duration: Math.round(toolErrMs),
+        summary: error?.message || 'unknown error',
       });
 
       if (toolCall.name === 'create_document') {
@@ -1692,10 +1800,13 @@ export class ToolLoop {
           stageLabel: 'Document generation failed',
           stageNumber: 5,
           totalStages: 5,
-          error: error?.message || 'unknown error',
+          error: error?.message || 'Document generation failed',
         });
       }
-      return { id: toolCall.id, content: `Tool error: ${error?.message || 'unknown error'}` };
+
+      return { id: toolCall.id, content: `Error: ${error?.message || 'Tool execution failed'}` };
+    } finally {
+      this.activeTools.delete(toolAbortController);
     }
   }
 

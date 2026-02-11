@@ -190,7 +190,7 @@ async function handleCmd(chatId: number, text: string): Promise<void> {
       return;
     }
     case '/status': {
-      const m = collectMetrics();
+      const m = await collectMetrics();
       await bot.sendMessage(chatId, [
         `CPU: ${m.cpu.usagePercent.toFixed(0)}% (${m.cpu.cores} cores)`,
         `RAM: ${m.memory.usedMB.toFixed(0)}/${m.memory.totalMB.toFixed(0)} MB (${m.memory.usagePercent.toFixed(0)}%)`,

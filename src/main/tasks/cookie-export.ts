@@ -14,16 +14,16 @@ const log = createLogger('cookie-export');
 
 // Common auth cookie names by service — used to detect if Electron has meaningful cookies
 const AUTH_COOKIE_NAMES: Record<string, string[]> = {
-  'google.com':   ['SID', 'SSID', 'APISID', 'SAPISID', 'HSID', '__Secure-1PSID', '__Secure-3PSID'],
-  'yahoo.com':    ['Y', 'T', 'A3', 'GUC'],
-  'outlook.com':  ['WLSSC', 'MSPAuth', 'MSPProf'],
-  'github.com':   ['user_session', '_gh_sess', 'logged_in'],
-  'twitter.com':  ['auth_token', 'ct0'],
-  'x.com':        ['auth_token', 'ct0'],
-  'reddit.com':   ['reddit_session', 'token_v2'],
+  'google.com': ['SID', 'SSID', 'APISID', 'SAPISID', 'HSID', '__Secure-1PSID', '__Secure-3PSID'],
+  'yahoo.com': ['Y', 'T', 'A3', 'GUC'],
+  'outlook.com': ['WLSSC', 'MSPAuth', 'MSPProf'],
+  'github.com': ['user_session', '_gh_sess', 'logged_in'],
+  'twitter.com': ['auth_token', 'ct0'],
+  'x.com': ['auth_token', 'ct0'],
+  'reddit.com': ['reddit_session', 'token_v2'],
   'facebook.com': ['c_user', 'xs', 'datr'],
   'linkedin.com': ['li_at', 'JSESSIONID'],
-  'discord.com':  ['__dcfduid', '__sdcfduid'],
+  'discord.com': ['__dcfduid', '__sdcfduid'],
 };
 
 /**
@@ -105,7 +105,7 @@ export async function exportElectronCookies(url?: string): Promise<PlaywrightCoo
  * Export cookies from the OS Chrome browser (SQLite DB, decrypted).
  * This is the FALLBACK source — only used when Electron session has no cookies for the target domain.
  */
-export function exportChromeCookies(url?: string): PlaywrightCookie[] {
+export async function exportChromeCookies(url?: string): Promise<PlaywrightCookie[]> {
   if (!url) return [];
 
   try {
@@ -117,7 +117,7 @@ export function exportChromeCookies(url?: string): PlaywrightCookie[] {
 
     const allCookies: PlaywrightCookie[] = [];
     for (const domain of domains) {
-      const imported = importCookiesForDomain(domain);
+      const imported = await importCookiesForDomain(domain);
       for (const c of imported) {
         allCookies.push({
           name: c.name,
@@ -179,7 +179,7 @@ export async function getCookiesForTask(url?: string): Promise<PlaywrightCookie[
   }
 
   // Step 3: Electron doesn't have enough cookies for this domain — try Chrome OS fallback
-  const chromeCookies = exportChromeCookies(url);
+  const chromeCookies = await exportChromeCookies(url);
   if (chromeCookies.length === 0) {
     // Chrome fallback also empty — return whatever Electron had
     if (electronCookies.length > 0) {
