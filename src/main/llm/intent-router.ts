@@ -75,15 +75,19 @@ const KNOWLEDGE_QUESTIONS = /^(what\s+is\s+(a|an|the)\s+\w+|who\s+(is|was|were)\
 // CONTEXTUAL SIGNALS — check conversation history
 // ============================================================================
 
-/** If recent assistant messages used tools, the user might need tools again */
+/** If recent history involved tool usage, the user might need tools again */
 function recentHistoryUsedTools(history: Array<{ role: string; content: string }>): boolean {
-  // Look at last 4 messages for tool-use indicators
-  const recent = history.slice(-4);
+  // Look at last 6 messages for tool-use indicators
+  const recent = history.slice(-6);
   for (const msg of recent) {
-    if (msg.role === 'assistant' && typeof msg.content === 'string') {
-      // If assistant output contains file contents, search results, etc., tools were used
+    if (typeof msg.content !== 'string') continue;
+    // Tool-use/tool-result blocks are stored as JSON arrays starting with '['
+    // containing objects with type: 'tool_use' or 'tool_result'
+    if (msg.content.startsWith('[') && /tool_use|tool_result/.test(msg.content)) return true;
+    // Also check for code blocks, file contents, or search results in assistant text
+    if (msg.role === 'assistant') {
       if (/```[\s\S]{100,}```/.test(msg.content)) return true;
-      if (/\[File:/.test(msg.content)) return true;
+      if (/\[File:|\[cached:|\[Stopped\]/.test(msg.content)) return true;
     }
   }
   return false;
@@ -176,8 +180,16 @@ export function classifyIntent(
   }
 
   // ---- CHAT-ONLY SIGNALS ----
+  // For all chat-only signals: if recent history used tools, the user may be
+  // continuing a tool-based workflow (e.g., "ok" meaning "ok, do it" or
+  // "for clawdia" clarifying a previous request). Keep tools available.
+  const historyHadTools = recentHistoryUsedTools(history);
 
   if (CHAT_ONLY_STRONG.test(msg)) {
+    if (historyHadTools) {
+      logResult('tools', 'ack-after-tools', start);
+      return 'tools';
+    }
     logResult('chat-only', 'conversational-ack', start);
     return 'chat-only';
   }
@@ -203,7 +215,13 @@ export function classifyIntent(
   }
 
   // Short messages (under 15 chars) without tool signals are likely conversational
+  // BUT: if recent history used tools, this is probably a follow-up like "for clawdia"
+  // and needs tools available to continue the previous task.
   if (msg.length < 15 && !/[?]/.test(msg)) {
+    if (historyHadTools) {
+      logResult('tools', 'short-follow-up-after-tools', start);
+      return 'tools';
+    }
     logResult('chat-only', 'short-no-question', start);
     return 'chat-only';
   }
@@ -224,7 +242,11 @@ export function classifyIntent(
   }
 
   // Medium messages that didn't match anything — lean toward chat-only
-  // since all tool-signal patterns failed
+  // since all tool-signal patterns failed, UNLESS recent history used tools.
+  if (historyHadTools) {
+    logResult('tools', 'no-signals-but-recent-tools', start);
+    return 'tools';
+  }
   logResult('chat-only', 'no-signals-detected', start);
   return 'chat-only';
 }

@@ -304,6 +304,15 @@ export async function sendApprovalRequest(request: ApprovalRequest, onDecision: 
         default: decision = 'DENY'; break;
       }
 
+      // Tag source for audit trail — import at runtime to avoid circular dependency
+      try {
+        const mainMod = require('../main');
+        if (mainMod?.approvalSources) {
+          mainMod.approvalSources.set(requestId, 'telegram');
+          setTimeout(() => mainMod.approvalSources.delete(requestId), 5000);
+        }
+      } catch { /* ignore if unavailable */ }
+
       onDecision(decision);
 
       // Update message to show decision

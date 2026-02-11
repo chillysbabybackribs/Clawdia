@@ -135,6 +135,11 @@ export const IPC = {
   APPROVAL_RESPONSE: 'autonomy:approval-response',
   AUTONOMY_GET_ALWAYS_APPROVALS: 'autonomy:get-always-approvals',
   AUTONOMY_REMOVE_ALWAYS_APPROVAL: 'autonomy:remove-always-approval',
+
+  // Audit / Security Timeline
+  AUDIT_GET_EVENTS: 'audit:get-events',
+  AUDIT_CLEAR: 'audit:clear',
+  AUDIT_GET_SUMMARY: 'audit:get-summary',
 } as const;
 
 // Main → Renderer (send)
@@ -151,6 +156,7 @@ export const IPC_EVENTS = {
   TOOL_STEP_PROGRESS: 'chat:tool-exec:step-progress',
   TOOL_OUTPUT: 'chat:tool-exec:output',
   TOOL_LOOP_COMPLETE: 'chat:tool-exec:loop-complete',
+  TOOL_TIMING: 'chat:tool-exec:timing',
   TOKEN_USAGE_UPDATE: 'chat:token-usage:update',
   CHAT_ERROR: 'chat:error',
   CHAT_LIVE_HTML_START: 'chat:live-html:start',
@@ -190,4 +196,7 @@ export const IPC_EVENTS = {
 
   // Autonomy Approval
   APPROVAL_REQUEST: 'autonomy:approval-request',
+
+  // Audit / Security Timeline
+  AUDIT_EVENT: 'audit:event',
 } as const;

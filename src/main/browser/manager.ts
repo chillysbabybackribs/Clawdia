@@ -14,8 +14,39 @@ import { spawn } from 'child_process';
 import { createLogger } from '../logger';
 import { withTimeout, withSoftTimeout } from '../utils/timeout';
 import { handleValidated, ipcSchemas } from '../ipc-validator';
+import { importCookiesForDomain } from '../tasks/cookie-import';
 
 const log = createLogger('browser-manager');
+
+/** Dark premium scrollbar CSS injected into every BrowserView page */
+const DARK_SCROLLBAR_CSS = `
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+::-webkit-scrollbar-thumb:active {
+  background: rgba(255, 255, 255, 0.35);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) rgba(0, 0, 0, 0.15);
+}
+`;
 
 export async function exportCookiesForUrl(url: string): Promise<string | null> {
   try {
@@ -92,6 +123,11 @@ let livePreviewTabId: string | null = null;
 // Set before programmatic navigations (goBack, goForward, switchTab).
 let suppressHistoryPush = false;
 
+// Chrome cookie import state — tracks domains already imported into BrowserView session
+const cookieImportedDomains = new Set<string>();
+const cookieImportCooldown = new Map<string, number>(); // domain → last import timestamp
+const COOKIE_IMPORT_COOLDOWN_MS = 30_000; // 30 seconds per domain
+
 // Promise that resolves once initPlaywright() completes (success or failure).
 let playwrightReadyResolve: () => void;
 const playwrightReady = new Promise<void>((resolve) => {
@@ -142,6 +178,77 @@ const BENIGN_PAGE_ERROR_PATTERNS = [
   'failed to load resource',
 ];
 
+
+// ---------------------------------------------------------------------------
+// Chrome cookie import — inject OS Chrome cookies into BrowserView session
+// ---------------------------------------------------------------------------
+
+const SKIP_COOKIE_SCHEMES = ['data:', 'file:', 'about:', 'chrome:', 'devtools:'];
+
+/**
+ * Import Chrome OS cookies for a domain into Electron's defaultSession.
+ * Fire-and-forget — does not block navigation.
+ */
+async function maybeImportCookiesForNavigation(url: string): Promise<void> {
+  try {
+    // Skip non-http(s) URLs
+    if (SKIP_COOKIE_SCHEMES.some(scheme => url.startsWith(scheme))) return;
+
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.replace(/^www\./, '');
+    if (!hostname) return;
+
+    // Extract base domain (e.g., mail.google.com → google.com)
+    const parts = hostname.split('.');
+    const baseDomain = parts.length > 2 ? parts.slice(-2).join('.') : hostname;
+
+    // Skip if already imported this session
+    if (cookieImportedDomains.has(baseDomain)) return;
+
+    // Cooldown check (30s per domain)
+    const lastImport = cookieImportCooldown.get(baseDomain) || 0;
+    if (Date.now() - lastImport < COOKIE_IMPORT_COOLDOWN_MS) return;
+
+    cookieImportCooldown.set(baseDomain, Date.now());
+
+    // Import cookies from Chrome OS
+    let imported = await importCookiesForDomain(baseDomain);
+    if (imported.length === 0 && hostname !== baseDomain) {
+      // Also try the full hostname (e.g., mail.google.com)
+      imported = await importCookiesForDomain(hostname);
+    }
+    if (imported.length === 0) return;
+
+    // Inject into Electron's default session (shared with BrowserView)
+    let injected = 0;
+    for (const cookie of imported) {
+      try {
+        const cleanDomain = cookie.domain.replace(/^\./, '');
+        const cookieUrl = `http${cookie.secure ? 's' : ''}://${cleanDomain}${cookie.path || '/'}`;
+        await session.defaultSession.cookies.set({
+          url: cookieUrl,
+          name: cookie.name,
+          value: cookie.value,
+          domain: cookie.domain,
+          path: cookie.path || '/',
+          secure: cookie.secure,
+          httpOnly: cookie.httpOnly,
+          expirationDate: cookie.expires > 0 ? cookie.expires : undefined,
+        });
+        injected++;
+      } catch {
+        // Individual cookie set failure — skip silently
+      }
+    }
+
+    if (injected > 0) {
+      cookieImportedDomains.add(baseDomain);
+      log.info(`[Cookie] Imported ${injected} cookies for ${baseDomain} into BrowserView session`);
+    }
+  } catch (err: any) {
+    log.warn(`[Cookie] Import failed for navigation: ${err?.message || err}`);
+  }
+}
 
 function sanitizeUserAgent(userAgent: string): string {
   return userAgent.replace(/\s*Electron\/\S+/i, '').replace(/\s*clawdia\/\S+/i, '');
@@ -268,17 +375,28 @@ export async function clearAllBrowserData(): Promise<void> {
 
 const AUTH_URL_PATTERNS = [
   'accounts.google.com',
+  'accounts.youtube.com',
+  'consent.google.com',
+  'myaccount.google.com',
+  'gds.google.com',
   'appleid.apple.com/auth',
   'login.microsoftonline.com',
-  'github.com/login/oauth',
+  'login.live.com',
+  'github.com/login',
+  'github.com/session',
   'api.twitter.com/oauth',
+  'twitter.com/i/flow/login',
   'www.facebook.com/v',
   'www.facebook.com/dialog/oauth',
+  'www.facebook.com/login',
   'discord.com/oauth2',
+  'discord.com/login',
   'slack.com/oauth',
   'login.salesforce.com',
   'auth0.com/authorize',
   'accounts.spotify.com',
+  'login.yahoo.com',
+  'open.login.yahooapis.com',
 ];
 
 function isAuthUrl(url: string): boolean {
@@ -299,6 +417,41 @@ function wireAuthPopup(popup: BrowserWindow, initialUrl: string): void {
 
   popup.webContents.on('will-navigate', (_event, navUrl) => {
     log.debug(`Auth popup navigating to: ${navUrl}`);
+  });
+
+  // Handle nested popups / window.open inside the auth popup — keep them in-app.
+  // Without this, auth flows that open secondary windows (e.g. CAPTCHA, 2FA) go
+  // to the system browser and break the flow.
+  popup.webContents.setWindowOpenHandler((details) => {
+    log.info(`Auth popup opening child window: ${details.url}`);
+    // Allow auth URLs and blank popups as child windows inside the app
+    if (isAuthUrl(details.url) || isBlankPopupUrl(details.url)) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: 500,
+          height: 700,
+          parent: popup,
+          modal: false,
+          show: true,
+          autoHideMenuBar: true,
+          webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+            sandbox: true,
+          },
+        },
+      };
+    }
+    // Non-auth URLs from auth popup: load inside the popup itself instead of
+    // falling through to the system browser.
+    popup.loadURL(details.url).catch(() => {});
+    return { action: 'deny' };
+  });
+
+  // Wire nested popups created by the auth popup
+  popup.webContents.on('did-create-window', (childPopup, details) => {
+    wireAuthPopup(childPopup, details.url);
   });
 
   // Let the popup complete callback scripts naturally, then refresh parent view on close.
@@ -336,8 +489,10 @@ function ensureBrowserView(): BrowserView {
       browserView.setBounds(currentBounds);
     }
 
-    browserView.webContents.on('did-start-navigation', () => {
+    browserView.webContents.on('did-start-navigation', (_event, url) => {
       mainWindow?.webContents.send(IPC_EVENTS.BROWSER_LOADING, true);
+      // Fire-and-forget: import Chrome cookies for this domain into BrowserView session
+      void maybeImportCookiesForNavigation(url);
     });
 
     browserView.webContents.on('did-navigate', (_event, url) => {
@@ -377,6 +532,8 @@ function ensureBrowserView(): BrowserView {
 
     browserView.webContents.on('did-stop-loading', () => {
       mainWindow?.webContents.send(IPC_EVENTS.BROWSER_LOADING, false);
+      // Inject dark premium scrollbar into browsed pages
+      browserView!.webContents.insertCSS(DARK_SCROLLBAR_CSS).catch(() => {});
     });
 
     browserView.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
@@ -401,7 +558,8 @@ function ensureBrowserView(): BrowserView {
     });
 
     browserView.webContents.on('did-create-window', (popup, details) => {
-      if (!isAuthUrl(details.url) && !isBlankPopupUrl(details.url)) return;
+      // Wire ALL popups that were allowed through setWindowOpenHandler —
+      // they need UA sanitization and nested popup handling to stay in-app.
       wireAuthPopup(popup, details.url);
     });
 
@@ -409,10 +567,14 @@ function ensureBrowserView(): BrowserView {
       const { url } = details;
       const hasUserGesture = 'userGesture' in details;
       const userGesture = hasUserGesture ? Boolean(details.userGesture) : true;
-      const allowBlankPopup = isBlankPopupUrl(url) && userGesture;
+      const isBlank = isBlankPopupUrl(url);
+      const isAuth = isAuthUrl(url);
 
-      if (isAuthUrl(url) || allowBlankPopup) {
-        log.info(`Allowing auth popup for: ${url || 'about:blank'}`);
+      // Allow auth popups and blank popups (common for OAuth flows) as in-app windows.
+      // Also allow any popup triggered by user gesture — the user clicked something
+      // and expects the result to stay inside the app (e.g., Gmail sign-in, OAuth).
+      if (isAuth || isBlank || userGesture) {
+        log.info(`Allowing in-app popup (auth=${isAuth}, blank=${isBlank}, gesture=${userGesture}): ${url || 'about:blank'}`);
         return {
           action: 'allow',
           overrideBrowserWindowOptions: {
@@ -430,6 +592,8 @@ function ensureBrowserView(): BrowserView {
           },
         };
       }
+      // Script-initiated popups with no user gesture and no auth URL: load inline.
+      log.debug(`Denying popup (no gesture, not auth), navigating inline: ${url}`);
       void navigate(url);
       return { action: 'deny' };
     });

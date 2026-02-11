@@ -9,7 +9,7 @@
 
   var videoEl = document.getElementById('hero-video');
   if (videoEl) {
-    videoEl.playbackRate = 0.25;
+    videoEl.playbackRate = 0.5;
   }
 
   // ─── GitHub Release Config ───

@@ -54,11 +54,11 @@ export const BROWSER_TOOL_DEFINITIONS: BrowserToolDefinition[] = [
   {
     name: 'browser_search',
     description:
-      'Search Google and return top results with title, URL, and snippet. Snippets often directly answer factual questions.',
+      'Search Google and return top results with title, URL, and snippet. Snippets often directly answer factual questions. For time-sensitive queries (pricing, docs, APIs, news), include the current year in the query.',
     input_schema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Search query' },
+        query: { type: 'string', description: 'Search query. Include current year for time-sensitive topics.' },
       },
       required: ['query'],
     },

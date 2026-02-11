@@ -1,7 +1,7 @@
 import { elements } from './state';
 import type { ApprovalRequest } from '../../shared/autonomy';
 
-type StepStatus = 'running' | 'success' | 'error' | 'skipped' | 'blocked' | 'denied';
+type StepStatus = 'running' | 'success' | 'error' | 'warning' | 'skipped' | 'blocked' | 'denied';
 
 interface StepRow {
   el: HTMLDivElement;
@@ -105,6 +105,7 @@ function summarizeArgs(args: Record<string, unknown>): string {
 
 function iconForStatus(status: StepStatus): string {
   if (status === 'success') return '›';
+  if (status === 'warning') return '›';
   if (status === 'error') return '×';
   if (status === 'skipped') return '·';
   if (status === 'blocked') return '‖';
@@ -308,7 +309,7 @@ class EnhancedActivityFeed {
     const hasBlocked = phaseSteps.some(s => s.status === 'blocked');
     const hasDenied = phaseSteps.some(s => s.status === 'denied');
     const hasFailed = phaseSteps.some(s => s.status === 'error');
-    const allComplete = phaseSteps.every(s => s.status === 'success' || s.status === 'error' || s.status === 'skipped' || s.status === 'denied');
+    const allComplete = phaseSteps.every(s => s.status === 'success' || s.status === 'warning' || s.status === 'error' || s.status === 'skipped' || s.status === 'denied');
 
     if (hasBlocked) {
       phase.status = 'blocked';
@@ -426,13 +427,14 @@ class EnhancedActivityFeed {
     this.container.classList.remove('hidden');
   }
 
-  updateStep(toolId: string, status: 'success' | 'error', duration: number, summary: string, stderr?: string[]): void {
+  updateStep(toolId: string, status: 'success' | 'error' | 'warning', duration: number, summary: string, stderr?: string[]): void {
     const step = this.steps.get(toolId);
     if (!step) return;
 
     step.status = status;
     step.el.classList.remove('activity-feed__step--active');
-    step.el.classList.toggle('activity-feed__step--success', status === 'success');
+    step.el.classList.toggle('activity-feed__step--success', status === 'success' || status === 'warning');
+    step.el.classList.toggle('activity-feed__step--warning', status === 'warning');
     step.el.classList.toggle('activity-feed__step--error', status === 'error');
 
     const iconEl = step.el.querySelector('.activity-feed__icon');
@@ -678,18 +680,22 @@ class EnhancedActivityFeed {
   }
 
   complete(totalDuration: number): void {
-    // Only mark as success if:
-    // 1. No failed steps
-    // 2. Pipeline is currently running (not blocked, denied, or failed)
-    // 3. At least one step actually completed successfully
-    const hasSuccessfulSteps = Array.from(this.steps.values()).some(s => s.status === 'success');
+    // If no tools were invoked at all, this was a plain chat response — hide the feed entirely
+    if (this.totalSteps === 0) {
+      this.container.classList.add('hidden');
+      return;
+    }
+
+    const hasSuccessfulSteps = Array.from(this.steps.values()).some(s => s.status === 'success' || s.status === 'warning');
 
     if (this.pipelineStatus === 'running') {
       if (this.failedSteps === 0 && hasSuccessfulSteps) {
         this.pipelineStatus = 'success';
-      } else if (!hasSuccessfulSteps) {
-        // No steps completed - likely all were skipped or cancelled
+      } else if (this.failedSteps > 0) {
         this.pipelineStatus = 'failed';
+      } else {
+        // All steps were skipped or no steps succeeded — still not a failure
+        this.pipelineStatus = 'success';
       }
     } else if (this.pipelineStatus === 'blocked') {
       // If still blocked when completing, treat as incomplete
@@ -759,6 +765,17 @@ export function initEnhancedActivityFeed(): void {
     if (!activeFeed) return;
     activeFeed.approvalResolved(e.detail.decision);
   }) as EventListener);
+
+  // Tool timing debug listener — logs phase breakdown to console
+  if (window.api.onToolTiming) {
+    window.api.onToolTiming((timing) => {
+      const d = timing.durations;
+      console.debug(
+        `[Timing] ${timing.toolName}: classify=${d.classify.toFixed(0)}ms approve=${d.approve.toFixed(0)}ms spawn=${d.spawn.toFixed(0)}ms exec=${d.execute.toFixed(0)}ms total=${d.total.toFixed(0)}ms` +
+        (d.firstOutput !== undefined ? ` firstOutput=${d.firstOutput.toFixed(0)}ms` : '')
+      );
+    });
+  }
 }
 
 // Reset feed when new chat tab is loaded or cleared

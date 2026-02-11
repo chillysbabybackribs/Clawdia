@@ -192,12 +192,12 @@ strong {
 }
 
 .hero-kicker {
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 500;
   letter-spacing: 0.2em;
   text-transform: uppercase;
   color: var(--text-tertiary);
-  margin: 0 0 20px 0;
+  margin: 0 0 24px 0;
 }
 
 .hero-title {
@@ -209,8 +209,61 @@ strong {
   margin: 0 0 6px 0;
 }
 
+/* ── Stacked tagline with strikethrough ── */
+
+.hero-title-stack {
+  display: flex;
+  flex-direction: column;
+  margin: 0 0 6px 0;
+}
+
+.hero-title-line {
+  display: block;
+  position: relative;
+  font-size: clamp(2.2rem, 5vw, 3.8rem);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1.15;
+}
+
+.hero-title-struck {
+  color: var(--text-tertiary);
+}
+
+.hero-title-struck::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 100%;
+  height: 3px;
+  background: var(--accent);
+  transform: scaleX(0);
+  transform-origin: left;
+  animation: strike-through 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.hero-title-line:nth-child(1)::after { animation-delay: 0.4s; }
+.hero-title-line:nth-child(2)::after { animation-delay: 0.7s; }
+.hero-title-line:nth-child(3)::after { animation-delay: 1.0s; }
+
+.hero-title-solved {
+  color: var(--text-primary);
+  opacity: 0;
+  transform: translateY(8px);
+  animation: solved-appear 0.5s cubic-bezier(0.22, 1, 0.36, 1) 1.4s forwards;
+}
+
+@keyframes strike-through {
+  to { transform: scaleX(1); }
+}
+
+@keyframes solved-appear {
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .hero-sub {
-  font-size: 15px;
+  font-size: 20px;
   color: var(--text-secondary);
   line-height: 1.6;
   margin-bottom: 0;
@@ -319,11 +372,11 @@ strong {
 
 .hero-pillar strong {
   color: var(--text-primary);
-  font-size: 18px;
+  font-size: 22px;
 }
 
 .hero-pillar span {
-  font-size: 16px;
+  font-size: 18px;
   color: var(--text-secondary);
   line-height: 1.4;
 }
@@ -1021,6 +1074,14 @@ strong {
     text-align: center;
   }
 
+  .hero-title-line {
+    font-size: 1.8rem;
+  }
+
+  .hero-title-stack {
+    align-items: center;
+  }
+
   .hero-kicker {
     text-align: center;
   }
@@ -1101,6 +1162,10 @@ strong {
 
 @media (max-width: 480px) {
   .hero-title {
+    font-size: 1.5rem;
+  }
+
+  .hero-title-line {
     font-size: 1.5rem;
   }
 

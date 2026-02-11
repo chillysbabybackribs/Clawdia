@@ -16,6 +16,7 @@ import { initVaultUI } from './modules/vault-ui';
 import { initAutonomyMode } from './modules/autonomy-mode';
 import { initApprovalPanel } from './modules/approval-panel';
 import { initTaskView, showTaskView, hideTaskView, highlightTaskInView } from './modules/task-view';
+import { initTimeline, loadTimeline } from './modules/security-timeline';
 
 function initClock(): void {
   const clockElement = document.getElementById('header-clock');
@@ -35,7 +36,7 @@ function initClock(): void {
   setInterval(updateClock, 60000);
 }
 
-function switchView(view: 'chat' | 'tasks' | 'conversations' | 'readme' | 'settings'): void {
+function switchView(view: 'chat' | 'tasks' | 'conversations' | 'readme' | 'settings' | 'timeline'): void {
   if (appState.activeView === view) return;
   appState.activeView = view;
 
@@ -43,6 +44,7 @@ function switchView(view: 'chat' | 'tasks' | 'conversations' | 'readme' | 'setti
   const navBtns = [
     { btn: elements.navChatBtn, id: 'chat' },
     { btn: elements.navTasksBtn, id: 'tasks' },
+    { btn: elements.navTimelineBtn, id: 'timeline' },
     { btn: elements.navConversationsBtn, id: 'conversations' },
     { btn: elements.navReadmeBtn, id: 'readme' },
     { btn: elements.navSettingsBtn, id: 'settings' },
@@ -55,6 +57,7 @@ function switchView(view: 'chat' | 'tasks' | 'conversations' | 'readme' | 'setti
   const showChat = view === 'chat';
   elements.chatAppShell.classList.toggle('hidden', !showChat);
   elements.taskView.classList.toggle('hidden', view !== 'tasks');
+  elements.timelineView.classList.toggle('hidden', view !== 'timeline');
   elements.conversationsView.classList.toggle('hidden', view !== 'conversations');
   elements.readmeView.classList.toggle('hidden', view !== 'readme');
   elements.settingsView.classList.toggle('hidden', view !== 'settings');
@@ -72,11 +75,16 @@ function switchView(view: 'chat' | 'tasks' | 'conversations' | 'readme' | 'setti
   if (view === 'settings') {
     void loadSettingsView();
   }
+
+  if (view === 'timeline') {
+    void loadTimeline();
+  }
 }
 
 function initSidebarNav(): void {
   elements.navChatBtn.addEventListener('click', () => switchView('chat'));
   elements.navTasksBtn.addEventListener('click', () => switchView('tasks'));
+  elements.navTimelineBtn.addEventListener('click', () => switchView('timeline'));
   elements.navConversationsBtn.addEventListener('click', () => switchView('conversations'));
   elements.navReadmeBtn.addEventListener('click', () => switchView('readme'));
   elements.navSettingsBtn.addEventListener('click', () => switchView('settings'));
@@ -116,6 +124,7 @@ async function init(): Promise<void> {
   initVaultUI();
   void initAutonomyMode();
   initApprovalPanel();
+  initTimeline();
   initClock();
 
   requestAnimationFrame(() => syncBrowserBounds());

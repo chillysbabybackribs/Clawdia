@@ -83,7 +83,7 @@ export interface ToolExecStartEvent {
 
 export interface ToolExecCompleteEvent {
   toolId: string;
-  status: 'success' | 'error';
+  status: 'success' | 'error' | 'warning';
   duration: number;
   summary: string;
   stderr?: string[];
@@ -102,6 +102,38 @@ export interface ToolLoopCompleteEvent {
   totalTools: number;
   totalDuration: number;
   failures: number;
+}
+
+// ---------------------------------------------------------------------------
+// TOOL TIMING (debug instrumentation for latency diagnosis)
+// ---------------------------------------------------------------------------
+
+export interface ToolTimingEvent {
+  toolCallId: string;
+  toolName: string;
+  /** T0: renderer submit (ms since page load) — filled by renderer, 0 if unavailable */
+  t0_submit?: number;
+  /** T1: main received the tool call from API response */
+  t1_received: number;
+  /** T2: risk classification completed */
+  t2_classified: number;
+  /** T3: approval resolved (same as T2 if no approval needed) */
+  t3_approved: number;
+  /** T4: child spawned / execution started */
+  t4_spawned: number;
+  /** T5: first stdout/stderr chunk */
+  t5_firstOutput?: number;
+  /** T6: tool finished */
+  t6_finished: number;
+  /** Summary durations in ms */
+  durations: {
+    classify: number;
+    approve: number;
+    spawn: number;
+    firstOutput?: number;
+    execute: number;
+    total: number;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +157,7 @@ export interface ToolActivityEntry {
   id: string;
   name: string;
   input: Record<string, unknown>;
-  status: 'running' | 'success' | 'error' | 'skipped';
+  status: 'running' | 'success' | 'error' | 'warning' | 'skipped';
   startedAt: number;
   completedAt?: number;
   durationMs?: number;

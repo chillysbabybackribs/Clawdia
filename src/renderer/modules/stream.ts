@@ -12,7 +12,7 @@ export function initStream(): void {
 
   window.api.onStreamText((text) => {
     appendStreamText(text);
-    scrollToBottom(false);
+    // Scroll is now handled inside flushPendingStreamText() AFTER the DOM update
   });
 
   window.api.onStreamEnd((fullText) => {
@@ -42,10 +42,23 @@ export function setStreaming(streaming: boolean): void {
   elements.promptEl.disabled = streaming;
 }
 
+/**
+ * Tracks whether a programmatic scroll is in progress so the scroll event
+ * listener doesn't accidentally disable auto-follow due to timing races.
+ */
+let programmaticScrollInProgress = false;
+
 export function scrollToBottom(force: boolean = true): void {
   if (!force && !appState.shouldAutoFollowOutput) return;
+  programmaticScrollInProgress = true;
   elements.outputEl.scrollTop = elements.outputEl.scrollHeight;
   if (force) appState.shouldAutoFollowOutput = true;
+  // Clear the guard after the browser has processed the scroll event.
+  // Use rAF to ensure the synchronous scroll event from setting scrollTop
+  // has already fired before we re-enable user-scroll detection.
+  requestAnimationFrame(() => {
+    programmaticScrollInProgress = false;
+  });
 }
 
 export function isOutputNearBottom(thresholdPx: number = AUTO_SCROLL_BOTTOM_THRESHOLD_PX): boolean {
@@ -54,12 +67,22 @@ export function isOutputNearBottom(thresholdPx: number = AUTO_SCROLL_BOTTOM_THRE
 }
 
 export function updateOutputAutoFollowState(): void {
+  // Ignore scroll events caused by our own programmatic scrollToBottom().
+  // These fire synchronously when we set scrollTop and can race with DOM
+  // mutations, causing auto-follow to be disabled erroneously.
+  if (programmaticScrollInProgress) return;
   appState.shouldAutoFollowOutput = isOutputNearBottom();
 }
 
 export function handleOutputWheel(event: WheelEvent): void {
   if (event.deltaY < 0) {
+    // User scrolled up — stop auto-following
     appState.shouldAutoFollowOutput = false;
+  } else if (event.deltaY > 0) {
+    // User scrolled down — re-enable auto-follow if near bottom
+    if (isOutputNearBottom()) {
+      appState.shouldAutoFollowOutput = true;
+    }
   }
 }
 
@@ -277,6 +300,8 @@ function flushPendingStreamText(): void {
   const batch = appState.pendingStreamTextChunks.join('');
   appState.pendingStreamTextChunks = [];
   appState.currentTextChunk.appendChild(document.createTextNode(batch));
+  // Scroll AFTER the DOM update so scrollHeight reflects the new content
+  scrollToBottom(false);
 }
 
 function appendStreamText(text: string): void {
@@ -306,9 +331,18 @@ function finalizeAssistantMessage(fullText: string): void {
   const target = appState.streamingContainer;
   target.innerHTML = '<div class="markdown-content"><p>' + MARKDOWN_RENDER_BUSY_TEXT + '</p></div>';
 
+  // Capture auto-follow intent BEFORE clearing streamingContainer so
+  // the scroll after markdown render honours the user's position.
+  const shouldFollow = appState.shouldAutoFollowOutput;
+
   window.setTimeout(() => {
     const rendered = renderMarkdown(finalText);
     target.innerHTML = '<div class="markdown-content">' + rendered + '</div>';
+    // Scroll AFTER the markdown render which may change the container height
+    // significantly (code blocks, lists, tables, etc.).
+    if (shouldFollow) {
+      scrollToBottom(true);
+    }
   }, 0);
 
   appState.currentTextChunk = null;
@@ -316,6 +350,8 @@ function finalizeAssistantMessage(fullText: string): void {
   appState.pendingStreamTextChunks = [];
   appState.fullStreamBuffer = '';
   resetStreamFilter();
+  // Scroll now for the "Rendering response..." placeholder, and again
+  // after the real markdown lands (in the setTimeout above).
   scrollToBottom(false);
 }
 

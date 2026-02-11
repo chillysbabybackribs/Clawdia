@@ -6,7 +6,7 @@ if (process.platform === 'linux') {
 // Log tap — mirrors all stdout/stderr to ~/.clawdia-live.log for AI monitoring
 import './log-tap';
 
-import { app, BrowserWindow, clipboard, dialog, Menu, nativeImage, Notification, shell, Tray } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, shell, Tray } from 'electron';
 import { execSync } from 'child_process';
 import { homedir } from 'os';
 import * as path from 'path';
@@ -27,6 +27,7 @@ import { TaskScheduler, setSchedulerInstance } from './tasks/scheduler';
 import { getTaskDashboardItems } from './tasks/task-dashboard';
 import { getTask, listTasks, deleteTask, pauseTask, resumeTask, getRunsForTask, getRun, updateRun, cleanupZombieRuns, getExecutorForTask } from './tasks/task-store';
 import { detectFastPathTools } from './llm/tool-bootstrap';
+import { setAmbientSummary } from './llm/system-prompt';
 import { strategyCache } from './llm/strategy-cache';
 import { store, runMigrations, resetStore, DEFAULT_AMBIENT_SETTINGS, type AmbientSettings, type ChatTabState, type ClawdiaStoreSchema } from './store';
 import { DEFAULT_MODEL } from '../shared/models';
@@ -57,7 +58,7 @@ import {
   AutonomyOverrides,
   RiskLevel
 } from '../shared/autonomy';
-import { collectAmbientData, collectAmbientContext } from './dashboard/ambient';
+import { collectAmbientData, collectAmbientContext, formatCompactSummary } from './dashboard/ambient';
 import { loadDashboardState, saveDashboardState, computeContextHash, sessionHadActivity } from './dashboard/persistence';
 import { buildProjectCards, buildActivityFeed } from './dashboard/state-builder';
 import { setTokenUsageCallback } from './llm/tool-loop';
@@ -127,10 +128,14 @@ let cachedClientModel: string | null = null;
 
 // Autonomy approval tracking
 const pendingApprovals = new Map<string, (decision: ApprovalDecision) => void>();
+/** Tracks the source of the last resolved approval for audit events. */
+export const approvalSources = new Map<string, 'desktop' | 'telegram'>();
 
 import { sendApprovalRequest } from './integrations/telegram-bot';
+import { initAuditStore, closeAuditStore, appendAuditEvent, queryAuditEvents, getAuditSummary, clearAuditEvents, onAuditEvent } from './audit/audit-store';
+import { setDecisionSourceResolver } from './autonomy-gate';
 
-/** 
+/**
  * Solicitor for autonomy approvals.
  * Emits event to renderer and waits for response.
  */
@@ -142,6 +147,15 @@ async function solicitorApproval(request: ApprovalRequest): Promise<ApprovalDeci
       if (pendingApprovals.has(requestId)) {
         log.warn(`[Autonomy] Approval ${requestId} timed out, defaulting to DENY`);
         pendingApprovals.delete(requestId);
+        appendAuditEvent({
+          ts: Date.now(),
+          kind: 'tool_expired',
+          requestId,
+          toolName: request.tool,
+          risk: request.risk,
+          outcome: 'expired',
+          detail: 'Approval expired (no response within 90s)',
+        });
         resolve('DENY');
       }
     }, expiresAt - Date.now());
@@ -614,6 +628,13 @@ function createWindow(): void {
             ambientData = rawResult;
             ambientCtx = fmtResult.combined;
             log.info(`[Ambient] Collected raw data + ${ambientCtx.length} chars formatted context`);
+
+            // Inject compact summary into LLM system prompt
+            const compactSummary = formatCompactSummary(rawResult);
+            if (compactSummary) {
+              setAmbientSummary(compactSummary);
+              log.info(`[Ambient] Summary injected: ${compactSummary.length} chars`);
+            }
           } catch (err: any) {
             log.warn(`[Ambient] Context collection failed: ${err?.message || err}`);
           }
@@ -911,8 +932,18 @@ function setupIpcHandlers(): void {
       log.info('[AUTONOMY_SET] Unrestricted mode confirmed');
     }
 
+    const prevMode = (store.get('autonomyMode') as string) || 'guided';
     store.set('autonomyMode', mode);
     log.info(`[AUTONOMY_SET] Mode updated to: ${mode}`);
+    if (prevMode !== mode) {
+      appendAuditEvent({
+        ts: Date.now(),
+        kind: 'mode_changed',
+        autonomyMode: mode,
+        detail: `Autonomy mode changed from ${prevMode} to ${mode}`,
+        outcome: 'info',
+      });
+    }
     return { success: true, mode };
   });
 
@@ -1286,11 +1317,28 @@ function setupIpcHandlers(): void {
     const { id, decision } = payload;
     const resolver = pendingApprovals.get(id);
     if (resolver) {
-      pendingApprovals.delete(id);
+      approvalSources.set(id, 'desktop');
+      // Clean up source after 5s (autonomy-gate reads it synchronously after resolve)
+      setTimeout(() => approvalSources.delete(id), 5000);
+      // Call resolver BEFORE deleting from map — resolveOnce guards on pendingApprovals.has()
       resolver(decision as ApprovalDecision);
       return { success: true };
     }
     return { success: false, error: 'Approval request not found or expired' };
+  });
+
+  // --- Audit / Security Timeline ---
+  ipcMain.handle(IPC.AUDIT_GET_EVENTS, async (_event, filters: any) => {
+    return queryAuditEvents(filters || {});
+  });
+
+  ipcMain.handle(IPC.AUDIT_CLEAR, async () => {
+    const count = clearAuditEvents();
+    return { success: true, count };
+  });
+
+  ipcMain.handle(IPC.AUDIT_GET_SUMMARY, async () => {
+    return getAuditSummary();
   });
 
   handleValidated(IPC.AUTONOMY_GET_ALWAYS_APPROVALS, (ipcSchemas as any)[IPC.AUTONOMY_GET_ALWAYS_APPROVALS], async () => {
@@ -1304,6 +1352,13 @@ function setupIpcHandlers(): void {
     delete next[risk as RiskLevel];
     store.set('autonomyOverrides' as any, next);
     log.info(`[Autonomy] Removed global override for ${risk}`);
+    appendAuditEvent({
+      ts: Date.now(),
+      kind: 'override_removed',
+      risk: risk as RiskLevel,
+      detail: `Always-approve removed for ${risk}`,
+      outcome: 'info',
+    });
     return { success: true };
   });
 
@@ -1320,10 +1375,19 @@ if (!gotTheLock) {
   });
 
   app.whenReady().then(async () => {
+    nativeTheme.themeSource = 'dark';
     setupIpcHandlers();
     setupBrowserIpc();
     setCdpPort(REMOTE_DEBUGGING_PORT);
     initSearchCache();
+    initAuditStore();
+    setDecisionSourceResolver((requestId) => approvalSources.get(requestId));
+    // Push new audit events to renderer for live timeline updates
+    onAuditEvent((event) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(IPC_EVENTS.AUDIT_EVENT, event);
+      }
+    });
     initLearningSystem();
     initVault();
 
@@ -1411,6 +1475,7 @@ app.on('window-all-closed', () => {
   taskScheduler?.stop();
   stopSessionReaper();
   closeSearchCache();
+  closeAuditStore();
   shutdownLearningSystem();
 });
 

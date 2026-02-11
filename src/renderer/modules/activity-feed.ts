@@ -1,6 +1,6 @@
 import { elements } from './state';
 
-type StepStatus = 'running' | 'success' | 'error' | 'skipped';
+type StepStatus = 'running' | 'success' | 'error' | 'warning' | 'skipped';
 
 interface StepRow {
   el: HTMLDivElement;
@@ -28,6 +28,7 @@ function summarizeArgs(args: Record<string, unknown>): string {
 
 function iconForStatus(status: StepStatus): string {
   if (status === 'success') return '✓';
+  if (status === 'warning') return '✓';
   if (status === 'error') return '✗';
   if (status === 'skipped') return '·';
   return '◌';
@@ -123,12 +124,13 @@ class ActivityFeed {
     this.container.classList.remove('hidden');
   }
 
-  updateStep(toolId: string, status: 'success' | 'error', duration: number, summary: string): void {
+  updateStep(toolId: string, status: 'success' | 'error' | 'warning', duration: number, summary: string): void {
     const step = this.steps.get(toolId);
     if (!step) return;
     step.status = status;
     step.el.classList.remove('activity-feed__step--active');
-    step.el.classList.toggle('activity-feed__step--success', status === 'success');
+    step.el.classList.toggle('activity-feed__step--success', status === 'success' || status === 'warning');
+    step.el.classList.toggle('activity-feed__step--warning', status === 'warning');
     step.el.classList.toggle('activity-feed__step--error', status === 'error');
     const iconEl = step.el.querySelector('.activity-feed__icon');
     if (iconEl) iconEl.textContent = iconForStatus(status);
@@ -321,7 +323,7 @@ export function renderStaticActivityFeed(toolCalls: { id: string; name: string; 
 
     // Update step to completion immediately
     // We don't have duration in standard ToolCall types usually, default to 0 or estimates
-    feed.updateStep(call.id, (status === 'running' ? 'success' : status) as 'success' | 'error', 0, summarizeArgs(call.input));
+    feed.updateStep(call.id, (status === 'running' ? 'success' : status) as 'success' | 'error' | 'warning', 0, summarizeArgs(call.input));
   }
 
   // Complete the feed

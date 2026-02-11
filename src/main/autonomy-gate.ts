@@ -9,11 +9,22 @@ import {
 } from '../shared/autonomy';
 import { store } from './store';
 import { createLogger } from './logger';
+import { appendAuditEvent } from './audit/audit-store';
+import { redactCommand, redactUrl, truncatePreview } from '../shared/audit-types';
+import type { DecisionSource } from '../shared/audit-types';
 
 const log = createLogger('autonomy-gate');
 
 // In-memory task approvals (cleared on app restart or new task)
 const taskApprovals = new Map<string, Set<RiskLevel>>();
+
+// External resolver for decision source tracking (set by main.ts)
+let getDecisionSourceFn: ((requestId: string) => DecisionSource | undefined) | null = null;
+
+/** Set a function that returns the decision source for a requestId. */
+export function setDecisionSourceResolver(fn: (requestId: string) => DecisionSource | undefined): void {
+    getDecisionSourceFn = fn;
+}
 
 // ---------------------------------------------------------------------------
 // Shell command classification helpers
@@ -256,6 +267,29 @@ export async function shouldAuthorize(
 
     log.info(`[Gate] mode=${mode} tool=${tool} risk=${classification.risk}`);
 
+    // Build redacted previews for audit
+    const rawCmd = (tool === 'shell_exec') ? String(input.command || '') : '';
+    const rawUrl = String(input.url || '');
+    const cmdPreview = rawCmd ? redactCommand(rawCmd) : undefined;
+    const urlPreview = rawUrl ? redactUrl(rawUrl) : undefined;
+
+    // Emit risk_classified event
+    if (classification.risk !== 'SAFE') {
+        appendAuditEvent({
+            ts: Date.now(),
+            kind: 'risk_classified',
+            conversationId,
+            toolName: tool,
+            risk: classification.risk,
+            riskReason: classification.reason,
+            autonomyMode: mode,
+            commandPreview: cmdPreview,
+            urlPreview: urlPreview,
+            detail: truncatePreview(classification.detail || classification.reason, 120),
+            outcome: 'info',
+        });
+    }
+
     if (mode === 'unrestricted') {
         return { allowed: true };
     }
@@ -307,24 +341,103 @@ export async function shouldAuthorize(
         expiresAt: Date.now() + 90000 // 90 second expiration
     };
 
+    // Emit approval_requested
+    appendAuditEvent({
+        ts: Date.now(),
+        kind: 'approval_requested',
+        conversationId,
+        requestId: request.requestId,
+        toolName: tool,
+        risk: classification.risk,
+        riskReason: classification.reason,
+        autonomyMode: mode,
+        commandPreview: cmdPreview,
+        urlPreview: urlPreview,
+        outcome: 'pending',
+    });
+
     const decision = await requestApproval(request);
     log.info(`[Gate] Decision for ${request.requestId}: ${decision}`);
+    const decisionSrc = getDecisionSourceFn?.(request.requestId) || 'desktop';
 
     switch (decision) {
         case 'APPROVE':
+            appendAuditEvent({
+                ts: Date.now(),
+                kind: 'approval_decided',
+                conversationId,
+                requestId: request.requestId,
+                toolName: tool,
+                risk: classification.risk,
+                decision: 'APPROVE',
+                decisionScope: 'once',
+                decisionSource: decisionSrc,
+                outcome: 'executed',
+                commandPreview: cmdPreview,
+                urlPreview: urlPreview,
+            });
             return { allowed: true };
         case 'TASK':
             if (!taskApprovals.has(conversationId)) {
                 taskApprovals.set(conversationId, new Set());
             }
             taskApprovals.get(conversationId)!.add(classification.risk);
+            appendAuditEvent({
+                ts: Date.now(),
+                kind: 'approval_decided',
+                conversationId,
+                requestId: request.requestId,
+                toolName: tool,
+                risk: classification.risk,
+                decision: 'TASK',
+                decisionScope: 'task',
+                decisionSource: decisionSrc,
+                outcome: 'executed',
+                commandPreview: cmdPreview,
+                urlPreview: urlPreview,
+            });
             return { allowed: true };
-        case 'ALWAYS':
+        case 'ALWAYS': {
             const currentOverrides = (store.get('autonomyOverrides' as any) as AutonomyOverrides) || {};
             store.set('autonomyOverrides' as any, { ...currentOverrides, [classification.risk]: true });
+            appendAuditEvent({
+                ts: Date.now(),
+                kind: 'approval_decided',
+                conversationId,
+                requestId: request.requestId,
+                toolName: tool,
+                risk: classification.risk,
+                decision: 'ALWAYS',
+                decisionScope: 'always',
+                decisionSource: decisionSrc,
+                outcome: 'executed',
+                commandPreview: cmdPreview,
+                urlPreview: urlPreview,
+            });
+            appendAuditEvent({
+                ts: Date.now(),
+                kind: 'override_added',
+                risk: classification.risk,
+                detail: `Always-approve added for ${classification.risk}`,
+                outcome: 'info',
+            });
             return { allowed: true };
+        }
         case 'DENY':
         default:
+            appendAuditEvent({
+                ts: Date.now(),
+                kind: 'approval_decided',
+                conversationId,
+                requestId: request.requestId,
+                toolName: tool,
+                risk: classification.risk,
+                decision: 'DENY',
+                decisionSource: decisionSrc,
+                outcome: 'denied',
+                commandPreview: cmdPreview,
+                urlPreview: urlPreview,
+            });
             return {
                 allowed: false,
                 error: `User denied tool execution (${classification.reason}).`

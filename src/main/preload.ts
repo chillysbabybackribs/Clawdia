@@ -17,6 +17,7 @@ import {
   ApprovalRequest,
   ApprovalDecision,
 } from '../shared/autonomy';
+import type { AuditEvent, AuditQueryFilters, AuditSummary } from '../shared/audit-types';
 import { createLogger } from './logger';
 
 const log = createLogger('preload');
@@ -178,6 +179,12 @@ const api = {
     const handler = (_event: Electron.IpcRendererEvent, payload: ToolLoopCompleteEvent) => callback(payload);
     ipcRenderer.on(IPC_EVENTS.TOOL_LOOP_COMPLETE, handler);
     return () => ipcRenderer.removeListener(IPC_EVENTS.TOOL_LOOP_COMPLETE, handler);
+  },
+
+  onToolTiming: (callback: (payload: import('../shared/types').ToolTimingEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: import('../shared/types').ToolTimingEvent) => callback(payload);
+    ipcRenderer.on(IPC_EVENTS.TOOL_TIMING, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.TOOL_TIMING, handler);
   },
 
   onTokenUsageUpdate: (callback: (payload: import('../shared/types').TokenUsageUpdateEvent) => void) => {
@@ -496,6 +503,24 @@ const api = {
   getAutonomyAlwaysApprovals: () => invokeChecked(IPC.AUTONOMY_GET_ALWAYS_APPROVALS),
 
   removeAutonomyAlwaysApproval: (risk: string) => invokeChecked(IPC.AUTONOMY_REMOVE_ALWAYS_APPROVAL, { risk }),
+
+  // -------------------------------------------------------------------------
+  // Audit / Security Timeline
+  // -------------------------------------------------------------------------
+  getAuditEvents: (filters?: AuditQueryFilters): Promise<AuditEvent[]> =>
+    ipcRenderer.invoke(IPC.AUDIT_GET_EVENTS, filters || {}),
+
+  clearAuditEvents: (): Promise<{ success: boolean; count: number }> =>
+    ipcRenderer.invoke(IPC.AUDIT_CLEAR),
+
+  getAuditSummary: (): Promise<AuditSummary> =>
+    ipcRenderer.invoke(IPC.AUDIT_GET_SUMMARY),
+
+  onAuditEvent: (callback: (event: AuditEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, auditEvent: AuditEvent) => callback(auditEvent);
+    ipcRenderer.on(IPC_EVENTS.AUDIT_EVENT, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.AUDIT_EVENT, handler);
+  },
 
   // -------------------------------------------------------------------------
   // Telegram

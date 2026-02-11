@@ -15,6 +15,7 @@ export type { RecentFile, RecentFilesResult } from './recent-files';
 
 export { isSensitiveDomain, filterSensitiveDomains } from './privacy-filter';
 
+import { homedir } from 'os';
 import { createLogger } from '../../logger';
 import { scanFilesystemActivity, formatProjectActivity } from './filesystem-scan';
 import type { ProjectActivity, FilesystemScanResult } from './filesystem-scan';
@@ -179,4 +180,75 @@ export async function collectAmbientContext(): Promise<AmbientContext> {
   log.info(`[Ambient] Context collected: fs=${projectActivity.length}chars git=${gitActivity.length}chars browser=${browserActivity.length}chars shell=${shellActivity.length}chars files=${recentFilesActivity.length}chars total=${combined.length}chars`);
 
   return { projectActivity, gitActivity, browserActivity, shellActivity, recentFilesActivity, combined };
+}
+
+// ---------------------------------------------------------------------------
+// Compact summary for LLM system prompt injection (~200-400 chars)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a compact, token-efficient summary of the ambient environment data
+ * suitable for injection into the LLM system prompt.
+ *
+ * Output format:
+ * ```
+ * ENVIRONMENT:
+ * Projects: clawdia (~/Desktop/clawdia, 3 uncommitted, main), my-app (clean, feat/xyz)
+ * Shell: npm, git, docker frequent | Last dir: ~/Desktop/clawdia
+ * Browser: github.com (45), stackoverflow.com (12), docs.anthropic.com (8)
+ * ```
+ */
+export function formatCompactSummary(data: AmbientData): string {
+  const lines: string[] = ['ENVIRONMENT:'];
+  const home = homedir();
+  const shorten = (p: string) => p.startsWith(home) ? '~' + p.slice(home.length) : p;
+
+  // Projects + Git (top 3)
+  if (data.projects.length > 0 || data.gitRepos.length > 0) {
+    const gitMap = new Map<string, GitRepoStatus>();
+    for (const repo of data.gitRepos) {
+      gitMap.set(repo.fullPath, repo);
+    }
+
+    const projectParts: string[] = [];
+    const projects = data.projects.slice(0, 3);
+    for (const proj of projects) {
+      const git = gitMap.get(proj.fullPath);
+      const parts: string[] = [shorten(proj.fullPath)];
+      if (git) {
+        if (git.uncommittedCount > 0) parts.push(`${git.uncommittedCount} uncommitted`);
+        else parts.push('clean');
+        parts.push(git.branch);
+      }
+      projectParts.push(`${proj.name} (${parts.join(', ')})`);
+    }
+    if (projectParts.length > 0) {
+      lines.push(`Projects: ${projectParts.join(', ')}`);
+    }
+  }
+
+  // Shell (top prefixes + last working dir)
+  if (data.shellHistory) {
+    const sh = data.shellHistory;
+    const prefixes = sh.topPrefixes.slice(0, 5).map(p => p.prefix).join(', ');
+    const lastDir = sh.workingDirs.length > 0 ? shorten(sh.workingDirs[0]) : '';
+    const shellParts: string[] = [];
+    if (prefixes) shellParts.push(`${prefixes} frequent`);
+    if (lastDir) shellParts.push(`Last dir: ${lastDir}`);
+    if (shellParts.length > 0) {
+      lines.push(`Shell: ${shellParts.join(' | ')}`);
+    }
+  }
+
+  // Browser (top 5 domains)
+  if (data.browserHistory && data.browserHistory.topDomains.length > 0) {
+    const domains = data.browserHistory.topDomains.slice(0, 5)
+      .map(d => `${d.domain} (${d.visitCount})`)
+      .join(', ');
+    lines.push(`Browser: ${domains}`);
+  }
+
+  // Only return if we have more than just the header
+  if (lines.length <= 1) return '';
+  return lines.join('\n');
 }

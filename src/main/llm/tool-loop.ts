@@ -15,6 +15,7 @@ import {
   ToolExecCompleteEvent,
   ToolStepProgressEvent,
   ToolLoopEmitter,
+  ToolTimingEvent,
 } from '../../shared/types';
 import { IPC, IPC_EVENTS } from '../../shared/ipc-channels';
 import { buildSystemPrompt, getStaticPrompt, getDynamicPrompt, type PromptTier } from './system-prompt';
@@ -25,8 +26,10 @@ import { generateSynthesisThought, generateThought } from './thought-generator';
 import { classifyIntent, classifyToolClass, classifyEnriched, type ToolClass } from './intent-router';
 import { strategyCache, type CacheKey } from './strategy-cache';
 import { isToolAvailable } from './tool-bootstrap';
-import { shouldAuthorize } from '../autonomy-gate';
+import { shouldAuthorize, classifyAction } from '../autonomy-gate';
 import { ApprovalDecision, ApprovalRequest } from '../../shared/autonomy';
+import { appendAuditEvent } from '../audit/audit-store';
+import { redactCommand, redactUrl } from '../../shared/audit-types';
 import { validateAndBuild, FAST_PATH_ENTRIES, findFastPathEntryForUrl } from './fast-path-gate';
 import { buildStrategyHintBlock } from './system-prompt';
 import {
@@ -59,6 +62,13 @@ const log = createLogger('tool-loop');
 
 const MAX_TOOL_CALLS = 150;
 const MAX_TOOL_ITERATIONS = 150;
+
+/**
+ * Detect when the model falsely claims it lacks capabilities it actually has.
+ * Matches phrases like "I don't have the ability to", "I can't access your system",
+ * "I'm a text-based assistant", "I cannot interact with", etc.
+ */
+const CAPABILITY_DENIAL_RE = /(?:I\s+(?:don't|do\s+not|can't|cannot|am\s+(?:not\s+able|unable)\s+to)\s+(?:have\s+the\s+ability|actually\s+have|access\s+your|interact\s+with|start\s+servers|open\s+(?:a\s+)?browser|launch\s+app|control\s+(?:the|your)|browse|navigate|run\s+commands|execute)|(?:I'?m\s+(?:a\s+)?text-based|without\s+graphical\s+capabilities|terminal\s+environment\s+without|I\s+lack\s+the\s+(?:ability|capability)|I\s+am\s+unable\s+to\s+(?:access|start|open|launch|browse|interact|navigate|execute|run)))/i;
 import { ConversationManager } from './conversation';
 import { store } from '../store';
 // Dynamically reads from ConversationManager so runtime changes apply everywhere
@@ -472,12 +482,21 @@ function truncateForHistory(result: string): string {
  * truncates everything older. This dramatically reduces input tokens
  * on iterations 5+ of a tool loop.
  */
+// WeakSet to track messages already compressed — avoids re-parsing JSON on every iteration
+const compressedMessages = new WeakSet<Message>();
+
 function compressOldToolResults(messages: Message[]): void {
   // Walk backwards to find tool_result messages (stored as JSON arrays)
   let toolResultCount = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (msg.role !== 'user' || !msg.content.startsWith('[')) continue;
+
+    // Skip if already compressed in a previous iteration
+    if (compressedMessages.has(msg)) {
+      toolResultCount++;
+      continue;
+    }
 
     let parsed: unknown[];
     try {
@@ -522,7 +541,12 @@ function compressOldToolResults(messages: Message[]): void {
     });
 
     if (changed) {
-      messages[i] = { ...msg, content: JSON.stringify(compressed) };
+      const newMsg = { ...msg, content: JSON.stringify(compressed) };
+      messages[i] = newMsg;
+      compressedMessages.add(newMsg);
+    } else {
+      // Mark as checked even if no changes needed — skip JSON.parse next time
+      compressedMessages.add(msg);
     }
   }
 }
@@ -775,10 +799,13 @@ export class ToolLoop {
     const currentUrl = getActiveTabUrl() || undefined;
 
     // Build split prompts: static (cached) + dynamic (uncached, small)
+    const promptStart = performance.now();
     const autonomyMode = (store.get('autonomyMode') as string) || 'guided';
-    const minimalStatic = getStaticPrompt('minimal');
-    const standardStatic = getStaticPrompt('standard');
+    const minimalStatic = getStaticPrompt('minimal', autonomyMode);
+    const standardStatic = getStaticPrompt('standard', autonomyMode);
     const dynamicPrompt = getDynamicPrompt(modelLabel, currentUrl, userMessage, autonomyMode);
+    const promptMs = performance.now() - promptStart;
+    if (promptMs > 5) log.info(`[Perf] getDynamicPrompt: ${promptMs.toFixed(1)}ms`);
 
     // Combined prompts for backward-compat paths (forceFinalResponse, etc.)
     const minimalPrompt = minimalStatic + '\n\n' + dynamicPrompt;
@@ -847,6 +874,9 @@ export class ToolLoop {
         'Media download failed or yt-dlp unavailable. Do NOT retry curl/ffmpeg variants. Use browser tools to access the authenticated page, extract the media URL, then download. Avoid screenshots unless absolutely necessary.'
       );
     };
+
+    const setupMs = performance.now() - totalStart;
+    if (setupMs > 10) log.info(`[Perf] Pre-API setup: ${setupMs.toFixed(1)}ms (prompt=${promptMs.toFixed(1)} hist=${histMs.toFixed(1)} classify=${(performance.now() - totalStart - promptMs - histMs).toFixed(1)})`);
 
     // DETERMINISTIC FAST PATH — bypass LLM entirely for known CLI tasks
     if (isMediaExtractHighConfidence && mediaExtractUrl) {
@@ -1096,8 +1126,10 @@ export class ToolLoop {
             // Only speculatively execute safe, stateless, read-only tools.
             // Browser nav / clicks / writes could have side effects if the model
             // later decides to change plan in a subsequent tool_use block.
+            // shell_exec excluded: goes through autonomy gate and may require approval.
+            // Running it speculatively would bypass the approval check.
             const SPECULATIVE_SAFE = new Set([
-              'shell_exec', 'file_read', 'directory_tree', 'process_manager',
+              'file_read', 'directory_tree', 'process_manager',
               'browser_search', 'browser_news', 'browser_shopping',
               'browser_places', 'browser_images', 'browser_search_rich',
               'cache_read', 'sequential_thinking',
@@ -1212,6 +1244,31 @@ export class ToolLoop {
           // Clear streamed text so the retry response replaces it
           finalResponseParts.length = 0;
           this.hasStreamedText = false;
+          continue;
+        }
+
+        // CAPABILITY DENIAL RETRY — detect when the model hallucinates that it
+        // lacks abilities it actually has (browser, shell, file system, etc.).
+        // Common with smaller models like Haiku that ignore system prompt instructions.
+        // Only retry once (iteration < 2) and only when tools were provided.
+        if (
+          iteration < 2 &&
+          tools.length > 0 &&
+          responseText &&
+          CAPABILITY_DENIAL_RE.test(responseText)
+        ) {
+          log.warn(`[CapabilityDenial] Model falsely claimed it cannot do something — forcing retry (iteration=${iteration})`);
+          const assistantContent = response.content && response.content.length > 0
+            ? response.content
+            : [{ type: 'text', text: responseText }];
+          messages.push(makeMessage('assistant', JSON.stringify(assistantContent)));
+          messages.push(makeMessage('user',
+            '[System] CORRECTION: Your previous response is WRONG. You DO have full browser control, local system access via shell_exec, and file system access. You are NOT a text-based assistant — you are an agent with tools. Review your available tools and USE THEM to fulfill the user\'s request. Do not apologize or ask clarifying questions — take action NOW.'
+          ));
+          finalResponseParts.length = 0;
+          this.hasStreamedText = false;
+          // Also ensure we're using the full standard prompt, not minimal
+          systemPrompt = standardStatic;
           continue;
         }
 
@@ -1589,9 +1646,16 @@ export class ToolLoop {
       return { id: toolCall.id, content: skip };
     }
 
-    const tStart = performance.now();
+    // --- PHASE TIMING ---
+    const t1_received = performance.now();
+    const tStart = t1_received;
     const toolAbortController = new AbortController();
     this.activeTools.add(toolAbortController);
+    let t2_classified = t1_received;
+    let t3_approved = t1_received;
+    let t4_spawned = t1_received;
+    let t5_firstOutput: number | undefined;
+    let firstOutputCaptured = false;
 
     // --- AUTONOMY GATE CHECK ---
     const conversationId = this.runContext?.conversationId || 'default';
@@ -1599,7 +1663,10 @@ export class ToolLoop {
     const autonomyMode = (store.get('autonomyMode') as string) || 'guided';
 
     if (requestApproval && !skip) {
+      // shouldAuthorize: classifyAction (sync regex ~0.1ms) then optional approval wait (async IPC)
       const auth = await shouldAuthorize(toolCall.name, toolCall.input, conversationId, requestApproval);
+      t2_classified = performance.now(); // classify + approve combined (can't split without gate refactor)
+      t3_approved = t2_classified;
       if (!auth.allowed) {
         const denyMsg = auth.error || 'Autonomy mode restricted this action.';
         const entry: ToolActivityEntry = {
@@ -1627,6 +1694,25 @@ export class ToolLoop {
           summary: denyMsg,
         });
         this.activeTools.delete(toolAbortController);
+
+        // Audit: tool_denied
+        {
+          const rawCmd = (toolCall.name === 'shell_exec') ? String(toolCall.input.command || '') : '';
+          const rawUrl = String(toolCall.input.url || '');
+          appendAuditEvent({
+            ts: Date.now(),
+            kind: 'tool_denied',
+            conversationId,
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            risk: classifyAction(toolCall.name, toolCall.input).risk,
+            riskReason: denyMsg,
+            outcome: 'denied',
+            commandPreview: rawCmd ? redactCommand(rawCmd) : undefined,
+            urlPreview: rawUrl ? redactUrl(rawUrl) : undefined,
+          });
+        }
+
         return { id: toolCall.id, content: `ERROR: ${denyMsg}` };
       }
     }
@@ -1648,13 +1734,30 @@ export class ToolLoop {
       timestamp: entry.startedAt,
     });
 
+    // --- SPAWN WATCHDOG: warn if we haven't started executing after 2s ---
+    let spawnReached = false;
+    const watchdogTimer = setTimeout(() => {
+      if (!spawnReached) {
+        log.warn(`[Watchdog] Tool ${toolCall.name} (${toolCall.id.slice(0, 8)}) has not reached spawn after 2000ms. Phases: classify=${(t2_classified - t1_received).toFixed(0)}ms approve=${(t3_approved - t2_classified).toFixed(0)}ms`);
+      }
+    }, 2000);
+
     // --- EXECUTION WITH TIMEOUT PROMPT ---
     const executeOnce = async () => {
       const localCtx = {
         ...task.localContext,
-        onOutput: (chunk: string) => this.emitToolOutput(toolCall.id, chunk),
+        onOutput: (chunk: string) => {
+          if (!firstOutputCaptured) {
+            t5_firstOutput = performance.now();
+            firstOutputCaptured = true;
+          }
+          this.emitToolOutput(toolCall.id, chunk);
+        },
         signal: toolAbortController.signal,
       };
+
+      t4_spawned = performance.now();
+      spawnReached = true;
 
       const earlyStarted = this.earlyToolResults.get(toolCall.id);
       if (earlyStarted) {
@@ -1727,9 +1830,31 @@ export class ToolLoop {
         log.warn(`[SANITIZE] Tool ${toolCall.name} returned empty result — substituting placeholder`);
         result = '[Tool completed with no output]';
       }
-      const toolMs = performance.now() - tStart;
+      const t6_finished = performance.now();
+      clearTimeout(watchdogTimer);
+      const toolMs = t6_finished - tStart;
       log.debug(`Tool: ${toolCall.name}: ${toolMs.toFixed(0)}ms (${result.length} chars)`);
       perfLog('tool-exec', toolCall.name, toolMs, { chars: result.length });
+
+      // Emit timing event
+      this.emitToolTiming({
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        t1_received,
+        t2_classified,
+        t3_approved,
+        t4_spawned,
+        t5_firstOutput,
+        t6_finished,
+        durations: {
+          classify: t2_classified - t1_received,
+          approve: t3_approved - t2_classified,
+          spawn: t4_spawned - t3_approved,
+          firstOutput: t5_firstOutput !== undefined ? t5_firstOutput - t4_spawned : undefined,
+          execute: t6_finished - t4_spawned,
+          total: t6_finished - t1_received,
+        },
+      });
 
       // Safety net: hard-cap any single tool result to prevent context overflow.
       // Skip for image results — they contain base64 data sent as image content blocks,
@@ -1742,20 +1867,32 @@ export class ToolLoop {
 
       // Detect shell_exec soft failures — the tool returns a string (no throw)
       // but the output contains error markers indicating the command failed.
-      const isShellSoftFail = toolCall.name === 'shell_exec' && (
-        /\[Exit code: [1-9]\d*\]/.test(result) ||
-        /\[Process killed/.test(result) ||
-        /\[Error: /.test(result)
-      );
+      const isShellKilled = toolCall.name === 'shell_exec' && /\[Process killed/.test(result);
+      const isShellError = toolCall.name === 'shell_exec' && /\[Error: /.test(result);
+      const isShellNonZero = toolCall.name === 'shell_exec' && /\[Exit code: [1-9]\d*\]/.test(result);
 
-      const effectiveStatus = isShellSoftFail ? 'error' : 'success';
+      // Distinguish true errors from non-zero-exit warnings:
+      // - Killed processes and [Error:] markers are always hard errors.
+      // - Non-zero exit codes are only hard errors if the command produced no
+      //   useful stdout (just stderr / exit marker). Diagnostic tools like curl,
+      //   nmap, openssl often exit non-zero but return perfectly valid output.
+      const hasUsefulOutput = toolCall.name === 'shell_exec' && result.length > 0 &&
+        !/^\s*(\[stderr\]\n[\s\S]*)?\[Exit code: \d+\]\s*$/.test(result);
+
+      const isShellHardFail = isShellKilled || isShellError || (isShellNonZero && !hasUsefulOutput);
+      const isShellSoftFail = isShellNonZero && !isShellHardFail;
+
+      const effectiveStatus: 'success' | 'error' | 'warning' =
+        isShellHardFail ? 'error' :
+        isShellSoftFail ? 'warning' :
+        'success';
 
       entry.status = effectiveStatus;
       entry.completedAt = Date.now();
       entry.durationMs = Math.round(toolMs);
       entry.resultPreview = result.slice(0, 200);
       let shellStderr: string[] | undefined;
-      if (isShellSoftFail) {
+      if (isShellHardFail || isShellSoftFail) {
         entry.error = result.match(/\[(Exit code: \d+|Process killed[^\]]*|Error: [^\]]*)\]/)?.[0] || 'Command failed';
         // Extract stderr section from shell output if present
         const stderrMatch = result.match(/\[stderr\]\n([\s\S]*?)(?:\n\n\[|$)/);
@@ -1772,8 +1909,30 @@ export class ToolLoop {
         ...(shellStderr ? { stderr: shellStderr } : {}),
       });
 
+      // Audit: tool_executed
+      {
+        const rawCmd = (toolCall.name === 'shell_exec') ? String(toolCall.input.command || '') : '';
+        const rawUrl = String(toolCall.input.url || '');
+        const exitMatch = result.match(/\[Exit code: (\d+)\]/);
+        appendAuditEvent({
+          ts: Date.now(),
+          kind: 'tool_executed',
+          conversationId,
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          risk: classifyAction(toolCall.name, toolCall.input).risk,
+          outcome: effectiveStatus === 'error' ? 'blocked' : 'executed',
+          durationMs: entry.durationMs,
+          exitCode: exitMatch ? parseInt(exitMatch[1], 10) : (effectiveStatus === 'success' ? 0 : undefined),
+          commandPreview: rawCmd ? redactCommand(rawCmd) : undefined,
+          urlPreview: rawUrl ? redactUrl(rawUrl) : undefined,
+          errorPreview: (isShellHardFail || isShellSoftFail) ? entry.error : undefined,
+        });
+      }
+
       return { id: toolCall.id, content: result };
     } catch (error: any) {
+      clearTimeout(watchdogTimer);
       const toolErrMs = performance.now() - tStart;
       log.warn(`Tool ${toolCall.name} failed: ${error?.message || 'unknown error'}`);
       perfLog('tool-exec', toolCall.name + ' (ERROR)', toolErrMs);
@@ -2147,6 +2306,14 @@ export class ToolLoop {
   private emitToolLoopComplete(totalTools: number, totalDuration: number, failures: number): void {
     if (this.emitter.isDestroyed()) return;
     this.emitter.send(IPC_EVENTS.TOOL_LOOP_COMPLETE, { totalTools, totalDuration, failures });
+  }
+
+  private emitToolTiming(timing: ToolTimingEvent): void {
+    if (this.emitter.isDestroyed()) return;
+    this.emitter.send(IPC_EVENTS.TOOL_TIMING, timing);
+    // Also log as structured line for main process debugging
+    const d = timing.durations;
+    log.info(`[Timing] ${timing.toolName} (${timing.toolCallId.slice(0, 8)}): classify=${d.classify.toFixed(0)}ms approve=${d.approve.toFixed(0)}ms spawn=${d.spawn.toFixed(0)}ms exec=${d.execute.toFixed(0)}ms total=${d.total.toFixed(0)}ms${d.firstOutput !== undefined ? ` firstOutput=${d.firstOutput.toFixed(0)}ms` : ''}`);
   }
 
   private emitToolActivitySummary(responseText: string): void {

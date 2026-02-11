@@ -44,7 +44,7 @@ export interface PendingDocument {
   errorMessage?: string;
 }
 
-export const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 50;
+export const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 150;
 export const SCROLL_CHEVRON_EDGE_THRESHOLD_PX = 50;
 export const SCROLL_CHEVRON_IDLE_TIMEOUT_MS = 2200;
 export const ADDRESS_HISTORY_STORAGE_KEY = 'clawdia.browser.address-history.v1';
@@ -156,7 +156,7 @@ export const appState = {
   highlightedAddressSuggestionIndex: -1,
   currentBrowserUrl: '',  // tracks the actual URL of the active browser tab
   readmeVisible: false,
-  activeView: 'chat' as 'chat' | 'tasks' | 'conversations' | 'readme' | 'settings',
+  activeView: 'chat' as 'chat' | 'tasks' | 'conversations' | 'readme' | 'settings' | 'timeline',
 };
 
 export const elements = {} as {
@@ -258,11 +258,17 @@ export const elements = {} as {
   navChatBtn: HTMLButtonElement;
   navTasksBtn: HTMLButtonElement;
   navTasksBadge: HTMLSpanElement;
+  navTimelineBtn: HTMLButtonElement;
   navConversationsBtn: HTMLButtonElement;
   navReadmeBtn: HTMLButtonElement;
   navSettingsBtn: HTMLButtonElement;
   taskView: HTMLDivElement;
   tvContent: HTMLDivElement;
+  timelineView: HTMLDivElement;
+  tlEvents: HTMLDivElement;
+  tlEmpty: HTMLDivElement;
+  tlFilters: HTMLDivElement;
+  tlClearBtn: HTMLButtonElement;
 };
 
 function required<T extends HTMLElement>(id: string): T {
@@ -380,9 +386,15 @@ export function initElements(): void {
   elements.navChatBtn = required<HTMLButtonElement>('nav-chat');
   elements.navTasksBtn = required<HTMLButtonElement>('nav-tasks');
   elements.navTasksBadge = required<HTMLSpanElement>('nav-tasks-badge');
+  elements.navTimelineBtn = required<HTMLButtonElement>('nav-timeline');
   elements.navConversationsBtn = required<HTMLButtonElement>('nav-conversations');
   elements.navReadmeBtn = required<HTMLButtonElement>('nav-readme');
   elements.navSettingsBtn = required<HTMLButtonElement>('nav-settings');
   elements.taskView = required<HTMLDivElement>('task-view');
   elements.tvContent = required<HTMLDivElement>('tv-content');
+  elements.timelineView = required<HTMLDivElement>('timeline-view');
+  elements.tlEvents = required<HTMLDivElement>('tl-events');
+  elements.tlEmpty = required<HTMLDivElement>('tl-empty');
+  elements.tlFilters = required<HTMLDivElement>('tl-filters');
+  elements.tlClearBtn = required<HTMLButtonElement>('tl-clear-btn');
 }

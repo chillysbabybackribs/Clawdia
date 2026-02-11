@@ -8,6 +8,51 @@ import { createLogger } from '../logger';
 const log = createLogger('llm-client');
 
 // ============================================================================
+// RETRY CONFIG — handles transient 529 (overloaded) and 5xx errors
+// ============================================================================
+
+const MAX_RETRIES = 3;
+const INITIAL_BACKOFF_MS = 2_000;
+const MAX_BACKOFF_MS = 30_000;
+
+function isRetryableError(err: unknown): boolean {
+  if (err && typeof err === 'object') {
+    const status = (err as any).status ?? (err as any).statusCode;
+    // 529 = overloaded, 500/502/503 = transient server errors
+    if (status === 529 || status === 500 || status === 502 || status === 503) return true;
+    // Also catch rate limit (429) with retry-after
+    if (status === 429) return true;
+  }
+  return false;
+}
+
+function getRetryDelay(attempt: number, err: unknown): number {
+  // Respect Retry-After header if present
+  if (err && typeof err === 'object') {
+    const retryAfter = (err as any).headers?.['retry-after'];
+    if (retryAfter) {
+      const secs = parseInt(retryAfter, 10);
+      if (!isNaN(secs) && secs > 0) return Math.min(secs * 1000, MAX_BACKOFF_MS);
+    }
+  }
+  // Exponential backoff with jitter
+  const base = INITIAL_BACKOFF_MS * Math.pow(2, attempt);
+  const jitter = Math.random() * 1000;
+  return Math.min(base + jitter, MAX_BACKOFF_MS);
+}
+
+async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    if (signal) {
+      const onAbort = () => { clearTimeout(timer); reject(signal.reason ?? new DOMException('Aborted', 'AbortError')); };
+      if (signal.aborted) { clearTimeout(timer); reject(signal.reason ?? new DOMException('Aborted', 'AbortError')); return; }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
+}
+
+// ============================================================================
 // CACHE METRICS
 // ============================================================================
 
@@ -221,106 +266,128 @@ export class AnthropicClient {
       delete createParams.context_management;
     }
 
-    const response = await (this.client.messages.create as any)(createParams, {
-      signal: options?.signal,
-    }) as AsyncIterable<any>;
+    // Retry loop for transient errors (529 overloaded, 5xx, 429 rate-limited)
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      if (attempt > 0) {
+        const delay = getRetryDelay(attempt - 1, lastError);
+        const status = (lastError as any)?.status ?? '???';
+        log.warn(`[Retry] attempt ${attempt}/${MAX_RETRIES} after ${status} — waiting ${Math.round(delay)}ms`);
+        await sleep(delay, options?.signal);
+      }
 
-    // Accumulate streamed response
-    const contentBlocks: ContentBlock[] = [];
-    let currentTextBlock: TextBlock | null = null;
-    let currentToolUse: ToolUse | null = null;
-    let currentToolJsonFragments = '';
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let cacheReadInputTokens = 0;
-    let cacheCreationInputTokens = 0;
-    let stopReason: LLMResponse['stopReason'] = 'end_turn';
+      try {
+        const response = await (this.client.messages.create as any)(createParams, {
+          signal: options?.signal,
+        }) as AsyncIterable<any>;
 
-    for await (const event of response) {
-      switch (event.type) {
-        case 'message_start':
-          inputTokens = event.message.usage?.input_tokens || 0;
-          cacheReadInputTokens = (event.message.usage as any)?.cache_read_input_tokens || 0;
-          cacheCreationInputTokens = (event.message.usage as any)?.cache_creation_input_tokens || 0;
-          break;
+        // Accumulate streamed response
+        const contentBlocks: ContentBlock[] = [];
+        let currentTextBlock: TextBlock | null = null;
+        let currentToolUse: ToolUse | null = null;
+        let currentToolJsonFragments = '';
+        let inputTokens = 0;
+        let outputTokens = 0;
+        let cacheReadInputTokens = 0;
+        let cacheCreationInputTokens = 0;
+        let stopReason: LLMResponse['stopReason'] = 'end_turn';
 
-        case 'content_block_start':
-          if (event.content_block.type === 'text') {
-            currentTextBlock = { type: 'text', text: '' };
-          } else if (event.content_block.type === 'tool_use') {
-            currentToolUse = {
-              type: 'tool_use',
-              id: event.content_block.id,
-              name: event.content_block.name,
-              input: {},
-            };
-            currentToolJsonFragments = '';
-          }
-          break;
+        for await (const event of response) {
+          switch (event.type) {
+            case 'message_start':
+              inputTokens = event.message.usage?.input_tokens || 0;
+              cacheReadInputTokens = (event.message.usage as any)?.cache_read_input_tokens || 0;
+              cacheCreationInputTokens = (event.message.usage as any)?.cache_creation_input_tokens || 0;
+              break;
 
-        case 'content_block_delta':
-          if (event.delta.type === 'text_delta' && currentTextBlock) {
-            currentTextBlock.text += event.delta.text;
-            if (onText) {
-              onText(event.delta.text);
-            }
-          } else if (event.delta.type === 'input_json_delta' && currentToolUse) {
-            // Accumulate JSON fragments — parsed at content_block_stop
-            // @ts-ignore - partial_json exists on input_json_delta
-            currentToolJsonFragments += event.delta.partial_json || '';
-          }
-          break;
-
-        case 'content_block_stop':
-          if (currentTextBlock) {
-            contentBlocks.push(currentTextBlock);
-            currentTextBlock = null;
-          } else if (currentToolUse) {
-            // Parse the accumulated JSON fragments into tool input
-            if (currentToolJsonFragments) {
-              try {
-                currentToolUse.input = JSON.parse(currentToolJsonFragments);
-              } catch (err) {
-                log.warn(`Failed to parse tool input JSON for ${currentToolUse.name}:`, err);
-                currentToolUse.input = {};
+            case 'content_block_start':
+              if (event.content_block.type === 'text') {
+                currentTextBlock = { type: 'text', text: '' };
+              } else if (event.content_block.type === 'tool_use') {
+                currentToolUse = {
+                  type: 'tool_use',
+                  id: event.content_block.id,
+                  name: event.content_block.name,
+                  input: {},
+                };
+                currentToolJsonFragments = '';
               }
-            }
-            if (options?.onToolUse) {
-              const started = options.onToolUse(currentToolUse);
-              if (typeof started !== 'undefined') {
-                void Promise.resolve(started);
-              }
-            }
-            contentBlocks.push(currentToolUse);
-            currentToolUse = null;
-            currentToolJsonFragments = '';
-          }
-          break;
+              break;
 
-        case 'message_delta':
-          outputTokens = event.usage?.output_tokens || 0;
-          if (event.delta.stop_reason) {
-            stopReason = event.delta.stop_reason as LLMResponse['stopReason'];
+            case 'content_block_delta':
+              if (event.delta.type === 'text_delta' && currentTextBlock) {
+                currentTextBlock.text += event.delta.text;
+                if (onText) {
+                  onText(event.delta.text);
+                }
+              } else if (event.delta.type === 'input_json_delta' && currentToolUse) {
+                // Accumulate JSON fragments — parsed at content_block_stop
+                // @ts-ignore - partial_json exists on input_json_delta
+                currentToolJsonFragments += event.delta.partial_json || '';
+              }
+              break;
+
+            case 'content_block_stop':
+              if (currentTextBlock) {
+                contentBlocks.push(currentTextBlock);
+                currentTextBlock = null;
+              } else if (currentToolUse) {
+                // Parse the accumulated JSON fragments into tool input
+                if (currentToolJsonFragments) {
+                  try {
+                    currentToolUse.input = JSON.parse(currentToolJsonFragments);
+                  } catch (err) {
+                    log.warn(`Failed to parse tool input JSON for ${currentToolUse.name}:`, err);
+                    currentToolUse.input = {};
+                  }
+                }
+                if (options?.onToolUse) {
+                  const started = options.onToolUse(currentToolUse);
+                  if (typeof started !== 'undefined') {
+                    void Promise.resolve(started);
+                  }
+                }
+                contentBlocks.push(currentToolUse);
+                currentToolUse = null;
+                currentToolJsonFragments = '';
+              }
+              break;
+
+            case 'message_delta':
+              outputTokens = event.usage?.output_tokens || 0;
+              if (event.delta.stop_reason) {
+                stopReason = event.delta.stop_reason as LLMResponse['stopReason'];
+              }
+              break;
           }
-          break;
+        }
+
+        // Log prompt caching metrics for observability.
+        const cm = computeCacheMetrics(inputTokens, cacheReadInputTokens, cacheCreationInputTokens);
+        log.info(`[Cache] hitRate=${cm.hitRateStr}% | freshTokens=${inputTokens} cacheRead=${cacheReadInputTokens} cacheCreate=${cacheCreationInputTokens} totalInput=${cm.totalInputTokens} outputTokens=${outputTokens}`);
+
+        return {
+          content: contentBlocks,
+          stopReason,
+          model: this.model,
+          usage: {
+            inputTokens,
+            outputTokens,
+            cacheReadInputTokens,
+            cacheCreationInputTokens,
+          },
+        };
+      } catch (err: unknown) {
+        lastError = err;
+        // AbortError should not be retried
+        if (err instanceof Error && err.name === 'AbortError') throw err;
+        if (!isRetryableError(err) || attempt === MAX_RETRIES) throw err;
+        // Loop continues to next attempt
       }
     }
 
-    // Log prompt caching metrics for observability.
-    const cm = computeCacheMetrics(inputTokens, cacheReadInputTokens, cacheCreationInputTokens);
-    log.info(`[Cache] hitRate=${cm.hitRateStr}% | freshTokens=${inputTokens} cacheRead=${cacheReadInputTokens} cacheCreate=${cacheCreationInputTokens} totalInput=${cm.totalInputTokens} outputTokens=${outputTokens}`);
-
-    return {
-      content: contentBlocks,
-      stopReason,
-      model: this.model,
-      usage: {
-        inputTokens,
-        outputTokens,
-        cacheReadInputTokens,
-        cacheCreationInputTokens,
-      },
-    };
+    // Should never reach here, but satisfy TypeScript
+    throw lastError;
   }
 
   /**
@@ -347,28 +414,46 @@ export class AnthropicClient {
     const requestModel = options?.model ?? this.model;
     log.info(`[API Request] model=${requestModel} | endpoint=complete | stream=false | maxTokens=${options?.maxTokens ?? 1024}`);
 
-    const response = await this.client.messages.create({
-      model: requestModel,
-      max_tokens: options?.maxTokens ?? 1024,
-      messages,
-    }, {
-      signal: options?.signal,
-    });
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      if (attempt > 0) {
+        const delay = getRetryDelay(attempt - 1, lastError);
+        const status = (lastError as any)?.status ?? '???';
+        log.warn(`[Retry:complete] attempt ${attempt}/${MAX_RETRIES} after ${status} — waiting ${Math.round(delay)}ms`);
+        await sleep(delay, options?.signal);
+      }
 
-    const text = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-      .map((b) => b.text)
-      .join('\n');
+      try {
+        const response = await this.client.messages.create({
+          model: requestModel,
+          max_tokens: options?.maxTokens ?? 1024,
+          messages,
+        }, {
+          signal: options?.signal,
+        });
 
-    const usage: LLMResponse['usage'] = {
-      inputTokens: response.usage?.input_tokens || 0,
-      outputTokens: response.usage?.output_tokens || 0,
-      cacheReadInputTokens: (response.usage as any)?.cache_read_input_tokens || 0,
-      cacheCreationInputTokens: (response.usage as any)?.cache_creation_input_tokens || 0,
-    };
+        const text = response.content
+          .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+          .map((b) => b.text)
+          .join('\n');
 
-    log.info(`[Complete] model=${requestModel} | input=${usage.inputTokens} output=${usage.outputTokens}`);
-    return { text, usage };
+        const usage: LLMResponse['usage'] = {
+          inputTokens: response.usage?.input_tokens || 0,
+          outputTokens: response.usage?.output_tokens || 0,
+          cacheReadInputTokens: (response.usage as any)?.cache_read_input_tokens || 0,
+          cacheCreationInputTokens: (response.usage as any)?.cache_creation_input_tokens || 0,
+        };
+
+        log.info(`[Complete] model=${requestModel} | input=${usage.inputTokens} output=${usage.outputTokens}`);
+        return { text, usage };
+      } catch (err: unknown) {
+        lastError = err;
+        if (err instanceof Error && err.name === 'AbortError') throw err;
+        if (!isRetryableError(err) || attempt === MAX_RETRIES) throw err;
+      }
+    }
+
+    throw lastError;
   }
 
   /**

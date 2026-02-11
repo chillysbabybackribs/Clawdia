@@ -12,6 +12,23 @@ import { listAccounts } from '../accounts/account-store';
 import { siteKnowledge, userMemory } from '../learning';
 import { getTasksSummaryForPrompt } from '../tasks/task-store';
 
+// ---------------------------------------------------------------------------
+// Short-lived caches for dynamic prompt components (avoid repeated SQLite queries)
+// TTL = 5s — fresh enough for all practical purposes, avoids ~5 SQLite queries per run()
+// ---------------------------------------------------------------------------
+interface CachedValue<T> { value: T; expiresAt: number; }
+const DYNAMIC_CACHE_TTL_MS = 5_000;
+const dynamicCache = new Map<string, CachedValue<string>>();
+
+function getCachedOrCompute(key: string, compute: () => string): string {
+  const now = Date.now();
+  const cached = dynamicCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.value;
+  const value = compute();
+  dynamicCache.set(key, { value, expiresAt: now + DYNAMIC_CACHE_TTL_MS });
+  return value;
+}
+
 // =============================================================================
 // MINIMAL PROMPT - Chat only (~800 tokens)
 // =============================================================================
@@ -35,6 +52,7 @@ When the user asks you to launch, start, run, open, or execute ANYTHING — use 
 - NEVER respond with "I don't have the ability to launch applications" — you DO, via shell_exec.
 
 SEARCH RULES:
+- ALWAYS include the current year in search queries for time-sensitive topics (pricing, API docs, changelogs, news). Check TODAY'S DATE in the dynamic context.
 - One search for factual questions. Read snippets. If they answer, respond immediately.
 - Only click into a result if snippets lack the answer.
 - Never search for the same thing twice.
@@ -46,7 +64,7 @@ RESPONSE SPEED:
 - Execute read-only operations without announcing them.
 - Batch independent tool calls in a single response.
 - Do not say "I'll start by..." / "Let me check...". Just execute.
-- Confirmation required only for destructive/financial/authenticated writes.
+- Never ask for confirmation. Just execute.
 
 BROWSER TOOL SELECTION:
 - User wants to WATCH you browse? → browser_navigate + browser_click (visible in browser panel)
@@ -118,17 +136,6 @@ RESPONSE RULES:
 - Simple facts: 1-2 sentences. No headers. No bullets.
 - Never start with "Based on my research..." or similar.
 - When you have the answer, STOP and respond.
-
-REVERSIBLE ACTIONS & SAFETY:
-**CRITICAL - MANDATORY RULE:** For ANY file operation (create, modify, move, delete), you MUST use Action Plans. This is NOT optional.
-- **NEVER use \`file_write\`, \`file_edit\`, or \`shell_exec\` for file operations.** These tools are DISABLED for file operations.
-- **ALWAYS use the Action Plan workflow:**
-  1. \`action_create_plan\` ("Create file X")
-  2. \`action_add_item\` (type: \`fs_write\`, payload: {path, content, encoding})
-  3. \`action_execute_plan\` (planId)
-  4. Confirm completion.
-- **Why?** Action Plans provide automatic undo capability and safety. Direct file tools are irreversible.
-- **Exception:** ONLY use direct tools for temporary files in \`/tmp\` or if the user explicitly says "quick" or "one-off".
 
 SOURCE CODE EDITING (Clawdia's own codebase):
 When editing files under ~/Desktop/clawdia/src/:
@@ -254,6 +261,34 @@ Use create_document for reports/spreadsheets (saves to ~/Documents/Clawdia/):
 - Formats: docx, pdf, xlsx, txt, md, csv, html, json`;
 
 // =============================================================================
+// SAFETY RULES - Only included in safe/guided modes
+// =============================================================================
+const SAFETY_RULES = `REVERSIBLE ACTIONS & SAFETY:
+**CRITICAL - MANDATORY RULE:** For ANY file operation (create, modify, move, delete), you MUST use Action Plans. This is NOT optional.
+- **NEVER use \`file_write\`, \`file_edit\`, or \`shell_exec\` for file operations.** These tools are DISABLED for file operations.
+- **ALWAYS use the Action Plan workflow:**
+  1. \`action_create_plan\` ("Create file X")
+  2. \`action_add_item\` (type: \`fs_write\`, payload: {path, content, encoding})
+  3. \`action_execute_plan\` (planId)
+  4. Confirm completion.
+- **Why?** Action Plans provide automatic undo capability and safety. Direct file tools are irreversible.
+- **Exception:** ONLY use direct tools for temporary files in \`/tmp\` or if the user explicitly says "quick" or "one-off".`;
+
+// =============================================================================
+// UNRESTRICTED MODE OVERRIDE - Replaces safety rules in unrestricted mode
+// =============================================================================
+const UNRESTRICTED_RULES = `UNRESTRICTED MODE — FULL AUTONOMY:
+You have FULL permission to act without asking. The user has explicitly enabled unrestricted mode.
+- Execute ALL actions directly. Use shell_exec, file_write, file_edit freely. No Action Plan workflow required.
+- Install packages (npm, pip, apt, brew) without asking. Download files with wget/curl without asking.
+- Modify, create, delete files directly. No confirmation needed.
+- Navigate any website, fill forms, click buttons, post content — just do it.
+- If a tool or command could solve the problem, use it immediately. Do not explain what you're about to do — just do it.
+- If you encounter a missing dependency, install it. If you need a tool, download it. If something fails, try an alternative approach.
+- NEVER say "I can't", "I don't have permission", "I need to ask", or "shall I proceed?" — you have blanket permission.
+- The only exception: do not rm -rf / or wipe the entire system. Use normal judgment for obviously catastrophic commands.`;
+
+// =============================================================================
 // THINKING RULES - When to use sequential_thinking tool
 // =============================================================================
 const THINKING_RULES = `REASONING BEFORE ACTION:
@@ -275,6 +310,10 @@ Do NOT use sequential_thinking for:
 When the user says "assess", "evaluate", "plan", "consider", or "what might break" — this ALWAYS triggers sequential_thinking first.
 
 RESPONSE LENGTH: Match your response length to the request. Assessment and planning responses should be concise — summarize findings, list key risks, and recommend an approach. A good assessment is 300-500 words, not 2000+.`;
+
+const THINKING_RULES_LITE = `REASONING:
+Use sequential_thinking only when the user explicitly asks you to "assess", "evaluate", "plan", or "consider". For everything else, act directly.
+RESPONSE LENGTH: Match your response length to the request. Be concise.`;
 
 // =============================================================================
 // TOOL INTEGRITY RULES - Anti-fabrication directive
@@ -345,9 +384,15 @@ Home: ${os.homedir()} | Node: ${process.version} | ${os.cpus().length} cores, ${
 function getDateContext(): string {
   const now = new Date();
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local';
-  // Use date-only format (YYYY-MM-DD) to avoid busting prompt cache on every request
-  const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  return `DATE: ${dateStr} (${tz}) | Year: ${now.getFullYear()}`;
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const dateStr = `${year}-${month}-${day}`;
+  // Emphatic date block — models tend to ignore subtle date hints and default to
+  // training-data years (2023/2024). Repeating the year and adding an explicit
+  // search rule significantly reduces stale-year queries.
+  return `TODAY'S DATE: ${dateStr} | CURRENT YEAR: ${year} | Timezone: ${tz}
+IMPORTANT: The current year is ${year}. When searching for documentation, pricing, APIs, news, or any time-sensitive information, ALWAYS include "${year}" in your search queries. Never search for outdated years like 2024 or 2025.`;
 }
 
 // =============================================================================
@@ -365,10 +410,11 @@ export interface SystemPromptOptions {
 
 /**
  * Get the STATIC portion of the prompt (for Anthropic cache_control)
- * This doesn't change between requests.
+ * Autonomy mode affects which rules are included.
  */
-export function getStaticPrompt(tier: PromptTier): string {
+export function getStaticPrompt(tier: PromptTier, autonomyMode?: string): string {
   const parts: string[] = [];
+  const unrestricted = autonomyMode === 'unrestricted';
 
   parts.push('You are Clawdia, a fast, helpful assistant with web browsing and local system access.');
 
@@ -377,11 +423,16 @@ export function getStaticPrompt(tier: PromptTier): string {
   } else {
     parts.push(CORE_TOOL_RULES);
     parts.push(BROWSER_ACCESS_RULES);
-    parts.push(THINKING_RULES);
+    // In unrestricted mode: skip safety rules, use lite thinking, add unrestricted override
+    if (unrestricted) {
+      parts.push(UNRESTRICTED_RULES);
+      parts.push(THINKING_RULES_LITE);
+    } else {
+      parts.push(SAFETY_RULES);
+      parts.push(THINKING_RULES);
+    }
     parts.push(TOOL_INTEGRITY_RULES);
     parts.push(SELF_KNOWLEDGE);
-    // Live preview + document rules included in standard tier —
-    // these tools are always available so the LLM needs guidance.
     parts.push(LIVE_PREVIEW_RULES);
     parts.push(DOCUMENT_RULES);
   }
@@ -390,15 +441,17 @@ export function getStaticPrompt(tier: PromptTier): string {
 }
 
 function getAccountsContext(): string {
-  const accounts = listAccounts();
-  if (accounts.length === 0) return '';
-  const lines = accounts.map((a) =>
-    `- ${a.platform}: ${a.username} (${a.domain})`
-  );
-  return [
-    `USER'S ACCOUNTS (these belong to the user — distinguish from third-party accounts):`,
-    ...lines,
-  ].join('\n');
+  return getCachedOrCompute('accounts', () => {
+    const accounts = listAccounts();
+    if (accounts.length === 0) return '';
+    const lines = accounts.map((a) =>
+      `- ${a.platform}: ${a.username} (${a.domain})`
+    );
+    return [
+      `USER'S ACCOUNTS (these belong to the user — distinguish from third-party accounts):`,
+      ...lines,
+    ].join('\n');
+  });
 }
 
 /**
@@ -408,7 +461,12 @@ function getAccountsContext(): string {
 function getLearningContext(currentUrl?: string, currentMessage?: string): string {
   let context = '';
 
-  const memoryCtx = userMemory?.getPromptContext(1200, currentMessage);
+  // Memory context: Pass 1 (always-inject) is cacheable; Pass 2 (FTS5) depends on currentMessage
+  // Cache the full result keyed by message hash for short TTL
+  const memoryCacheKey = `memory:${currentMessage?.slice(0, 50) || ''}`;
+  const memoryCtx = getCachedOrCompute(memoryCacheKey, () =>
+    userMemory?.getPromptContext(1200, currentMessage) || ''
+  );
   if (memoryCtx) {
     context += `\n${memoryCtx}\n`;
   }
@@ -416,7 +474,9 @@ function getLearningContext(currentUrl?: string, currentMessage?: string): strin
   if (currentUrl) {
     try {
       const hostname = new URL(currentUrl).hostname.replace('www.', '');
-      const siteCtx = siteKnowledge?.getContextForHostname(hostname);
+      const siteCtx = getCachedOrCompute(`site:${hostname}`, () =>
+        siteKnowledge?.getContextForHostname(hostname) || ''
+      );
       if (siteCtx) {
         context += siteCtx;
       }
@@ -425,7 +485,9 @@ function getLearningContext(currentUrl?: string, currentMessage?: string): strin
     }
   }
 
-  const topSites = siteKnowledge?.getTopSiteContext(3);
+  const topSites = getCachedOrCompute('topSites', () =>
+    siteKnowledge?.getTopSiteContext(3) || ''
+  );
   if (topSites) {
     context += topSites;
   }
@@ -449,6 +511,8 @@ export function getDynamicPrompt(modelLabel?: string, currentUrl?: string, curre
     parts.push(`AUTONOMY MODE: ${autonomyMode.toUpperCase()}`);
     if (autonomyMode === 'safe' || autonomyMode === 'guided') {
       parts.push(`Note: You are in ${autonomyMode.toUpperCase()} mode. Sensitive actions (sudo, network exfil, sensitive sites) may require explicit user approval. If an action is blocked, inform the user why it might be sensitive.`);
+    } else if (autonomyMode === 'unrestricted') {
+      parts.push(`You have FULL autonomy. All actions are pre-approved. Act immediately without asking. Install packages, download files, modify the system, navigate any site — whatever is needed to complete the task. Never ask for permission.`);
     }
   }
   const accountsCtx = getAccountsContext();
@@ -457,12 +521,18 @@ export function getDynamicPrompt(modelLabel?: string, currentUrl?: string, curre
   }
 
   try {
-    const tasksCtx = getTasksSummaryForPrompt();
+    const tasksCtx = getCachedOrCompute('tasks', () => getTasksSummaryForPrompt());
     if (tasksCtx) {
       parts.push(tasksCtx);
     }
   } catch {
     // Vault may not be initialized yet during startup
+  }
+
+  // Ambient environment summary (projects, git, shell, browser — set at startup)
+  if (ambientSummary) {
+    // Cap at 800 chars to stay within token budget (~200 tokens)
+    parts.push(ambientSummary.length > 800 ? ambientSummary.slice(0, 800) : ambientSummary);
   }
 
   const learningCtx = getLearningContext(currentUrl, currentMessage);
@@ -481,7 +551,7 @@ export function buildSystemPrompt(options?: SystemPromptOptions): string {
   const modelLabel = options?.modelLabel;
   const currentUrl = options?.currentUrl;
   const autonomyMode = options?.autonomyMode;
-  return getStaticPrompt(tier) + '\n\n' + getDynamicPrompt(modelLabel, currentUrl, undefined, autonomyMode);
+  return getStaticPrompt(tier, autonomyMode) + '\n\n' + getDynamicPrompt(modelLabel, currentUrl, undefined, autonomyMode);
 }
 
 /**
@@ -491,6 +561,22 @@ export function buildSystemPrompt(options?: SystemPromptOptions): string {
 export function buildStrategyHintBlock(hint: string): string {
   if (!hint) return '';
   return `\nSTRATEGY HINT (follow this approach unless you have strong reason not to):\n${hint}`;
+}
+
+// ---------------------------------------------------------------------------
+// Ambient environment summary — injected once at startup, refreshed on demand
+// ---------------------------------------------------------------------------
+
+let ambientSummary: string = '';
+
+/** Set the ambient environment summary (called from main.ts after collectAmbientData). */
+export function setAmbientSummary(summary: string): void {
+  ambientSummary = summary;
+}
+
+/** Get the current ambient summary (empty string if not yet collected). */
+export function getAmbientSummary(): string {
+  return ambientSummary;
 }
 
 // Legacy export
