@@ -228,6 +228,12 @@ const api = {
     return () => ipcRenderer.removeListener(IPC_EVENTS.CHAT_UPDATED, handler);
   },
 
+  onAgentCountUpdate: (callback: (count: number) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, count: number) => callback(count);
+    ipcRenderer.on(IPC_EVENTS.AGENT_COUNT_UPDATE, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.AGENT_COUNT_UPDATE, handler);
+  },
+
   // -------------------------------------------------------------------------
   // Browser
   // -------------------------------------------------------------------------

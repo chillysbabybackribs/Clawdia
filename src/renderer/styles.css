@@ -5624,18 +5624,18 @@ input:focus-visible+.toggle-slider {
   width: 30px;
   height: 30px;
   border-radius: 8px;
-  border: 1px solid rgba(14, 166, 144, 0.3) !important;
-  border-left: 1px solid rgba(14, 166, 144, 0.3) !important;
+  border: 1px solid rgba(14, 116, 144, 0.35) !important;
+  border-left: 1px solid rgba(14, 116, 144, 0.35) !important;
   color: var(--accent);
-  background: rgba(14, 166, 144, 0.06);
+  background: rgba(14, 116, 144, 0.12);
   margin-bottom: 2px;
   transition: all 0.2s ease;
 }
 
 .sidebar-new-chat-btn:hover {
-  background: rgba(14, 166, 144, 0.15) !important;
+  background: rgba(14, 116, 144, 0.2) !important;
   color: #fff !important;
-  border-color: rgba(14, 166, 144, 0.5) !important;
+  border-color: rgba(8, 145, 178, 0.55) !important;
   transform: scale(1.05);
 }
 

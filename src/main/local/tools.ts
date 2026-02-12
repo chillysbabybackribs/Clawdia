@@ -5,6 +5,7 @@ import { homedir } from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
 import { createLogger } from '../logger';
+import { delegateResearch } from '../llm/agents/research-agent';
 import { createDocument, type LlmGenerationMetrics } from '../documents/creator';
 import type { DocProgressEvent } from '../../shared/types';
 
@@ -336,10 +337,162 @@ export interface LocalToolExecutionContext {
   signal?: AbortSignal;
 }
 
-// Clawdia - Search: Local tools disabled. This agent uses browser tools only.
 export const LOCAL_TOOL_DEFINITIONS: LocalToolDefinition[] = [
-  // shell_exec, file_read, file_write, file_edit, directory_tree, process_manager, create_document
-  // are disabled in this vertical. Use Clawdia - Automator for local file system access.
+  {
+    name: 'shell_exec',
+    description:
+      'Execute a shell command on the local system. Has full access to filesystem, network, installed programs, and system utilities. Can launch GUI desktop applications (use & to background them). NEVER use this to open URLs — use browser_navigate instead. URLs opened via xdg-open/firefox/chrome will be blocked.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        command: {
+          type: 'string',
+          description: 'Shell command to execute (bash syntax).',
+        },
+        working_directory: {
+          type: 'string',
+          description: 'Optional working directory. Defaults to user home.',
+        },
+        timeout: {
+          type: 'number',
+          description: 'Optional timeout in seconds. Default 30. Use 0 for no timeout.',
+        },
+      },
+      required: ['command'],
+    },
+  },
+  {
+    name: 'file_read',
+    description:
+      'Read file contents. For large files, returns first/last sections with line count. Use startLine/endLine to read specific sections.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute or relative file path.' },
+        max_lines: { type: 'number', description: 'Optional line count cap.' },
+        offset: { type: 'number', description: 'Optional starting line offset (0-based).' },
+        startLine: { type: 'number', description: 'Start line (1-indexed, optional). Use to read specific sections of large files.' },
+        endLine: { type: 'number', description: 'End line (1-indexed, inclusive, optional).' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'file_write',
+    description:
+      'Write content to a file. Creates file and parent directories when missing. Supports overwrite and append.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path to write.' },
+        content: { type: 'string', description: 'Content to write.' },
+        mode: {
+          type: 'string',
+          enum: ['overwrite', 'append'],
+          description: 'Write mode. Defaults to overwrite.',
+        },
+      },
+      required: ['path', 'content'],
+    },
+  },
+  {
+    name: 'file_edit',
+    description:
+      'Targeted find-and-replace edit. old_string must appear exactly once in the file.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path to the file.' },
+        old_string: { type: 'string', description: 'Exact string to replace (must be unique).' },
+        new_string: { type: 'string', description: 'Replacement string.' },
+      },
+      required: ['path', 'old_string', 'new_string'],
+    },
+  },
+  {
+    name: 'directory_tree',
+    description: 'List directory contents as a tree with configurable depth.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Directory path. Defaults to home.' },
+        depth: { type: 'number', description: 'Max recursion depth. Defaults to 2.' },
+        show_hidden: { type: 'boolean', description: 'Show dotfiles. Defaults to false.' },
+        ignore_patterns: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Names to ignore.',
+        },
+      },
+    },
+  },
+  {
+    name: 'process_manager',
+    description: 'Manage processes: list, find, kill, or inspect by PID.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['list', 'find', 'kill', 'info'],
+          description: 'Process action to perform.',
+        },
+        query: {
+          type: 'string',
+          description: 'Search term for find, PID string for kill/info.',
+        },
+        signal: {
+          type: 'string',
+          description: 'Signal for kill action (default SIGTERM).',
+        },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'create_document',
+    description:
+      'Create a downloadable document file. Use this when the user asks to generate a document, report, spreadsheet, or any file they can download. Saves to ~/Documents/Clawdia/. For simple text output or code files, prefer file_write instead.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        filename: {
+          type: 'string',
+          description: 'Filename with extension (e.g. "report.docx", "data.xlsx", "notes.pdf").',
+        },
+        format: {
+          type: 'string',
+          enum: ['docx', 'pdf', 'xlsx', 'txt', 'md', 'csv', 'html', 'json'],
+          description: 'Output format. Must match the filename extension.',
+        },
+        content: {
+          type: 'string',
+          description: 'Document content. For docx/pdf: use markdown formatting (# headings, **bold**, *italic*, - bullets). For xlsx: use CSV rows or provide structured_data. For txt/md/csv/html/json: raw content.',
+        },
+        structured_data: {
+          type: 'array',
+          description: 'Optional structured data for xlsx — array of objects [{col: val}] or array of arrays [[header1, header2], [val1, val2]].',
+        },
+        title: {
+          type: 'string',
+          description: 'Optional document title (displayed as header in docx/pdf).',
+        },
+      },
+      required: ['filename', 'format', 'content'],
+    },
+  },
+  {
+    name: 'delegate_research',
+    description: 'Delegate a focused research task (Topic + Angle) to a specialized sub-agent ("co-worker"). The sub-agent will perform searches and summarize findings. Use this to parallelize research on different aspects of a topic.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        topic: { type: 'string', description: 'The main topic to research.' },
+        angle: { type: 'string', description: 'The specific sub-topic or angle to focus on.' },
+      },
+      required: ['topic', 'angle'],
+    },
+  },
 ];
 
 export async function executeLocalTool(
@@ -362,6 +515,8 @@ export async function executeLocalTool(
       return toolProcessManager(input);
     case 'create_document':
       return toolCreateDocument(input, context);
+    case 'delegate_research':
+      return delegateResearch(String(input?.topic || ''), String(input?.angle || ''));
     default:
       return `Unknown tool: ${toolName}`;
   }

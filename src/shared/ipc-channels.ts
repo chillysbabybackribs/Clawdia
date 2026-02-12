@@ -199,4 +199,5 @@ export const IPC_EVENTS = {
 
   // Audit / Security Timeline
   AUDIT_EVENT: 'audit:event',
+  AGENT_COUNT_UPDATE: 'agent:count:update',
 } as const;

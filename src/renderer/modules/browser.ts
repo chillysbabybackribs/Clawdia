@@ -100,8 +100,9 @@ function setupBrowserControlListeners(): void {
   });
 
   elements.browserToggle.addEventListener('click', () => {
-    elements.panelContainer.classList.toggle('hidden');
-    if (!elements.panelContainer.classList.contains('hidden')) {
+    const isHidden = elements.panelContainer.classList.toggle('hidden');
+    elements.panelContainer.classList.toggle('panel-user-hidden', isHidden);
+    if (!isHidden) {
       syncBrowserBounds();
     }
   });
@@ -208,6 +209,14 @@ function setupBrowserControlListeners(): void {
   });
 
   window.addEventListener('resize', syncBrowserBounds);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') syncBrowserBounds();
+  });
+  setInterval(() => {
+    if (!elements.panelContainer.classList.contains('hidden') && document.visibilityState === 'visible') {
+      syncBrowserBounds();
+    }
+  }, 5000);
 
   const browserControlsEl = elements.panelContainer.querySelector('.browser-controls');
   const tabStripEl = elements.panelContainer.querySelector('.tab-strip');
@@ -244,6 +253,12 @@ function setupBrowserListeners(): void {
   window.api.onTabsUpdated((tabs) => {
     applyTabsUpdate(tabs);
   });
+  const apiAny = window.api as any;
+  if (typeof apiAny.onBrowserRequestBoundsSync === 'function') {
+    apiAny.onBrowserRequestBoundsSync(() => {
+      syncBrowserBounds();
+    });
+  }
 
   window.api.onResearchProgress((progress) => {
     renderResearchProgress(progress);
@@ -252,6 +267,7 @@ function setupBrowserListeners(): void {
   window.api.onLiveHtmlStart(() => {
     if (elements.panelContainer.classList.contains('hidden')) {
       elements.panelContainer.classList.remove('hidden');
+      elements.panelContainer.classList.remove('panel-user-hidden');
       syncBrowserBounds();
     }
   });
@@ -376,6 +392,8 @@ function handleResearchSources(sources: ResearchSourcePreview[]): void {
     return;
   }
   elements.panelContainer.classList.remove('hidden');
+  elements.panelContainer.classList.remove('panel-user-hidden');
+  syncBrowserBounds();
 }
 
 function clearResearchTabs(): void {
@@ -598,7 +616,7 @@ function renderBrowserMenuConfirm(title: string, message: string, confirmLabel: 
 function openBrowserMenu(): void {
   renderBrowserMenuRoot();
   elements.browserMenuDropdown.classList.remove('hidden');
-  void window.api.browserSetBounds({ x: 0, y: 0, width: 0, height: 0 });
+  void window.api.browserSetBounds({ x: 0, y: 0, width: 1, height: 1 });
   elements.browserHiddenQuote.classList.remove('hidden');
 }
 
@@ -1001,6 +1019,7 @@ async function navigateBrowser(inputOverride?: string): Promise<void> {
 export async function navigatePanelToUrl(url: string): Promise<void> {
   if (elements.panelContainer.classList.contains('hidden')) {
     elements.panelContainer.classList.remove('hidden');
+    elements.panelContainer.classList.remove('panel-user-hidden');
     syncBrowserBounds();
   }
   setBrowserAddressValue(url);
@@ -1009,20 +1028,20 @@ export async function navigatePanelToUrl(url: string): Promise<void> {
 
 export function syncBrowserBounds(): void {
   if (elements.panelContainer.classList.contains('hidden')) {
-    console.log('[Renderer] syncBrowserBounds: panel is hidden, skipping');
+    void window.api.browserSetBounds({ x: -9999, y: -9999, width: 1, height: 1 });
     return;
   }
 
   const viewportHost = elements.panelContainer.querySelector('.browser-placeholder') as HTMLElement | null;
   const rect = (viewportHost ?? elements.panelContainer).getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
 
   const bounds = {
-    x: Math.floor(rect.left),
-    y: Math.floor(rect.top),
-    width: Math.max(1, Math.ceil(rect.width)),
-    height: Math.max(1, Math.ceil(rect.height)),
+    x: Math.round(rect.left * dpr),
+    y: Math.round(rect.top * dpr),
+    width: Math.max(1, Math.round(rect.width * dpr)),
+    height: Math.max(1, Math.round(rect.height * dpr)),
   };
-  console.log('[Renderer] syncBrowserBounds:', JSON.stringify(bounds));
   void window.api.browserSetBounds(bounds);
 }
 

@@ -97,7 +97,17 @@ function ensureThinkingEl(): void {
     appState.thinkingEl.appendChild(appState.thinkingTextEl);
 
     appState.thinkingVisible = false;
+    appState.thinkingVisible = false;
     appState.currentThought = '';
+
+    // Create Agent Count Element
+    appState.agentCountEl = document.createElement('span');
+    appState.agentCountEl.className = 'agent-count';
+    appState.agentCountEl.style.display = 'none'; // Hidden by default
+    appState.agentCountEl.style.marginLeft = '12px';
+    appState.agentCountEl.style.color = 'var(--color-primary)';
+    appState.agentCountEl.style.fontSize = '0.9em';
+    appState.thinkingEl.appendChild(appState.agentCountEl);
   }
 
   const userMessages = elements.outputEl.querySelectorAll('.user-message');
@@ -138,6 +148,20 @@ function setupThinkingIndicator(): void {
   window.api.onStreamEnd(() => {
     hideThinking();
   });
+
+  // Listen for agent count updates
+  if (window.api.onAgentCountUpdate) {
+    window.api.onAgentCountUpdate((count) => {
+      if (appState.agentCountEl) {
+        if (count > 0) {
+          appState.agentCountEl.textContent = `Agents: ${count} active`;
+          appState.agentCountEl.style.display = 'inline-block';
+        } else {
+          appState.agentCountEl.style.display = 'none';
+        }
+      }
+    });
+  }
 }
 
 export function showThought(thought: string): void {

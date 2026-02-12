@@ -79,13 +79,12 @@ const MAX_TOOL_RESULT_CHARS = 30_000; // hard cap on any single tool result befo
 const KEEP_FULL_TOOL_RESULTS = 4; // keep last N tool_result messages uncompressed (was 1 — too aggressive for research tasks)
 const LOCAL_TOOL_NAMES = new Set(LOCAL_TOOL_DEFINITIONS.map((tool) => tool.name));
 import { VAULT_TOOL_DEFINITIONS, executeVaultTool } from '../vault/tools';
-// import { TASK_TOOL_DEFINITIONS, executeTaskTool } from '../tasks/task-tools'; // Disabled for Clawdia - Search
+import { TASK_TOOL_DEFINITIONS, executeTaskTool } from '../tasks/task-tools';
 import { ARCHIVE_TOOL_DEFINITIONS, executeArchiveTool } from '../archive/tools';
 
-const ALL_TOOLS = [...BROWSER_TOOL_DEFINITIONS, ...LOCAL_TOOL_DEFINITIONS, SEQUENTIAL_THINKING_TOOL_DEFINITION, ...VAULT_TOOL_DEFINITIONS];
-// Clawdia - Search: Task tools disabled (use Clawdia - Automator for task scheduling)
+const ALL_TOOLS = [...BROWSER_TOOL_DEFINITIONS, ...LOCAL_TOOL_DEFINITIONS, SEQUENTIAL_THINKING_TOOL_DEFINITION, ...VAULT_TOOL_DEFINITIONS, ...TASK_TOOL_DEFINITIONS, ...ARCHIVE_TOOL_DEFINITIONS];
 const VAULT_TOOL_NAMES = new Set(VAULT_TOOL_DEFINITIONS.map(t => t.name));
-// const TASK_TOOL_NAMES = new Set(TASK_TOOL_DEFINITIONS.map(t => t.name)); // Disabled for Clawdia - Search
+const TASK_TOOL_NAMES = new Set(TASK_TOOL_DEFINITIONS.map(t => t.name));
 const ARCHIVE_TOOL_NAMES = new Set(ARCHIVE_TOOL_DEFINITIONS.map(t => t.name));
 
 const LOCAL_WRITE_TOOL_NAMES = new Set(['file_write', 'file_edit']);
@@ -210,10 +209,9 @@ async function executeTool_deprecated(
     return executeVaultTool(name, input);
   }
 
-  // Task tools disabled for Clawdia - Search
-  // if (TASK_TOOL_NAMES.has(name)) {
-  //   return executeTaskTool(name, input);
-  // }
+  if (TASK_TOOL_NAMES.has(name)) {
+    return executeTaskTool(name, input);
+  }
 
   if (ARCHIVE_TOOL_NAMES.has(name)) {
     return executeArchiveTool(name, input);
@@ -589,10 +587,9 @@ async function executeTool(
     return executeVaultTool(name, input);
   }
 
-  // Task tools disabled for Clawdia - Search
-  // if (TASK_TOOL_NAMES.has(name)) {
-  //   return executeTaskTool(name, input);
-  // }
+  if (TASK_TOOL_NAMES.has(name)) {
+    return executeTaskTool(name, input);
+  }
 
   if (ARCHIVE_TOOL_NAMES.has(name)) {
     return executeArchiveTool(name, input);
@@ -1131,13 +1128,12 @@ export class ToolLoop {
           const toolClass = enriched.toolClass;
           let filteredTools = ALL_TOOLS as typeof ALL_TOOLS;
           if (toolClass === 'browser') {
-            // Clawdia - Search: Only browser & vault tools
-            filteredTools = ALL_TOOLS.filter(t => t.name.startsWith('browser_') || VAULT_TOOL_NAMES.has(t.name) || t.name === 'sequential_thinking');
-            log.info(`Intent router: browser-only — ${filteredTools.length} tools (Clawdia - Search: web browsing + research)`);
+            const ALWAYS_INCLUDE_LOCAL = new Set(['create_document']);
+            filteredTools = ALL_TOOLS.filter(t => !LOCAL_TOOL_NAMES.has(t.name) || t.name === 'shell_exec' || ALWAYS_INCLUDE_LOCAL.has(t.name) || TASK_TOOL_NAMES.has(t.name) || ARCHIVE_TOOL_NAMES.has(t.name));
+            log.info(`Intent router: browser-only — ${filteredTools.length} tools (skipped ${ALL_TOOLS.length - filteredTools.length} local, kept task tools)`);
           } else if (toolClass === 'local') {
-            // Clawdia - Search: Local tools disabled; keep browser & vault
-            filteredTools = ALL_TOOLS.filter(t => t.name.startsWith('browser_') || VAULT_TOOL_NAMES.has(t.name) || t.name === 'sequential_thinking');
-            log.info(`Intent router: local-only request — ${filteredTools.length} tools (Clawdia - Search does not support local file access)`);
+            filteredTools = ALL_TOOLS.filter(t => LOCAL_TOOL_NAMES.has(t.name) || t.name === 'sequential_thinking' || TASK_TOOL_NAMES.has(t.name) || ARCHIVE_TOOL_NAMES.has(t.name));
+            log.info(`Intent router: local-only — ${filteredTools.length} tools (skipped ${ALL_TOOLS.length - filteredTools.length} browser, kept task tools)`);
           }
 
           // If archetype says skip browser tools, additionally filter

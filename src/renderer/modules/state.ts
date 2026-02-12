@@ -118,6 +118,7 @@ export const appState = {
   streamFlushRafId: null as number | null,
   thinkingEl: null as HTMLDivElement | null,
   thinkingTextEl: null as HTMLSpanElement | null,
+  agentCountEl: null as HTMLSpanElement | null,
   currentThought: '',
   thinkingVisible: false,
   thinkingTransitionToken: 0,
