@@ -1,7 +1,7 @@
 {
-  "name": "clawdia",
-  "version": "1.1.0",
-  "description": "A local-first AI workspace for browser, code, and task automation.",
+  "name": "clawdia-search",
+  "version": "1.0.0",
+  "description": "Clawdia - Search: An AI research agent with live browser control for automated web research, content extraction, and synthesis.",
   "author": "Daniel Parker",
   "license": "MIT",
   "homepage": "https://github.com/chillysbabybackribs/Clawdia",
