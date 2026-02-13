@@ -56,6 +56,7 @@ import {
   getActiveTabUrl,
   exportCookiesForUrl,
 } from '../browser/manager';
+import { createTaskContext } from '../tasks/task-browser';
 import { createLogger, perfLog, perfTimer } from '../logger';
 
 const log = createLogger('tool-loop');
@@ -68,7 +69,7 @@ const MAX_TOOL_ITERATIONS = 150;
  * Matches phrases like "I don't have the ability to", "I can't access your system",
  * "I'm a text-based assistant", "I cannot interact with", etc.
  */
-const CAPABILITY_DENIAL_RE = /(?:I\s+(?:don't|do\s+not|can't|cannot|am\s+(?:not\s+able|unable)\s+to)\s+(?:have\s+the\s+ability|actually\s+have|access\s+your|interact\s+with|start\s+servers|open\s+(?:a\s+)?browser|launch\s+app|control\s+(?:the|your)|browse|navigate|run\s+commands|execute)|(?:I'?m\s+(?:a\s+)?text-based|without\s+graphical\s+capabilities|terminal\s+environment\s+without|I\s+lack\s+the\s+(?:ability|capability)|I\s+am\s+unable\s+to\s+(?:access|start|open|launch|browse|interact|navigate|execute|run)))/i;
+const CAPABILITY_DENIAL_RE = /(?:I\s+(?:don't|do\s+not|can't|cannot|am\s+(?:not\s+able|unable)\s+to)\s+(?:have\s+the\s+ability|actually\s+have|access\s+your|interact\s+with|start\s+servers|open\s+(?:a\s+)?browser|launch\s+app|control\s+(?:the|your)|browse|navigate|run\s+commands|execute)|(?:I'?m\s+(?:a\s+)?text-based|without\s+graphical\s+capabilities|terminal\s+environment\s+without|I\s+lack\s+the\s+(?:ability|capability)|I\s+am\s+unable\s+to\s+(?:access|start|open|launch|browse|interact|navigate|execute|run))|(?:I\s+need\s+to\s+(?:actually\s+)?see\s+what(?:'s|\s+is)\s+open\s+in\s+your\s+browser)|(?:can\s+you\s+tell\s+me\s+which\s+site\/page\s+you\s+want\s+me\s+to\s+verify)|(?:give\s+me\s+the\s+URL\s+so\s+I\s+can\s+review))/i;
 import { ConversationManager } from './conversation';
 import { store } from '../store';
 // Dynamically reads from ConversationManager so runtime changes apply everywhere
@@ -266,6 +267,13 @@ const BROWSER_STATELESS_TOOL_NAMES = new Set([
   'browser_places',
   'browser_images',
   'cache_read',
+]);
+
+const HYBRID_HEADLESS_TOOL_NAMES = new Set([
+  'browser_read_page',
+  'browser_extract',
+  'browser_visual_extract',
+  'browser_batch',
 ]);
 const PREFETCH_TTL_MS = 30_000;
 const FILE_PREFETCH_PATTERNS = [
@@ -1721,6 +1729,46 @@ export class ToolLoop {
     return path.normalize(path.join(homedir(), trimmed));
   }
 
+  private shouldUseHybridHeadlessTool(toolCall: ToolCall): boolean {
+    if (this._isolatedPage) return false;
+    if (!HYBRID_HEADLESS_TOOL_NAMES.has(toolCall.name)) return false;
+
+    if (toolCall.name === 'browser_read_page') {
+      const explicitUrl = toolCall.input?.url;
+      return typeof explicitUrl === 'string' && explicitUrl.trim().length > 0;
+    }
+
+    // Keep browser_extract/browser_visual_extract on the interactive page when
+    // no explicit URL is provided because they may depend on transient DOM state
+    // produced by prior clicks/types in this same iteration.
+    if (toolCall.name === 'browser_extract' || toolCall.name === 'browser_visual_extract') {
+      const explicitUrl = toolCall.input?.url;
+      return typeof explicitUrl === 'string' && explicitUrl.trim().length > 0;
+    }
+
+    return true;
+  }
+
+  private getHybridTargetUrl(toolCall: ToolCall): string | undefined {
+    const directUrl = toolCall.input?.url;
+    if (typeof directUrl === 'string' && directUrl.trim()) return directUrl.trim();
+
+    if (toolCall.name === 'browser_batch') {
+      const operations = toolCall.input?.operations;
+      if (Array.isArray(operations)) {
+        for (const op of operations) {
+          const candidate = (op as any)?.url;
+          if (typeof candidate === 'string' && candidate.trim()) {
+            return candidate.trim();
+          }
+        }
+      }
+    }
+
+    const activeUrl = getActiveTabUrl();
+    return activeUrl || undefined;
+  }
+
   private async runToolTask(task: ExecutionTask): Promise<ToolExecutionResult> {
     const { toolCall, skip } = task;
     if (this.aborted) return { id: toolCall.id, content: '[Stopped]' };
@@ -1848,6 +1896,24 @@ export class ToolLoop {
       }
     }, 2000);
 
+    let hybridCleanup: (() => Promise<void>) | null = null;
+    let hybridPage: Page | null = null;
+    if (this.shouldUseHybridHeadlessTool(toolCall)) {
+      try {
+        const targetUrl = this.getHybridTargetUrl(toolCall);
+        const hybrid = await createTaskContext(targetUrl ? { targetUrl } : undefined);
+        if (hybrid) {
+          hybridPage = hybrid.page;
+          hybridCleanup = hybrid.cleanup;
+          log.info(`[Hybrid] ${toolCall.name} (${toolCall.id.slice(0, 8)}) running in isolated headless context`);
+        } else {
+          log.warn(`[Hybrid] Failed to allocate isolated context for ${toolCall.name}; falling back to interactive browser session`);
+        }
+      } catch (err: any) {
+        log.warn(`[Hybrid] Could not create isolated context for ${toolCall.name}: ${err?.message || err}`);
+      }
+    }
+
     // --- EXECUTION WITH TIMEOUT PROMPT ---
     const executeOnce = async () => {
       const localCtx = {
@@ -1871,7 +1937,8 @@ export class ToolLoop {
         return await earlyStarted;
       }
 
-      return await executeTool(toolCall.name, toolCall.input, localCtx, this._isolatedPage, this.thinkingState);
+      const executionPage = hybridPage ?? this._isolatedPage;
+      return await executeTool(toolCall.name, toolCall.input, localCtx, executionPage, this.thinkingState);
     };
 
     const defaultTimeoutSeconds = autonomyMode === 'unrestricted' ? 300 : 60;
@@ -2071,6 +2138,11 @@ export class ToolLoop {
 
       return { id: toolCall.id, content: `Error: ${error?.message || 'Tool execution failed'}` };
     } finally {
+      if (hybridCleanup) {
+        await hybridCleanup().catch((err: any) => {
+          log.warn(`[Hybrid] Failed to clean up isolated context for ${toolCall.name}: ${err?.message || err}`);
+        });
+      }
       this.activeTools.delete(toolAbortController);
     }
   }
@@ -2139,10 +2211,13 @@ export class ToolLoop {
       }
 
       const toolName = task.toolCall.name;
+      const hybridHeadlessCandidate = this.shouldUseHybridHeadlessTool(task.toolCall);
       if (
-        BROWSER_NAVIGATION_TOOL_NAMES.has(toolName) ||
-        BROWSER_PAGE_STATE_READ_TOOL_NAMES.has(toolName) ||
-        (toolName.startsWith('browser_') && !BROWSER_STATELESS_TOOL_NAMES.has(toolName))
+        !hybridHeadlessCandidate && (
+          BROWSER_NAVIGATION_TOOL_NAMES.has(toolName) ||
+          BROWSER_PAGE_STATE_READ_TOOL_NAMES.has(toolName) ||
+          (toolName.startsWith('browser_') && !BROWSER_STATELESS_TOOL_NAMES.has(toolName))
+        )
       ) {
         browserSequential.push(task);
         continue;

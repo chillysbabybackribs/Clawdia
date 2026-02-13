@@ -20,6 +20,22 @@ let browser: Browser | null = null;
 let launchPromise: Promise<Browser | null> | null = null;
 let shuttingDown = false;
 
+function cookieKey(cookie: PlaywrightCookie): string {
+  return `${cookie.domain}:${cookie.path || '/'}:${cookie.name}`;
+}
+
+function dedupeCookies(cookies: PlaywrightCookie[]): PlaywrightCookie[] {
+  const seen = new Set<string>();
+  const out: PlaywrightCookie[] = [];
+  for (const c of cookies) {
+    const key = cookieKey(c);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(c);
+  }
+  return out;
+}
+
 /**
  * Lazily launch the standalone Playwright Chromium browser.
  * Returns the browser instance, or null if launch fails.
@@ -63,6 +79,10 @@ async function ensureBrowser(): Promise<Browser | null> {
   return launchPromise;
 }
 
+export async function getSharedTaskBrowser(): Promise<Browser | null> {
+  return ensureBrowser();
+}
+
 export interface TaskBrowserContext {
   context: BrowserContext;
   page: Page;
@@ -74,6 +94,49 @@ export interface CreateTaskContextOptions {
   targetUrl?: string;
   /** Optional explicit cookies to inject (merged with auto-exported cookies) */
   cookies?: PlaywrightCookie[];
+}
+
+export async function getMergedTaskCookies(targetUrls?: string[], explicitCookies?: PlaywrightCookie[]): Promise<PlaywrightCookie[]> {
+  const urls = Array.from(
+    new Set(
+      (targetUrls || [])
+        .map((u) => (typeof u === 'string' ? u.trim() : ''))
+        .filter((u) => u.length > 0),
+    ),
+  );
+
+  let cookiesToInject: PlaywrightCookie[] = [];
+
+  if (urls.length === 0) {
+    try {
+      cookiesToInject = await getCookiesForTask();
+    } catch (err: any) {
+      log.warn(`[TaskBrowser] Failed to export cookies: ${err?.message}`);
+    }
+  } else {
+    const cookieSets = await Promise.all(
+      urls.map(async (url) => {
+        try {
+          return await getCookiesForTask(url);
+        } catch (err: any) {
+          log.warn(`[TaskBrowser] Failed to export cookies for ${url}: ${err?.message}`);
+          return [];
+        }
+      }),
+    );
+    cookiesToInject = cookieSets.flat();
+  }
+
+  if (explicitCookies && explicitCookies.length > 0) {
+    const explicitMap = new Map<string, PlaywrightCookie>();
+    for (const c of explicitCookies) {
+      explicitMap.set(cookieKey(c), c);
+    }
+    cookiesToInject = cookiesToInject.filter((c) => !explicitMap.has(cookieKey(c)));
+    cookiesToInject.push(...explicitCookies);
+  }
+
+  return dedupeCookies(cookiesToInject);
 }
 
 /**
@@ -98,23 +161,10 @@ export async function createTaskContext(options?: CreateTaskContextOptions): Pro
   try {
     const context = await b.newContext();
 
-    // ALWAYS export fresh cookies from Electron session (+ Chrome OS fallback)
-    let cookiesToInject: PlaywrightCookie[] = [];
-    try {
-      cookiesToInject = await getCookiesForTask(options?.targetUrl);
-    } catch (err: any) {
-      log.warn(`[TaskBrowser] Failed to export cookies: ${err?.message}`);
-    }
-
-    // Merge explicit cookies (override auto-exported cookies for same domain+name)
-    if (options?.cookies && options.cookies.length > 0) {
-      const explicitMap = new Map<string, PlaywrightCookie>();
-      for (const c of options.cookies) {
-        explicitMap.set(`${c.domain}:${c.name}`, c);
-      }
-      cookiesToInject = cookiesToInject.filter(c => !explicitMap.has(`${c.domain}:${c.name}`));
-      cookiesToInject.push(...options.cookies);
-    }
+    const cookiesToInject = await getMergedTaskCookies(
+      options?.targetUrl ? [options.targetUrl] : undefined,
+      options?.cookies,
+    );
 
     // Inject cookies into the context
     if (cookiesToInject.length > 0) {

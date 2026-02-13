@@ -16,10 +16,10 @@ import {
   type ChatConversation,
   type ChatTab,
 } from './state';
-import { appendError, handleOutputWheel, hideThinking, isOutputNearBottom, scrollToBottom, setStreaming, showThought, updateOutputAutoFollowState } from './stream';
+import { appendError, handleOutputWheel, hideThinking, isOutputNearBottom, scrollToBottom, setStreaming, updateOutputAutoFollowState } from './stream';
 import { startActivityFeed, renderStaticActivityFeed } from './activity-feed';
 import { startEnhancedActivityFeed } from './enhanced-activity-feed';
-import { resetActivityPulse } from './activity-pulse';
+import { beginActivityPulse, resetActivityPulse } from './activity-pulse';
 
 // ============================================================
 // STRUCTURAL MAP (from pre-split renderer audit)
@@ -617,7 +617,6 @@ async function sendMessage(): Promise<void> {
   const userMessageEl = appendUserMessage(content, true, images, documentMetas);
   // Use enhanced activity feed instead of standard one
   startEnhancedActivityFeed(userMessageEl);
-  showThought('Thinking...');
   elements.promptEl.value = '';
   elements.promptEl.focus();
   clearPendingAttachments();
@@ -633,6 +632,7 @@ async function sendMessage(): Promise<void> {
 
   setStreaming(true);
   resetActivityPulse();
+  beginActivityPulse();
   appState.fullStreamBuffer = '';
   const requestMessageId = crypto.randomUUID();
 
@@ -817,6 +817,32 @@ export async function loadConversationsView(): Promise<void> {
 
       elements.conversationsList.appendChild(row);
     }
+  }
+}
+
+/** Load and display the Telegram mobile chat. Shows chat shell with the conversation or empty state. */
+export async function loadTelegramView(): Promise<void> {
+  await ensureChatShellInitialized();
+  const config = await window.api.telegramGetConfig();
+  const conversationId = (config as { conversationId?: string | null }).conversationId;
+
+  if (conversationId) {
+    await openConversationInChatTab(conversationId);
+  } else {
+    document.dispatchEvent(new CustomEvent('clawdia:conversation:reset'));
+    elements.outputEl.innerHTML = '';
+    const empty = document.createElement('div');
+    empty.className = 'telegram-empty-state';
+    empty.innerHTML = `
+      <div class="telegram-empty-icon">✈</div>
+      <h3 class="telegram-empty-title">Telegram Chat</h3>
+      <p class="telegram-empty-text">Send a message to your bot on Telegram to start your mobile chat. It will appear here.</p>
+    `;
+    elements.outputEl.appendChild(empty);
+    appState.currentConversationId = null;
+    appState.activeChatTabId = null;
+    renderChatTabs();
+    updateEmptyState();
   }
 }
 

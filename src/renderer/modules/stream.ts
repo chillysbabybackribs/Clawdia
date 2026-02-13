@@ -1,6 +1,6 @@
 import { hideArcade } from '../arcade/menu';
 import { renderMarkdown } from './markdown';
-import { cleanupPulseLines } from './activity-pulse';
+import { cleanupPulseLines, isActivityPulseActive } from './activity-pulse';
 import {
   appState,
   AUTO_SCROLL_BOTTOM_THRESHOLD_PX,
@@ -132,6 +132,7 @@ function setupThinkingIndicator(): void {
   appState.thinkingListenersBound = true;
 
   window.api.onThinking((thought) => {
+    if (isActivityPulseActive()) return;
     const nextThought = thought.trim();
     if (!nextThought) {
       hideThinking();

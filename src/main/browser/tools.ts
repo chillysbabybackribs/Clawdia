@@ -1,4 +1,5 @@
 import { Page } from 'playwright';
+import { createHash } from 'crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { AnthropicClient } from '../llm/client';
 import {
@@ -76,10 +77,27 @@ export const BROWSER_TOOL_DEFINITIONS: BrowserToolDefinition[] = [
   },
   {
     name: 'browser_read_page',
-    description: 'Read the current page and return a structured text snapshot.',
+    description:
+      'Read a page and return a structured text snapshot. Default reads the current visible page (best for follow-up clicking/typing). Optional url performs a direct URL read; use this for analysis/extraction, not immediate click refs.',
     input_schema: {
       type: 'object',
-      properties: {},
+      properties: {
+        url: { type: 'string', description: 'Optional URL to read directly' },
+      },
+    },
+  },
+  {
+    name: 'browser_action_map',
+    description:
+      'Return an accessibility-first map of actionable UI elements (role, label/name, stable_id, selector, bounding box). Use this before complex clicking/typing on dense dashboards.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        max_items: {
+          type: 'number',
+          description: 'Maximum number of elements to return. Default 80, max 200.',
+        },
+      },
     },
   },
   {
@@ -421,6 +439,199 @@ function getActiveOrCreatePage(): Page | null {
 const MAX_BATCH_URLS = 10;
 const MAX_BATCH_CONCURRENCY = 5;
 const MAX_EXTRACT_CHARS = 16_000; // ~4000 tokens heuristic
+const VISION_RESULT_CACHE_TTL_MS = 8 * 60_000;
+const VISION_RESULT_CACHE_MAX_ENTRIES = 220;
+const ROI_ESCALATION_MIN_TEXT = 260;
+const DOMAIN_VISION_POLICY_KEY = 'browserVisionPolicyV1';
+
+interface DomainVisionPolicy {
+  domStrongMinChars: number;
+  domStructuredMinChars: number;
+  remoteDomMinChars: number;
+  roiSuccesses: number;
+  roiFailures: number;
+  preferFullPageUntil: number;
+  updatedAt: number;
+}
+
+interface VisionCacheEntry {
+  fingerprint: string;
+  extractedText: string;
+  createdAt: number;
+  mode: 'roi' | 'full';
+}
+
+const DEFAULT_DOMAIN_VISION_POLICY: DomainVisionPolicy = {
+  domStrongMinChars: 1400,
+  domStructuredMinChars: 900,
+  remoteDomMinChars: 1200,
+  roiSuccesses: 0,
+  roiFailures: 0,
+  preferFullPageUntil: 0,
+  updatedAt: 0,
+};
+
+const visionResultCache = new Map<string, VisionCacheEntry>();
+let domainVisionPolicyCache: Record<string, DomainVisionPolicy> | null = null;
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function hashToken(value: string): string {
+  return createHash('sha1').update(value).digest('hex').slice(0, 16);
+}
+
+function normalizeDomain(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function getDomainFromUrl(url: string | null): string {
+  if (!url) return 'local';
+  try {
+    return normalizeDomain(new URL(withProtocol(url)).hostname || 'local');
+  } catch {
+    return 'local';
+  }
+}
+
+function loadDomainVisionPolicyCache(): Record<string, DomainVisionPolicy> {
+  if (domainVisionPolicyCache) return domainVisionPolicyCache;
+  const raw = store.get(DOMAIN_VISION_POLICY_KEY);
+  if (raw && typeof raw === 'object') {
+    domainVisionPolicyCache = raw as Record<string, DomainVisionPolicy>;
+  } else {
+    domainVisionPolicyCache = {};
+  }
+  return domainVisionPolicyCache;
+}
+
+function saveDomainVisionPolicyCache(): void {
+  if (!domainVisionPolicyCache) return;
+  store.set(DOMAIN_VISION_POLICY_KEY, domainVisionPolicyCache);
+}
+
+function getDomainVisionPolicy(url: string | null): DomainVisionPolicy {
+  const domain = getDomainFromUrl(url);
+  const map = loadDomainVisionPolicyCache();
+  const policy = map[domain];
+  if (!policy) {
+    return { ...DEFAULT_DOMAIN_VISION_POLICY };
+  }
+  return {
+    ...DEFAULT_DOMAIN_VISION_POLICY,
+    ...policy,
+  };
+}
+
+function updateDomainVisionPolicy(url: string | null, updater: (policy: DomainVisionPolicy) => DomainVisionPolicy): DomainVisionPolicy {
+  const domain = getDomainFromUrl(url);
+  const map = loadDomainVisionPolicyCache();
+  const current = getDomainVisionPolicy(url);
+  const next = updater(current);
+  map[domain] = {
+    ...DEFAULT_DOMAIN_VISION_POLICY,
+    ...next,
+    updatedAt: Date.now(),
+  };
+  saveDomainVisionPolicyCache();
+  return map[domain];
+}
+
+function makeVisionCacheKey(url: string | null, mode: 'roi' | 'full'): string {
+  const normalizedUrl = url ? withProtocol(url) : 'active-page';
+  return `${mode}:${normalizedUrl}`;
+}
+
+function evictExpiredVisionCache(): void {
+  const now = Date.now();
+  for (const [key, entry] of visionResultCache.entries()) {
+    if (now - entry.createdAt > VISION_RESULT_CACHE_TTL_MS) {
+      visionResultCache.delete(key);
+    }
+  }
+  while (visionResultCache.size > VISION_RESULT_CACHE_MAX_ENTRIES) {
+    const oldest = visionResultCache.keys().next().value;
+    if (!oldest) break;
+    visionResultCache.delete(oldest);
+  }
+}
+
+function readVisionCache(url: string | null, mode: 'roi' | 'full', fingerprint: string): VisionCacheEntry | null {
+  evictExpiredVisionCache();
+  const key = makeVisionCacheKey(url, mode);
+  const cached = visionResultCache.get(key);
+  if (!cached) return null;
+  if (cached.fingerprint !== fingerprint) return null;
+  return cached;
+}
+
+function writeVisionCache(url: string | null, mode: 'roi' | 'full', fingerprint: string, extractedText: string): void {
+  evictExpiredVisionCache();
+  const key = makeVisionCacheKey(url, mode);
+  visionResultCache.set(key, {
+    fingerprint,
+    extractedText,
+    createdAt: Date.now(),
+    mode,
+  });
+}
+
+function buildDomFingerprint(url: string | null, probe: DomVisionProbe, fullPage: boolean, policy: DomainVisionPolicy): string {
+  const payload = [
+    url || 'active-page',
+    fullPage ? 'full' : 'roi',
+    probe.mainTextLength,
+    probe.headingCount,
+    probe.inputCount,
+    probe.buttonCount,
+    probe.linkCount,
+    policy.domStrongMinChars,
+    policy.domStructuredMinChars,
+    probe.text.slice(0, 2000),
+  ].join('|');
+  return hashToken(payload);
+}
+
+function buildImageFingerprint(url: string | null, images: VisionImageInput[], fullPage: boolean, policy: DomainVisionPolicy): string {
+  const imageSignature = images
+    .map((img) => `${img.label}:${img.base64.length}:${img.base64.slice(0, 96)}:${img.base64.slice(-96)}`)
+    .join('|');
+  const payload = [
+    url || 'active-page',
+    fullPage ? 'full' : 'roi',
+    policy.preferFullPageUntil,
+    imageSignature,
+  ].join('|');
+  return hashToken(payload);
+}
+
+function shouldPreferFullPage(policy: DomainVisionPolicy): boolean {
+  return policy.preferFullPageUntil > Date.now();
+}
+
+function updateVisionDomainOutcome(url: string | null, mode: 'roi' | 'full', textLength: number): DomainVisionPolicy {
+  return updateDomainVisionPolicy(url, (policy) => {
+    const next = { ...policy };
+    const roiSuccess = mode === 'roi' && textLength >= ROI_ESCALATION_MIN_TEXT;
+    const roiFailure = mode === 'roi' && textLength < ROI_ESCALATION_MIN_TEXT;
+
+    if (roiSuccess) next.roiSuccesses += 1;
+    if (roiFailure) next.roiFailures += 1;
+
+    if (roiFailure && next.roiFailures >= 2 && next.roiFailures > next.roiSuccesses) {
+      next.preferFullPageUntil = Date.now() + (15 * 60_000);
+    } else if (roiSuccess && next.roiSuccesses >= Math.max(3, next.roiFailures * 2)) {
+      next.preferFullPageUntil = 0;
+    }
+
+    const bias = next.roiFailures - next.roiSuccesses;
+    next.domStrongMinChars = clampNumber(1400 + (bias * 120), 1000, 2400);
+    next.domStructuredMinChars = clampNumber(900 + (bias * 90), 700, 1900);
+    next.remoteDomMinChars = clampNumber(1200 + (bias * 100), 900, 2200);
+    return next;
+  });
+}
 
 function getSelectedModel(): string {
   return (store.get('selectedModel') as string) || DEFAULT_MODEL;
@@ -504,31 +715,212 @@ async function llmExtract(pageData: Record<string, unknown>, schema: Record<stri
   };
 }
 
-async function llmVisionExtractText(screenshotBase64: string): Promise<string> {
+type VisionMediaType = 'image/png' | 'image/jpeg';
+
+interface VisionImageInput {
+  label: string;
+  base64: string;
+  mediaType: VisionMediaType;
+}
+
+interface DomVisionProbe {
+  text: string;
+  mainTextLength: number;
+  headingCount: number;
+  inputCount: number;
+  buttonCount: number;
+  linkCount: number;
+}
+
+interface RoiRegion {
+  label: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+function isDomProbeSufficient(probe: DomVisionProbe, policy: DomainVisionPolicy): boolean {
+  const hasStrongContent = probe.mainTextLength >= policy.domStrongMinChars;
+  const hasStructuredContent = probe.mainTextLength >= policy.domStructuredMinChars && probe.headingCount >= 3;
+  const heavyInteractiveUi = probe.inputCount >= 6 || probe.buttonCount >= 18;
+  return (hasStrongContent || hasStructuredContent) && !heavyInteractiveUi;
+}
+
+async function buildDomVisionProbe(page: Page): Promise<DomVisionProbe> {
+  const raw = await page.evaluate(() => {
+    const main = document.querySelector('main, article, [role="main"]') || document.body;
+    const mainText = (main.textContent || '').trim();
+    const headingCount = main.querySelectorAll('h1,h2,h3').length;
+    const inputCount = document.querySelectorAll('input, textarea, select').length;
+    const buttonCount = document.querySelectorAll('button, [role="button"]').length;
+    const linkCount = document.querySelectorAll('a[href]').length;
+    return { mainText, headingCount, inputCount, buttonCount, linkCount };
+  });
+
+  const compressed = compressPageContent(raw.mainText || '', { maxChars: 5_500 }).text;
+  return {
+    text: compressed,
+    mainTextLength: raw.mainText?.length || 0,
+    headingCount: raw.headingCount || 0,
+    inputCount: raw.inputCount || 0,
+    buttonCount: raw.buttonCount || 0,
+    linkCount: raw.linkCount || 0,
+  };
+}
+
+async function detectRoiRegions(page: Page): Promise<RoiRegion[]> {
+  const regions = await page.evaluate(() => {
+    type Region = { label: string; x: number; y: number; width: number; height: number };
+
+    const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+    const vw = Math.max(1, window.innerWidth);
+    const vh = Math.max(1, window.innerHeight);
+
+    const rectToRegion = (label: string, rect: DOMRect | null): Region | null => {
+      if (!rect) return null;
+      const x = clamp(Math.floor(rect.left), 0, vw - 1);
+      const y = clamp(Math.floor(rect.top), 0, vh - 1);
+      const maxWidth = vw - x;
+      const maxHeight = vh - y;
+      const width = clamp(Math.floor(rect.width), 120, maxWidth);
+      const height = clamp(Math.floor(rect.height), 120, maxHeight);
+      if (width < 120 || height < 120) return null;
+      return { label, x, y, width, height };
+    };
+
+    const list: Region[] = [];
+    const seen = new Set<string>();
+    const pushUnique = (region: Region | null) => {
+      if (!region) return;
+      const key = `${region.x}:${region.y}:${region.width}:${region.height}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      list.push(region);
+    };
+
+    const main = document.querySelector('main, article, [role="main"]') as HTMLElement | null;
+    const form = document.querySelector('form, [role="form"], input, textarea, select') as HTMLElement | null;
+    const nav = document.querySelector('nav, [role="navigation"], aside') as HTMLElement | null;
+
+    pushUnique(rectToRegion('main-content', main?.getBoundingClientRect() || null));
+    pushUnique(rectToRegion('form-area', form?.closest('form')?.getBoundingClientRect() || form?.getBoundingClientRect() || null));
+    pushUnique(rectToRegion('navigation', nav?.getBoundingClientRect() || null));
+
+    pushUnique({ label: 'viewport-overview', x: 0, y: 0, width: vw, height: Math.min(vh, 900) });
+    return list.slice(0, 3);
+  });
+
+  return regions;
+}
+
+async function captureVisionInputs(page: Page, fullPage: boolean): Promise<VisionImageInput[]> {
+  if (fullPage) {
+    const full = await page.screenshot({ type: 'jpeg', quality: 55, fullPage: true });
+    return [{ label: 'full-page', base64: full.toString('base64'), mediaType: 'image/jpeg' }];
+  }
+
+  const regions = await detectRoiRegions(page);
+  const images: VisionImageInput[] = [];
+
+  for (const region of regions) {
+    try {
+      const buffer = await page.screenshot({
+        type: 'jpeg',
+        quality: 55,
+        clip: {
+          x: region.x,
+          y: region.y,
+          width: region.width,
+          height: region.height,
+        },
+      });
+      images.push({
+        label: region.label,
+        base64: buffer.toString('base64'),
+        mediaType: 'image/jpeg',
+      });
+    } catch {
+      // Best-effort region capture; continue with others.
+    }
+  }
+
+  if (images.length === 0) {
+    const fallback = await page.screenshot({ type: 'jpeg', quality: 55, fullPage: false });
+    images.push({ label: 'viewport-fallback', base64: fallback.toString('base64'), mediaType: 'image/jpeg' });
+  }
+
+  return images;
+}
+
+async function llmVisionExtractText(images: VisionImageInput[]): Promise<string> {
   const client = getSharedClient();
   if (!client) return 'Missing Anthropic API key for visual extraction.';
+
+  const valid = images.filter((img) => img.base64 && img.base64.length > 0);
+  if (valid.length === 0) return 'No image content available for visual extraction.';
+
+  const content: any[] = [
+    {
+      type: 'text',
+      text: `You will receive ${valid.length} screenshot region(s) from a web page. Merge them into one coherent reading order.`,
+    },
+  ];
+
+  for (const [index, image] of valid.entries()) {
+    content.push({ type: 'text', text: `Region ${index + 1}: ${image.label}` });
+    content.push({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: image.mediaType,
+        data: image.base64,
+      },
+    });
+  }
+
+  content.push({
+    type: 'text',
+    text: 'Extract visible text for action planning. Preserve headings, labels, and buttons. Return plain text only.',
+  });
 
   const { text } = await client.complete([
     {
       role: 'user',
-      content: [
-        {
-          type: 'image',
-          source: {
-            type: 'base64',
-            media_type: 'image/png',
-            data: screenshotBase64,
-          },
-        },
-        {
-          type: 'text',
-          text: 'Extract all visible text from this screenshot. Preserve reading order and structure. Return plain text.',
-        },
-      ],
+      content,
     },
-  ], { maxTokens: 2_000 });
+  ], { maxTokens: 1_600 });
 
   return text.trim();
+}
+
+function normalizedTextLength(text: string): number {
+  return text.replace(/\s+/g, ' ').trim().length;
+}
+
+async function resolveVisionExtraction(
+  sourceUrl: string | null,
+  mode: 'roi' | 'full',
+  images: VisionImageInput[],
+  policy: DomainVisionPolicy,
+): Promise<{ text: string; cacheHit: boolean; fingerprint: string }> {
+  const fingerprint = buildImageFingerprint(sourceUrl, images, mode === 'full', policy);
+  const cached = readVisionCache(sourceUrl, mode, fingerprint);
+  if (cached) {
+    return {
+      text: cached.extractedText,
+      cacheHit: true,
+      fingerprint,
+    };
+  }
+
+  const text = await llmVisionExtractText(images);
+  writeVisionCache(sourceUrl, mode, fingerprint, text);
+  return {
+    text,
+    cacheHit: false,
+    fingerprint,
+  };
 }
 
 async function llmExtractFromText(
@@ -586,6 +978,175 @@ function domExtractJs(maxLen = 8_000): string {
   })()`;
 }
 
+async function toolActionMap(maxItemsInput: unknown): Promise<string> {
+  const page = getActiveOrCreatePage();
+  if (!page) return 'No active page.';
+
+  const maxItems = clampNumber(Number(maxItemsInput) || 80, 10, 200);
+  const elements = await page.evaluate((limit) => {
+    type ActionEntry = {
+      stable_id: string;
+      role: string;
+      name: string;
+      selector: string;
+      text: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      in_viewport: boolean;
+      disabled: boolean;
+    };
+
+    const roleFromTag = (el: Element): string => {
+      const explicitRole = (el.getAttribute('role') || '').trim();
+      if (explicitRole) return explicitRole;
+      const tag = el.tagName.toLowerCase();
+      if (tag === 'a') return 'link';
+      if (tag === 'button') return 'button';
+      if (tag === 'textarea') return 'textbox';
+      if (tag === 'select') return 'combobox';
+      if (tag === 'input') {
+        const type = ((el as HTMLInputElement).type || '').toLowerCase();
+        if (type === 'checkbox') return 'checkbox';
+        if (type === 'radio') return 'radio';
+        if (type === 'submit' || type === 'button') return 'button';
+        return 'textbox';
+      }
+      return 'generic';
+    };
+
+    const readLabelledBy = (el: Element): string => {
+      const ids = (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean);
+      if (ids.length === 0) return '';
+      const labels: string[] = [];
+      for (const id of ids) {
+        const node = document.getElementById(id);
+        const text = (node?.textContent || '').trim();
+        if (text) labels.push(text);
+      }
+      return labels.join(' ').trim();
+    };
+
+    const nameFor = (el: Element): string => {
+      const aria = (el.getAttribute('aria-label') || '').trim();
+      if (aria) return aria;
+      const labelledBy = readLabelledBy(el);
+      if (labelledBy) return labelledBy;
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) {
+        const placeholder = (el.getAttribute('placeholder') || '').trim();
+        if (placeholder) return placeholder;
+        const labelNode = (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)) || el.closest('label');
+        const labelText = (labelNode?.textContent || '').trim();
+        if (labelText) return labelText;
+        const value = ('value' in el ? String((el as any).value || '').trim() : '');
+        if (value) return value;
+      }
+      return (el.textContent || '').replace(/\s+/g, ' ').trim();
+    };
+
+    const selectorFor = (el: Element): string => {
+      const id = (el.id || '').trim();
+      if (id) return `#${CSS.escape(id)}`;
+      const testId = (el.getAttribute('data-testid') || el.getAttribute('data-test') || '').trim();
+      if (testId) return `[data-testid="${testId}"]`;
+      const name = (el.getAttribute('name') || '').trim();
+      if (name) return `${el.tagName.toLowerCase()}[name="${name}"]`;
+      const role = (el.getAttribute('role') || '').trim();
+      if (role) return `${el.tagName.toLowerCase()}[role="${role}"]`;
+      const parts: string[] = [];
+      let node: Element | null = el;
+      let depth = 0;
+      while (node && depth < 4 && node !== document.body) {
+        const parentEl: Element | null = node.parentElement;
+        const tag = node.tagName.toLowerCase();
+        if (!parentEl) {
+          parts.unshift(tag);
+          break;
+        }
+        const nodeTag = node.tagName;
+        const siblings = Array.from(parentEl.children).filter((c: Element) => c.tagName === nodeTag);
+        const index = siblings.indexOf(node) + 1;
+        parts.unshift(`${tag}:nth-of-type(${Math.max(1, index)})`);
+        node = parentEl;
+        depth += 1;
+      }
+      return parts.join(' > ');
+    };
+
+    const stableIdFor = (el: Element, role: string, name: string, selector: string): string => {
+      const text = `${role}|${name}|${selector}`;
+      let hash = 0;
+      for (let i = 0; i < text.length; i += 1) {
+        hash = ((hash << 5) - hash) + text.charCodeAt(i);
+        hash |= 0;
+      }
+      return `am_${Math.abs(hash).toString(36)}`;
+    };
+
+    const candidates = Array.from(
+      document.querySelectorAll(
+        'button, a[href], input, textarea, select, [role], [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+
+    const seen = new Set<string>();
+    const results: ActionEntry[] = [];
+    for (const el of candidates) {
+      if (!(el instanceof HTMLElement)) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 2 || rect.height < 2) continue;
+
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') continue;
+
+      const role = roleFromTag(el);
+      const name = nameFor(el);
+      const selector = selectorFor(el);
+      const stableId = stableIdFor(el, role, name, selector);
+      const key = `${stableId}:${Math.round(rect.x)}:${Math.round(rect.y)}:${Math.round(rect.width)}:${Math.round(rect.height)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const inViewport =
+        rect.bottom > 0 &&
+        rect.right > 0 &&
+        rect.left < window.innerWidth &&
+        rect.top < window.innerHeight;
+
+      results.push({
+        stable_id: stableId,
+        role,
+        name,
+        selector,
+        text: (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+        in_viewport: inViewport,
+        disabled: Boolean((el as HTMLButtonElement).disabled || el.getAttribute('aria-disabled') === 'true'),
+      });
+    }
+
+    results.sort((a, b) => {
+      if (a.in_viewport !== b.in_viewport) return a.in_viewport ? -1 : 1;
+      if (a.y !== b.y) return a.y - b.y;
+      return a.x - b.x;
+    });
+
+    return results.slice(0, limit);
+  }, maxItems);
+
+  const currentUrl = page.url() || null;
+  return JSON.stringify({
+    status: 'success',
+    url: currentUrl,
+    count: elements.length,
+    elements,
+  }, null, 2);
+}
+
 /**
  * Execute a browser tool.
  *
@@ -628,7 +1189,9 @@ export async function executeTool(name: string, input: any, overridePage?: Page 
       case 'browser_navigate':
         result = await toolNavigate(String(input?.url || '')); break;
       case 'browser_read_page':
-        result = await toolReadPage(); break;
+        result = await toolReadPage(input?.url); break;
+      case 'browser_action_map':
+        result = await toolActionMap(input?.max_items); break;
       case 'browser_click':
         result = await toolClick(String(input?.ref || ''), input?.x, input?.y, input?.selector); break;
       case 'browser_type':
@@ -821,7 +1384,31 @@ async function toolNavigate(url: string): Promise<string> {
   return `Navigated to ${targetUrl}. (Page reading unavailable — Playwright not connected.)`;
 }
 
-async function toolReadPage(): Promise<string> {
+async function toolReadPage(url?: unknown): Promise<string> {
+  const requestedUrl = typeof url === 'string' ? url.trim() : '';
+  if (requestedUrl) {
+    const targetUrl = withProtocol(requestedUrl);
+
+    // Isolated/headless context: navigate the isolated page directly.
+    if (_overridePage) {
+      try {
+        await _overridePage.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+      } catch (err: any) {
+        return `Failed to read ${targetUrl}: ${err?.message || 'unknown error'}. ${diagnoseNavError(err?.message, targetUrl)}`;
+      }
+      await dismissPopups(_overridePage);
+      const snapshot = await getPageSnapshot(_overridePage);
+      return `[Headless URL read]\n${snapshot}\n\n[Note] This snapshot is optimized for analysis. Before clicking/typing on this URL, run browser_navigate + browser_read_page (without url) on the visible browser tab.`;
+    }
+
+    // Interactive context: explicit URL means "navigate then read".
+    const navResult = await managerNavigate(targetUrl);
+    if (!navResult.success) {
+      return `Failed to read ${targetUrl}: ${navResult.error || 'unknown error'}. ${diagnoseNavError(navResult.error, targetUrl)}`;
+    }
+    await waitForLoad(3000);
+  }
+
   const page = getActiveOrCreatePage();
   if (!page) return 'No active page.';
   return getPageSnapshot(page);
@@ -1997,27 +2584,114 @@ async function toolExtract(urlInput: unknown, tabIdInput: unknown, schemaInput: 
 }
 
 async function toolVisualExtract(urlInput: unknown, tabIdInput: unknown, fullPageInput: unknown): Promise<string> {
-  const fullPage = Boolean(fullPageInput);
+  const requestedFullPage = Boolean(fullPageInput);
   const activePage = getActiveOrCreatePage();
   const activeTabId = getActiveTabId();
   const tabId = typeof tabIdInput === 'string' ? tabIdInput : null;
   const inputUrl = typeof urlInput === 'string' && urlInput.trim().length > 0 ? withProtocol(urlInput) : null;
 
   try {
-    let screenshotBase64 = '';
     let sourceUrl = inputUrl || null;
 
     if (!inputUrl && (!tabId || tabId === activeTabId) && activePage) {
-      const screenshot = await activePage.screenshot({ type: 'png', fullPage });
-      screenshotBase64 = screenshot.toString('base64');
       sourceUrl = activePage.url() || sourceUrl;
+      let policy = getDomainVisionPolicy(sourceUrl);
+      const domProbe = await buildDomVisionProbe(activePage);
+      const domFingerprint = buildDomFingerprint(sourceUrl, domProbe, requestedFullPage, policy);
+      const domCacheMode: 'roi' | 'full' = requestedFullPage ? 'full' : 'roi';
+      const cachedFromDomFingerprint = readVisionCache(sourceUrl, domCacheMode, domFingerprint);
+
+      if (isDomProbeSufficient(domProbe, policy)) {
+        return JSON.stringify({
+          status: 'success',
+          url: sourceUrl,
+          full_page: requestedFullPage,
+          method: 'dom_fast_path',
+          dom_metrics: {
+            main_text_length: domProbe.mainTextLength,
+            heading_count: domProbe.headingCount,
+            input_count: domProbe.inputCount,
+            button_count: domProbe.buttonCount,
+            link_count: domProbe.linkCount,
+          },
+          routing_policy: {
+            domain: getDomainFromUrl(sourceUrl),
+            dom_strong_min_chars: policy.domStrongMinChars,
+            dom_structured_min_chars: policy.domStructuredMinChars,
+          },
+          extracted_text: domProbe.text,
+        }, null, 2);
+      }
+
+      if (cachedFromDomFingerprint) {
+        const updatedPolicy = updateVisionDomainOutcome(sourceUrl, cachedFromDomFingerprint.mode, normalizedTextLength(cachedFromDomFingerprint.extractedText));
+        return JSON.stringify({
+          status: 'success',
+          url: sourceUrl,
+          full_page: cachedFromDomFingerprint.mode === 'full',
+          method: 'vision_cache_hit_dom',
+          cache_hit: true,
+          routing_policy: {
+            domain: getDomainFromUrl(sourceUrl),
+            dom_strong_min_chars: updatedPolicy.domStrongMinChars,
+            dom_structured_min_chars: updatedPolicy.domStructuredMinChars,
+            prefer_full_page: shouldPreferFullPage(updatedPolicy),
+          },
+          extracted_text: cachedFromDomFingerprint.extractedText,
+        }, null, 2);
+      }
+
+      const initialMode: 'roi' | 'full' = (requestedFullPage || shouldPreferFullPage(policy)) ? 'full' : 'roi';
+      const initialImages = await captureVisionInputs(activePage, initialMode === 'full');
+      const initialResult = await resolveVisionExtraction(sourceUrl, initialMode, initialImages, policy);
+
+      let finalMode: 'roi' | 'full' = initialMode;
+      let finalImages = initialImages;
+      let finalText = initialResult.text;
+      let cacheHit = initialResult.cacheHit;
+      let escalationTriggered = false;
+
+      if (initialMode === 'roi' && normalizedTextLength(initialResult.text) < ROI_ESCALATION_MIN_TEXT) {
+        escalationTriggered = true;
+        const fullImages = await captureVisionInputs(activePage, true);
+        const fullResult = await resolveVisionExtraction(sourceUrl, 'full', fullImages, policy);
+        if (normalizedTextLength(fullResult.text) >= normalizedTextLength(initialResult.text)) {
+          finalMode = 'full';
+          finalImages = fullImages;
+          finalText = fullResult.text;
+        }
+        cacheHit = cacheHit || fullResult.cacheHit;
+      }
+
+      writeVisionCache(sourceUrl, finalMode, domFingerprint, finalText);
+      const updatedPolicy = updateVisionDomainOutcome(sourceUrl, finalMode, normalizedTextLength(finalText));
+      return JSON.stringify({
+        status: 'success',
+        url: sourceUrl,
+        full_page: finalMode === 'full',
+        method: finalMode === 'full' ? 'vision_full_page' : 'vision_roi',
+        cache_hit: cacheHit,
+        escalation_triggered: escalationTriggered,
+        image_regions: finalImages.map((img) => img.label),
+        routing_policy: {
+          domain: getDomainFromUrl(sourceUrl),
+          dom_strong_min_chars: updatedPolicy.domStrongMinChars,
+          dom_structured_min_chars: updatedPolicy.domStructuredMinChars,
+          prefer_full_page: shouldPreferFullPage(updatedPolicy),
+          roi_failures: updatedPolicy.roiFailures,
+          roi_successes: updatedPolicy.roiSuccesses,
+        },
+        extracted_text: finalText,
+      }, null, 2);
     } else {
       const targetUrl = inputUrl || (tabId ? getTabUrlById(tabId) : null);
       if (!targetUrl) return 'Unable to resolve target URL for visual extraction.';
 
+      let policy = getDomainVisionPolicy(targetUrl);
+      const firstPassFullPage = requestedFullPage || shouldPreferFullPage(policy);
       const pool = getPlaywrightPool({ maxConcurrency: MAX_BATCH_CONCURRENCY });
       const [result] = await pool.execute(
-        [{ url: withProtocol(targetUrl), actions: ['screenshot'], full_page: fullPage }],
+        [{ url: withProtocol(targetUrl), actions: ['extract', 'screenshot'], full_page: firstPassFullPage }],
         { parallel: true }
       );
 
@@ -2025,18 +2699,83 @@ async function toolVisualExtract(urlInput: unknown, tabIdInput: unknown, fullPag
         return JSON.stringify(result, null, 2);
       }
 
-      screenshotBase64 = result.screenshot_base64;
       sourceUrl = result.url;
-    }
+      policy = getDomainVisionPolicy(sourceUrl);
 
-    const extractedText = await llmVisionExtractText(screenshotBase64);
-    return JSON.stringify({
-      status: 'success',
-      url: sourceUrl,
-      full_page: fullPage,
-      extracted_text: extractedText,
-      // screenshot_base64 omitted — too large for context window
-    }, null, 2);
+      const contentText = typeof result.content === 'string' ? result.content.trim() : '';
+      if (contentText.length >= policy.remoteDomMinChars) {
+        return JSON.stringify({
+          status: 'success',
+          url: sourceUrl,
+          full_page: firstPassFullPage,
+          method: 'dom_fast_path_remote',
+          routing_policy: {
+            domain: getDomainFromUrl(sourceUrl),
+            remote_dom_min_chars: policy.remoteDomMinChars,
+          },
+          extracted_text: contentText,
+        }, null, 2);
+      }
+
+      const initialMode: 'roi' | 'full' = firstPassFullPage ? 'full' : 'roi';
+      const initialImages: VisionImageInput[] = [
+        {
+          label: 'remote-page',
+          base64: result.screenshot_base64,
+          mediaType: 'image/png',
+        },
+      ];
+
+      const initialResult = await resolveVisionExtraction(sourceUrl, initialMode, initialImages, policy);
+      let finalMode: 'roi' | 'full' = initialMode;
+      let finalImages = initialImages;
+      let finalText = initialResult.text;
+      let cacheHit = initialResult.cacheHit;
+      let escalationTriggered = false;
+
+      if (initialMode === 'roi' && normalizedTextLength(initialResult.text) < ROI_ESCALATION_MIN_TEXT && !requestedFullPage) {
+        escalationTriggered = true;
+        const [fullResultPage] = await pool.execute(
+          [{ url: withProtocol(targetUrl), actions: ['screenshot'], full_page: true }],
+          { parallel: true },
+        );
+        if (fullResultPage.status === 'success' && fullResultPage.screenshot_base64) {
+          const fullImages: VisionImageInput[] = [
+            {
+              label: 'remote-full-page',
+              base64: fullResultPage.screenshot_base64,
+              mediaType: 'image/png',
+            },
+          ];
+          const fullResult = await resolveVisionExtraction(sourceUrl, 'full', fullImages, policy);
+          if (normalizedTextLength(fullResult.text) >= normalizedTextLength(initialResult.text)) {
+            finalMode = 'full';
+            finalImages = fullImages;
+            finalText = fullResult.text;
+          }
+          cacheHit = cacheHit || fullResult.cacheHit;
+        }
+      }
+
+      const updatedPolicy = updateVisionDomainOutcome(sourceUrl, finalMode, normalizedTextLength(finalText));
+      return JSON.stringify({
+        status: 'success',
+        url: sourceUrl,
+        full_page: finalMode === 'full',
+        method: finalMode === 'full' ? 'vision_full_page_remote' : 'vision_roi_remote',
+        cache_hit: cacheHit,
+        escalation_triggered: escalationTriggered,
+        image_regions: finalImages.map((img) => img.label),
+        routing_policy: {
+          domain: getDomainFromUrl(sourceUrl),
+          remote_dom_min_chars: updatedPolicy.remoteDomMinChars,
+          prefer_full_page: shouldPreferFullPage(updatedPolicy),
+          roi_failures: updatedPolicy.roiFailures,
+          roi_successes: updatedPolicy.roiSuccesses,
+        },
+        extracted_text: finalText,
+      }, null, 2);
+    }
   } catch (error: any) {
     return `Visual extraction failed: ${error?.message || 'unknown error'}`;
   }

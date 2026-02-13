@@ -1,29 +1,23 @@
-import { Browser, BrowserContext, Page, chromium } from 'playwright';
+import { Browser, BrowserContext, Page } from 'playwright';
 import { createLogger } from '../logger';
 import { getPlaywrightBrowser } from './manager';
 import { compressPageContent } from '../content/compressor';
+import { getMergedTaskCookies, getSharedTaskBrowser } from '../tasks/task-browser';
 
 const log = createLogger('browser-pool');
 
-// Standalone headless browser for batch operations (CDP can't create new pages)
-let standaloneBrowser: Browser | null = null;
-
 async function getStandaloneBrowser(): Promise<Browser> {
-  if (!standaloneBrowser || !standaloneBrowser.isConnected()) {
-    log.info('Launching standalone headless browser for batch operations');
-    standaloneBrowser = await chromium.launch({
-      headless: true,
-    });
+  const browser = await getSharedTaskBrowser();
+  if (!browser) {
+    throw new Error('Shared task browser is unavailable');
   }
-  return standaloneBrowser;
+  return browser;
 }
 
 export async function closeStandaloneBrowser(): Promise<void> {
-  if (standaloneBrowser) {
-    log.info('Closing standalone browser');
-    await standaloneBrowser.close().catch(() => null);
-    standaloneBrowser = null;
-  }
+  // Pool now reuses the shared task browser runtime.
+  // Lifecycle is managed centrally by tasks/task-browser.shutdown().
+  log.debug('closeStandaloneBrowser called; shared runtime shutdown is handled by task-browser');
 }
 
 const DEFAULT_MAX_CONCURRENCY = 5;
@@ -175,11 +169,22 @@ class PlaywrightPool {
 
     let batchTimedOut = false;
 
-    // Create a fresh context in the standalone browser for this batch
+    // Create a fresh context in the shared headless browser for this batch
     let sharedContext: BrowserContext;
     try {
       sharedContext = await browser.newContext();
       contexts.add(sharedContext);
+
+      // Propagate user session/auth context into batch pages so extraction can
+      // access logged-in dashboards when available.
+      const targetUrls = operations.map((op) => op.url).filter((u) => typeof u === 'string' && u.trim().length > 0);
+      const cookies = await getMergedTaskCookies(targetUrls);
+      if (cookies.length > 0) {
+        await sharedContext.addCookies(cookies);
+        log.info(`Pool context initialized with ${cookies.length} merged cookies`);
+      } else {
+        log.debug('Pool context initialized without cookies');
+      }
     } catch (err: any) {
       return operations.map((op) => ({
         url: op.url,
