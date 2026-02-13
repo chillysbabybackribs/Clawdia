@@ -204,4 +204,27 @@ describe('browser tools smoke', () => {
     expect(parsed.results[0].status).toBe('success');
     expect(typeof parsed.results[0].screenshot_base64).toBe('string');
   });
+
+  it('falls back browser_extract to BrowserView for target URLs', async () => {
+    const manager = await import('./manager');
+    const executeInBrowserViewMock = manager.executeInBrowserView as unknown as ReturnType<typeof vi.fn>;
+    executeInBrowserViewMock.mockResolvedValue({
+      title: 'Example',
+      url: 'https://example.com/docs',
+      content: 'Structured content '.repeat(200),
+      headings: ['Docs'],
+      links: [],
+    });
+
+    const { executeTool } = await import('./tools');
+    const raw = await executeTool('browser_extract', {
+      url: 'https://example.com/docs',
+      schema: { summary: 'Short summary' },
+    });
+    const parsed = JSON.parse(raw);
+
+    expect(parsed.mode).toBe('browserview_fallback');
+    expect(parsed.url).toBe('https://example.com/docs');
+    expect(typeof parsed.extracted).toBe('object');
+  });
 });

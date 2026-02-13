@@ -2949,6 +2949,32 @@ async function toolExtract(urlInput: unknown, tabIdInput: unknown, schemaInput: 
     const targetUrl = url || (tabId ? getTabUrlById(tabId) : null);
     if (!targetUrl) return 'Unable to resolve target URL for extraction.';
 
+    if (!_overridePage && !getActiveOrCreatePage()) {
+      try {
+        await managerNavigate(withProtocol(targetUrl));
+        await waitForLoad(12_000).catch(() => undefined);
+        const rawPageData = await executeInBrowserView<Record<string, unknown>>(domExtractJs(16_000));
+        if (rawPageData && typeof rawPageData.content === 'string') {
+          rawPageData.content = compressPageContent(rawPageData.content, { maxChars: 4_000 }).text;
+        }
+        if (!rawPageData) return 'Failed to read page content for extraction.';
+        const extracted = await llmExtract(rawPageData, schema);
+        return JSON.stringify(
+          {
+            status: extracted._error ? 'error' : 'success',
+            mode: 'browserview_fallback',
+            url: (rawPageData.url as string) || withProtocol(targetUrl),
+            extracted,
+            ...(extracted._error ? { error: String(extracted._error) } : {}),
+          },
+          null,
+          2,
+        );
+      } catch (error: any) {
+        return `Extraction failed (BrowserView fallback): ${error?.message || 'unknown error'}`;
+      }
+    }
+
     const pool = getPlaywrightPool({ maxConcurrency: MAX_BATCH_CONCURRENCY });
     const [result] = await pool.execute(
       [{ url: withProtocol(targetUrl), actions: ['extract'], extract_schema: schema }],
