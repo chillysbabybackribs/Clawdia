@@ -11,9 +11,8 @@ let standaloneBrowser: Browser | null = null;
 async function getStandaloneBrowser(): Promise<Browser> {
   if (!standaloneBrowser || !standaloneBrowser.isConnected()) {
     log.info('Launching standalone headless browser for batch operations');
-    standaloneBrowser = await chromium.launch({ 
+    standaloneBrowser = await chromium.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
     });
   }
   return standaloneBrowser;

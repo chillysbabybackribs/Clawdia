@@ -38,8 +38,6 @@ async function ensureBrowser(): Promise<Browser | null> {
         args: [
           '--disable-gpu',
           '--disable-dev-shm-usage',
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
         ],
       });
 

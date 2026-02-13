@@ -1,8 +1,3 @@
-// Must run before Electron app initialization so Linux packaging paths do not hit SUID sandbox startup checks.
-if (process.platform === 'linux') {
-  process.env.ELECTRON_DISABLE_SANDBOX = 'true';
-}
-
 // Log tap — mirrors all stdout/stderr to ~/.clawdia-live.log for AI monitoring
 import './log-tap';
 
@@ -95,11 +90,8 @@ const REMOTE_DEBUGGING_PORT = pickFreePort(portList);
 
 app.commandLine.appendSwitch('remote-debugging-port', String(REMOTE_DEBUGGING_PORT));
 if (process.platform === 'linux') {
-  app.commandLine.appendSwitch('no-sandbox');
-  app.commandLine.appendSwitch('disable-setuid-sandbox');
   // GPU stability: prevent GPU process crashes that kill the app on Linux/NVIDIA
   app.commandLine.appendSwitch('disable-gpu-compositing');
-  app.commandLine.appendSwitch('disable-gpu-sandbox');
   app.commandLine.appendSwitch('in-process-gpu');
 }
 // FedCM is currently flaky in embedded Chromium flows (e.g., Google sign-in on claude.ai).
@@ -450,7 +442,7 @@ function createWindow(): void {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false,
+      sandbox: true,
       preload: preloadPath,
     },
   });
