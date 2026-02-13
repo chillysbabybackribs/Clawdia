@@ -128,10 +128,6 @@ if (process.platform === 'linux') {
 app.commandLine.appendSwitch('disable-features', 'FedCm');
 log.info(`CDP debug port: ${REMOTE_DEBUGGING_PORT}`);
 
-if (process.env.NODE_ENV !== 'production') {
-  process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
-}
-
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let trayFirstMinimize = true; // Show notification only on first minimize-to-tray
@@ -913,7 +909,7 @@ function createTray(): void {
 function createWindow(): void {
   const preloadPath = path.join(__dirname, 'preload.js');
   log.debug(`Preload absolute path: ${preloadPath}`);
-  const mainWindowSandbox = process.env.CLAWDIA_MAIN_WINDOW_SANDBOX === '1';
+  const mainWindowSandbox = process.env.CLAWDIA_MAIN_WINDOW_SANDBOX !== '0';
 
   if (!fs.existsSync(preloadPath)) {
     log.error(`Preload file does not exist at: ${preloadPath}`);
@@ -930,9 +926,8 @@ function createWindow(): void {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      // Sandbox can be enabled via CLAWDIA_MAIN_WINDOW_SANDBOX=1.
-      // Preload must be bundled (build:main runs bundle-preload.mjs) so it
-      // doesn't rely on sandbox-blocked relative requires at runtime.
+      // Sandbox defaults to ON. Set CLAWDIA_MAIN_WINDOW_SANDBOX=0 only as a
+      // temporary compatibility fallback while debugging preload issues.
       sandbox: mainWindowSandbox,
       preload: preloadPath,
     },

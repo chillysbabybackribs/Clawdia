@@ -1,5 +1,8 @@
 import Store from 'electron-store';
+import { randomBytes } from 'crypto';
 import * as fs from 'fs';
+import { homedir } from 'os';
+import * as path from 'path';
 import { DEFAULT_MODEL } from '../shared/models';
 import type { UserAccount } from '../shared/accounts';
 import type { AutonomyMode } from '../shared/autonomy';
@@ -174,8 +177,46 @@ export const migrations: Migration[] = [
 // STORE INSTANCE
 // ============================================================================
 
+const STORE_KEY_FILE = 'store.key';
+
+function getConfigDir(): string {
+  if (process.platform === 'win32') {
+    return path.join(process.env.APPDATA || path.join(homedir(), 'AppData', 'Roaming'), 'clawdia');
+  }
+  if (process.platform === 'darwin') {
+    return path.join(homedir(), 'Library', 'Application Support', 'clawdia');
+  }
+  return path.join(process.env.XDG_CONFIG_HOME || path.join(homedir(), '.config'), 'clawdia');
+}
+
+function getStoreEncryptionKey(): string {
+  const override = process.env.CLAWDIA_STORE_ENCRYPTION_KEY?.trim();
+  if (override) return override;
+
+  const configDir = getConfigDir();
+  const keyPath = path.join(configDir, STORE_KEY_FILE);
+  try {
+    if (fs.existsSync(keyPath)) {
+      const existing = fs.readFileSync(keyPath, 'utf8').trim();
+      if (existing.length >= 32) return existing;
+    }
+  } catch (err: any) {
+    log.warn(`Unable to read store key file (${keyPath}): ${err?.message || err}`);
+  }
+
+  const generated = randomBytes(32).toString('hex');
+  try {
+    fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(keyPath, generated, { mode: 0o600 });
+    fs.chmodSync(keyPath, 0o600);
+  } catch (err: any) {
+    log.warn(`Unable to persist store key file (${keyPath}): ${err?.message || err}`);
+  }
+  return generated;
+}
+
 export const store = new Store<ClawdiaStoreSchema>({
-  encryptionKey: 'clawdia-local-key',
+  encryptionKey: getStoreEncryptionKey(),
   defaults: {
     schemaVersion: 0,
     anthropicApiKey: '',
