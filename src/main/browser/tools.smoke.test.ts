@@ -301,4 +301,38 @@ describe('browser tools smoke', () => {
     expect(parsed.status).toBe('success');
     expect(parsed.url).toBe('https://example.com/docs');
   });
+
+  it('falls back browser_search_rich to BrowserView extraction when Playwright is unavailable', async () => {
+    const backends = await import('../search/backends');
+    const searchMock = backends.search as unknown as ReturnType<typeof vi.fn>;
+    searchMock.mockResolvedValue({
+      results: [
+        { title: 'Acme', url: 'https://example.com/acme', snippet: 'Acme overview' },
+        { title: 'Acme Pricing', url: 'https://example.com/pricing', snippet: 'Pricing details' },
+      ],
+    });
+
+    const manager = await import('./manager');
+    const executeInBrowserViewMock = manager.executeInBrowserView as unknown as ReturnType<typeof vi.fn>;
+    executeInBrowserViewMock.mockResolvedValue({
+      title: 'Acme',
+      url: 'https://example.com/acme',
+      content: 'Acme content '.repeat(400),
+      headings: ['Acme'],
+      links: [],
+    });
+
+    const { executeTool } = await import('./tools');
+    const raw = await executeTool('browser_search_rich', {
+      query: 'Acme',
+      entity_type: 'company',
+    });
+    const parsed = JSON.parse(raw);
+
+    expect(parsed.mode).toBe('browserview_fallback');
+    expect(parsed.query).toBe('Acme');
+    expect(parsed.entity_type).toBe('company');
+    expect(Array.isArray(parsed.sources)).toBe(true);
+    expect(parsed.sources.length).toBe(2);
+  });
 });

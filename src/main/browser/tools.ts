@@ -3373,12 +3373,14 @@ async function toolSearchRich(query: string, entityTypeInput: unknown, extractIn
     }, null, 2);
   }
 
-  const pool = getPlaywrightPool({ maxConcurrency: MAX_BATCH_CONCURRENCY });
   const topUrls = topResults.slice(0, 3).map((r) => withProtocol(r.url));
-  const fetched = await pool.execute(
-    topUrls.map((url) => ({ url, actions: ['extract'] })),
-    { parallel: true }
-  );
+  const useBrowserViewFallback = !_overridePage && !getActiveOrCreatePage();
+  const fetched = useBrowserViewFallback
+    ? await runBrowserViewBatchFallback(topUrls.map((url) => ({ url, actions: ['extract'] })))
+    : await getPlaywrightPool({ maxConcurrency: MAX_BATCH_CONCURRENCY }).execute(
+      topUrls.map((url) => ({ url, actions: ['extract'] })),
+      { parallel: true }
+    );
 
   const requestedFields = Array.isArray(extractInput)
     ? extractInput.filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
@@ -3407,6 +3409,7 @@ async function toolSearchRich(query: string, entityTypeInput: unknown, extractIn
   return JSON.stringify({
     query,
     entity_type: entityType,
+    ...(useBrowserViewFallback ? { mode: 'browserview_fallback' } : {}),
     sources: topResults.map((r) => r.url),
     entity,
   }, null, 2);
