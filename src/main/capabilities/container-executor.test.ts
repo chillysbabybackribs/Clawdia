@@ -36,6 +36,21 @@ describe('container executor', () => {
     expect(plan.args).toContain('/opt/shared:/mnt/shared-1:ro');
   });
 
+  it('sets HOME to the mounted workspace when host home is inside allowed root', () => {
+    const original = process.env.HOME;
+    process.env.HOME = '/tmp/project/user';
+    const plan = buildContainerRunPlan('docker', 'node:20-bookworm-slim', '/tmp/project', {
+      allowedRoots: ['/tmp/project'],
+      cwd: '/tmp/project',
+    });
+    expect(plan.args).toContain('HOME=/workspace/user');
+    if (original === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = original;
+    }
+  });
+
   it('uses default container image when env is not set', () => {
     const original = process.env.CLAWDIA_CONTAINER_IMAGE;
     delete process.env.CLAWDIA_CONTAINER_IMAGE;

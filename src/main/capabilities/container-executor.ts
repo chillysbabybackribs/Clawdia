@@ -214,6 +214,15 @@ function buildMountPlan(
   return { primaryRoot, mounts, workdir };
 }
 
+function resolveContainerHome(primaryRoot: string): string {
+  const home = homedir();
+  if (home === primaryRoot || home.startsWith(primaryRoot + path.sep)) {
+    const relative = home === primaryRoot ? '' : home.slice(primaryRoot.length + 1);
+    return relative ? path.posix.join('/workspace', relative.split(path.sep).join('/')) : '/workspace';
+  }
+  return '/workspace';
+}
+
 export function buildContainerRunPlan(
   runtime: ContainerRuntime,
   image: string,
@@ -229,6 +238,7 @@ export function buildContainerRunPlan(
   const allowedRoots = options?.allowedRoots?.length ? options.allowedRoots : [hostWorkspacePath];
   const cwd = options?.cwd || hostWorkspacePath;
   const mountPlan = buildMountPlan(cwd, allowedRoots, options?.extraMounts);
+  const containerHome = resolveContainerHome(mountPlan.primaryRoot);
   const args: string[] = [
     'run',
     '--rm',
@@ -237,7 +247,7 @@ export function buildContainerRunPlan(
     '-w',
     mountPlan.workdir,
     '-e',
-    'HOME=/tmp/clawdia',
+    `HOME=${containerHome}`,
   ];
 
   const networkMode = options?.networkMode || 'allow';
