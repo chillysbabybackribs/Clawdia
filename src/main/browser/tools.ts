@@ -3152,6 +3152,70 @@ async function toolVisualExtract(urlInput: unknown, tabIdInput: unknown, fullPag
       const targetUrl = inputUrl || (tabId ? getTabUrlById(tabId) : null);
       if (!targetUrl) return 'Unable to resolve target URL for visual extraction.';
 
+      if (!_overridePage && !activePage) {
+        sourceUrl = withProtocol(targetUrl);
+        let policy = getDomainVisionPolicy(sourceUrl);
+        await managerNavigate(sourceUrl);
+        await waitForLoad(12_000).catch(() => undefined);
+
+        const rawPageData = await executeInBrowserView<Record<string, unknown>>(domExtractJs(16_000));
+        const contentText = rawPageData && typeof rawPageData['content'] === 'string'
+          ? rawPageData['content'].trim()
+          : '';
+        if (contentText.length >= policy.remoteDomMinChars) {
+          return JSON.stringify({
+            status: 'success',
+            mode: 'browserview_fallback',
+            url: sourceUrl,
+            full_page: false,
+            method: 'dom_fast_path_browserview',
+            routing_policy: {
+              domain: getDomainFromUrl(sourceUrl),
+              remote_dom_min_chars: policy.remoteDomMinChars,
+            },
+            extracted_text: contentText,
+          }, null, 2);
+        }
+
+        const screenshot = await captureBrowserViewScreenshot(60);
+        if (!screenshot) {
+          return JSON.stringify({
+            status: 'error',
+            mode: 'browserview_fallback',
+            url: sourceUrl,
+            error: 'Unable to capture BrowserView screenshot for visual extraction.',
+          }, null, 2);
+        }
+
+        const images: VisionImageInput[] = [
+          {
+            label: 'browserview-viewport',
+            base64: screenshot.toString('base64'),
+            mediaType: 'image/jpeg',
+          },
+        ];
+        const visionResult = await resolveVisionExtraction(sourceUrl, 'roi', images, policy);
+        const updatedPolicy = updateVisionDomainOutcome(sourceUrl, 'roi', normalizedTextLength(visionResult.text));
+        return JSON.stringify({
+          status: 'success',
+          mode: 'browserview_fallback',
+          url: sourceUrl,
+          full_page: false,
+          requested_full_page: requestedFullPage,
+          method: 'vision_browserview_viewport',
+          cache_hit: visionResult.cacheHit,
+          image_regions: images.map((img) => img.label),
+          routing_policy: {
+            domain: getDomainFromUrl(sourceUrl),
+            remote_dom_min_chars: updatedPolicy.remoteDomMinChars,
+            prefer_full_page: shouldPreferFullPage(updatedPolicy),
+            roi_failures: updatedPolicy.roiFailures,
+            roi_successes: updatedPolicy.roiSuccesses,
+          },
+          extracted_text: visionResult.text,
+        }, null, 2);
+      }
+
       let policy = getDomainVisionPolicy(targetUrl);
       const firstPassFullPage = requestedFullPage || shouldPreferFullPage(policy);
       const pool = getPlaywrightPool({ maxConcurrency: MAX_BATCH_CONCURRENCY });

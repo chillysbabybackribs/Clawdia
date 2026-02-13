@@ -280,4 +280,25 @@ describe('browser tools smoke', () => {
     expect(switchTabMock).toHaveBeenCalledWith('tab-2');
     expect(switchTabMock).toHaveBeenLastCalledWith('tab-1');
   });
+
+  it('falls back browser_visual_extract target URL to BrowserView DOM fast path', async () => {
+    const manager = await import('./manager');
+    const executeInBrowserViewMock = manager.executeInBrowserView as unknown as ReturnType<typeof vi.fn>;
+    executeInBrowserViewMock.mockResolvedValue({
+      title: 'Docs',
+      url: 'https://example.com/docs',
+      content: 'Visual extract content '.repeat(500),
+      headings: ['Docs'],
+      links: [],
+    });
+
+    const { executeTool } = await import('./tools');
+    const raw = await executeTool('browser_visual_extract', { url: 'https://example.com/docs' });
+    const parsed = JSON.parse(raw);
+
+    expect(parsed.mode).toBe('browserview_fallback');
+    expect(parsed.method).toBe('dom_fast_path_browserview');
+    expect(parsed.status).toBe('success');
+    expect(parsed.url).toBe('https://example.com/docs');
+  });
 });
