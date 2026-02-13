@@ -10,6 +10,7 @@ const DEFAULT_CAPABILITY_PLATFORM_FLAGS: CapabilityPlatformFlags = {
   mcpRuntimeManager: false,
   containerExecution: false,
   containerizeMcpServers: false,
+  containerizeInstalls: false,
 };
 
 export function getCapabilityPlatformFlags(): CapabilityPlatformFlags {

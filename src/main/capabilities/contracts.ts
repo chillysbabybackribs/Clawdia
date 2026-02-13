@@ -22,6 +22,7 @@ export interface InstallRecipe {
   checksum?: string;
   signature?: string;
   smokeTest?: VerificationSpec;
+  runInContainer?: boolean;
 }
 
 export interface CapabilityRequirement {

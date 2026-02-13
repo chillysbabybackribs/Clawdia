@@ -24,6 +24,7 @@ describe('capability platform feature flags', () => {
     expect(flags.installOrchestrator).toBe(false);
     expect(flags.containerExecution).toBe(false);
     expect(flags.containerizeMcpServers).toBe(false);
+    expect(flags.containerizeInstalls).toBe(false);
   });
 
   it('merges persisted flags with defaults', async () => {

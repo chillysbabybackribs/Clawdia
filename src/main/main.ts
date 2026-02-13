@@ -152,6 +152,7 @@ const lastMcpHealthKeyByServer = new Map<string, string>();
 let lastMcpRestartAttemptAt = 0;
 const externalMcpConfigs = new Map<string, DiscoveredMcpServer>();
 const externalMcpProcesses = new Map<string, ChildProcess>();
+const externalMcpProcessMeta = new Map<string, { containerized: boolean }>();
 const externalMcpRestartAttempts = new Map<string, number>();
 
 // Cache the AnthropicClient to reuse HTTP connection pooling.
@@ -413,6 +414,7 @@ async function startExternalMcpProcess(config: DiscoveredMcpServer, reason: stri
   if (externalMcpProcesses.has(config.name)) return;
 
   let child: ChildProcess;
+  let containerized = false;
   try {
     const flags = getCapabilityPlatformFlags();
     const shouldContainerize = flags.containerExecution && flags.containerizeMcpServers;
@@ -432,6 +434,7 @@ async function startExternalMcpProcess(config: DiscoveredMcpServer, reason: stri
           env: process.env,
           stdio: ['ignore', 'pipe', 'pipe'],
         });
+        containerized = true;
       } else {
         log.warn(`[MCP Runtime] Container runtime unavailable for ${config.name}; falling back to host.`);
         child = spawn(config.command, config.args, {
@@ -458,6 +461,7 @@ async function startExternalMcpProcess(config: DiscoveredMcpServer, reason: stri
   }
 
   externalMcpProcesses.set(config.name, child);
+  externalMcpProcessMeta.set(config.name, { containerized });
   const startedState = capabilityPlatform.mcpRuntime.updateHealth(
     config.name,
     'starting',
@@ -487,6 +491,7 @@ async function startExternalMcpProcess(config: DiscoveredMcpServer, reason: stri
 
   child.on('error', (err: Error) => {
     externalMcpProcesses.delete(config.name);
+    externalMcpProcessMeta.delete(config.name);
     const state = capabilityPlatform.mcpRuntime.updateHealth(
       config.name,
       'unhealthy',
@@ -497,6 +502,7 @@ async function startExternalMcpProcess(config: DiscoveredMcpServer, reason: stri
 
   child.on('exit', (code, signal) => {
     externalMcpProcesses.delete(config.name);
+    externalMcpProcessMeta.delete(config.name);
     const detail = `process exited code=${code ?? 'null'} signal=${signal ?? 'none'}`;
     const state = capabilityPlatform.mcpRuntime.updateHealth(config.name, 'unhealthy', detail);
     if (state) emitMcpHealthState(state, detail);
@@ -657,6 +663,7 @@ function stopMcpRuntimeManager(): void {
   for (const [serverName, proc] of externalMcpProcesses.entries()) {
     safeTerminateProcess(proc, serverName);
     externalMcpProcesses.delete(serverName);
+    externalMcpProcessMeta.delete(serverName);
   }
   externalMcpConfigs.clear();
   externalMcpRestartAttempts.clear();
@@ -686,9 +693,11 @@ async function buildCapabilityPlatformStatus(): Promise<CapabilityPlatformStatus
       command: 'electron-cdp',
       args: [`--port=${REMOTE_DEBUGGING_PORT}`],
       running: getBrowserStatus().status !== 'error',
+      containerized: false,
     },
     ...Array.from(externalMcpConfigs.values()).map((config) => {
       const proc = externalMcpProcesses.get(config.name);
+      const meta = externalMcpProcessMeta.get(config.name);
       return {
         name: config.name,
         source: config.source,
@@ -696,6 +705,7 @@ async function buildCapabilityPlatformStatus(): Promise<CapabilityPlatformStatus
         args: config.args,
         pid: proc?.pid,
         running: Boolean(proc && proc.exitCode === null && !proc.killed),
+        containerized: Boolean(meta?.containerized),
       };
     }),
   ];

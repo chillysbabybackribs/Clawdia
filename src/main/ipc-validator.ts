@@ -701,6 +701,7 @@ const capabilityPlatformFlagsSchema = isObject<Partial<CapabilityPlatformFlags>>
   mcpRuntimeManager: isOptional(isBoolean('mcpRuntimeManager')),
   containerExecution: isOptional(isBoolean('containerExecution')),
   containerizeMcpServers: isOptional(isBoolean('containerizeMcpServers')),
+  containerizeInstalls: isOptional(isBoolean('containerizeInstalls')),
 });
 
 export const capabilityPlatformFlagsSetSchema = isObject<CapabilityPlatformFlagsSetPayload>({

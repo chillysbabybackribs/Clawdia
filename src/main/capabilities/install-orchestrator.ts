@@ -1,5 +1,12 @@
 import { execFile } from 'child_process';
+import { homedir } from 'os';
 import { createLogger } from '../logger';
+import { getCapabilityPlatformFlags } from './feature-flags';
+import {
+  detectContainerRuntime,
+  executeCommandInContainer,
+  getContainerNetworkMode,
+} from './container-executor';
 import {
   getCapability,
   isBinaryAvailable,
@@ -34,6 +41,32 @@ function runInstallCommand(command: string, timeoutMs: number): Promise<CommandR
       resolve({ ok: !err, durationMs, output: output || '[no output]' });
     });
   });
+}
+
+export function shouldRunInstallInContainer(recipe: { runInContainer?: boolean }): boolean {
+  const flags = getCapabilityPlatformFlags();
+  if (!flags.containerExecution || !flags.containerizeInstalls) return false;
+  return Boolean((recipe as any).runInContainer);
+}
+
+async function runInstallCommandInContainer(command: string, timeoutMs: number): Promise<CommandResult> {
+  const started = performance.now();
+  try {
+    const result = await executeCommandInContainer({
+      command,
+      cwd: homedir(),
+      timeoutMs,
+      networkMode: getContainerNetworkMode(),
+      allowedRoots: [homedir()],
+    });
+    const durationMs = Math.round(performance.now() - started);
+    const output = `${result.stdout || ''}${result.stderr ? `\n${result.stderr}` : ''}`.trim();
+    return { ok: true, durationMs, output: output || '[no output]' };
+  } catch (err: any) {
+    const durationMs = Math.round(performance.now() - started);
+    const output = err?.message ? String(err.message) : 'container install failed';
+    return { ok: false, durationMs, output };
+  }
 }
 
 function filterRecipes(capability: CapabilityDescriptor, trustPolicy: TrustPolicy) {
@@ -117,7 +150,22 @@ export async function ensureCapabilityInstalled(
       command: recipe.command,
     }, onEvent);
 
-    const result = await runInstallCommand(recipe.command, timeoutMs);
+    let result: CommandResult;
+    if (shouldRunInstallInContainer(recipe)) {
+      const runtime = await detectContainerRuntime();
+      if (runtime.available) {
+        result = await runInstallCommandInContainer(recipe.command, timeoutMs);
+        if (!result.ok) {
+          log.warn(`[Install] container install failed for ${recipe.id}; falling back to host.`);
+          result = await runInstallCommand(recipe.command, timeoutMs);
+        }
+      } else {
+        log.warn(`[Install] container runtime unavailable for ${recipe.id}; falling back to host.`);
+        result = await runInstallCommand(recipe.command, timeoutMs);
+      }
+    } else {
+      result = await runInstallCommand(recipe.command, timeoutMs);
+    }
     attempts.push({ capabilityId: capability.id, recipeId: recipe.id, ok: result.ok, durationMs: result.durationMs, output: result.output });
 
     const binaryAvailable = await isBinaryAvailable(binary);

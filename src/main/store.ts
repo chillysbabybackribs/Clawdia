@@ -163,6 +163,7 @@ export const migrations: Migration[] = [
           mcpRuntimeManager: false,
           containerExecution: false,
           containerizeMcpServers: false,
+          containerizeInstalls: false,
         });
       }
     },

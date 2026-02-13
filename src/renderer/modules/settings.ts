@@ -18,6 +18,7 @@ const CAPABILITY_FLAG_INPUTS: Array<{ id: string; key: keyof CapabilityPlatformF
   { id: 'cap-flag-lifecycle-events', key: 'lifecycleEvents' },
   { id: 'cap-flag-checkpoint-rollback', key: 'checkpointRollback' },
   { id: 'cap-flag-mcp-runtime', key: 'mcpRuntimeManager' },
+  { id: 'cap-flag-containerize-installs', key: 'containerizeInstalls' },
   { id: 'cap-flag-container-execution', key: 'containerExecution' },
   { id: 'cap-flag-containerize-mcp', key: 'containerizeMcpServers' },
 ];
@@ -321,7 +322,8 @@ function renderCapabilityPlatformStatus(status: CapabilityPlatformStatus): void 
   const processLines = status.mcpProcesses.map((proc) => {
     const pid = proc.pid ? ` pid=${proc.pid}` : '';
     const source = proc.source ? ` source=${proc.source}` : '';
-    return `${proc.running ? 'running' : 'stopped'} ${proc.name}${pid}${source}`;
+    const containerized = proc.containerized ? ' container' : '';
+    return `${proc.running ? 'running' : 'stopped'} ${proc.name}${pid}${source}${containerized}`;
   });
   mcpProcessesEl.textContent = processLines.length
     ? processLines.join('\n')

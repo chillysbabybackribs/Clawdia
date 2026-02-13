@@ -44,7 +44,7 @@ const DEFAULT_CAPABILITIES: CapabilityDescriptor[] = [
     description: 'Media downloader.',
     installRecipes: [
       { id: 'apt-yt-dlp', method: 'apt', command: 'DEBIAN_FRONTEND=noninteractive sudo -n apt-get install -y yt-dlp || DEBIAN_FRONTEND=noninteractive apt-get install -y yt-dlp', verified: true, timeoutMs: 180_000 },
-      { id: 'pip-yt-dlp', method: 'pip', command: 'python3 -m pip install --user yt-dlp', verified: false, timeoutMs: 180_000 },
+      { id: 'pip-yt-dlp', method: 'pip', command: 'python3 -m pip install --user yt-dlp', verified: false, timeoutMs: 180_000, runInContainer: true },
     ],
   },
   {

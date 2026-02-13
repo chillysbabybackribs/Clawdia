@@ -393,6 +393,7 @@ export interface CapabilityPlatformFlags {
   mcpRuntimeManager: boolean;
   containerExecution: boolean;
   containerizeMcpServers: boolean;
+  containerizeInstalls: boolean;
 }
 
 export interface MCPServerProcessState {
@@ -402,6 +403,7 @@ export interface MCPServerProcessState {
   args?: string[];
   pid?: number;
   running: boolean;
+  containerized?: boolean;
 }
 
 export interface CapabilityPlatformStatus {
