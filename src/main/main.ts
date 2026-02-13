@@ -913,6 +913,7 @@ function createTray(): void {
 function createWindow(): void {
   const preloadPath = path.join(__dirname, 'preload.js');
   log.debug(`Preload absolute path: ${preloadPath}`);
+  const mainWindowSandbox = process.env.CLAWDIA_MAIN_WINDOW_SANDBOX === '1';
 
   if (!fs.existsSync(preloadPath)) {
     log.error(`Preload file does not exist at: ${preloadPath}`);
@@ -929,14 +930,16 @@ function createWindow(): void {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      // Keep renderer isolated, but disable Chromium sandbox for preload module
-      // resolution. Sandboxed preload cannot reliably resolve cross-directory
-      // relative imports like ../shared/ipc-channels in this build layout.
-      sandbox: false,
+      // Sandbox can be enabled via CLAWDIA_MAIN_WINDOW_SANDBOX=1.
+      // Preload must be bundled (build:main runs bundle-preload.mjs) so it
+      // doesn't rely on sandbox-blocked relative requires at runtime.
+      sandbox: mainWindowSandbox,
       preload: preloadPath,
     },
   });
-  log.info('[MainWindow] webPreferences: contextIsolation=true, nodeIntegration=false, sandbox=false');
+  log.info(
+    `[MainWindow] webPreferences: contextIsolation=true, nodeIntegration=false, sandbox=${mainWindowSandbox}`
+  );
 
   // Prevent the native WM system menu on right-click of the title bar drag region.
   // On Linux this menu's Move/Resize actions enter a modal pointer grab that
