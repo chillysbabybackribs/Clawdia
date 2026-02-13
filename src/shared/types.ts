@@ -124,7 +124,9 @@ export interface CapabilityRuntimeEvent {
     | 'policy_blocked'
     | 'checkpoint_created'
     | 'rollback_applied'
-    | 'rollback_failed';
+    | 'rollback_failed'
+    | 'mcp_server_health'
+    | 'task_evidence_summary';
   eventName?: CapabilityRuntimeEventName;
   message: string;
   detail?: string;
@@ -134,6 +136,32 @@ export interface CapabilityRuntimeEvent {
   stepIndex?: number;
   totalSteps?: number;
   durationMs?: number;
+  status?: 'success' | 'error' | 'warning' | 'pending';
+  metadata?: Record<string, unknown>;
+}
+
+export interface TaskEvidenceSummaryEvent {
+  totalTools: number;
+  totalDuration: number;
+  failures: number;
+  toolClasses: {
+    browser: number;
+    local: number;
+    task: number;
+    archive: number;
+    vault: number;
+    other: number;
+  };
+  topTools: Array<{ name: string; count: number }>;
+}
+
+export interface MCPServerHealthEvent {
+  serverName: string;
+  status: MCPServerHealthStatus;
+  detail?: string;
+  restartCount?: number;
+  consecutiveFailures?: number;
+  timestamp: number;
 }
 
 export interface ToolLoopCompleteEvent {

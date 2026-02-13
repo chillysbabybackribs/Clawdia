@@ -306,6 +306,16 @@ function describeToolComplete(payload: ToolExecCompleteEvent): string | null {
 }
 
 function describeCapabilityEvent(payload: CapabilityRuntimeEvent): string | null {
+  if (payload.type === 'task_evidence_summary') {
+    const detail = compactWhitespace(payload.message || 'Execution summary available.');
+    return truncate(detail, 110);
+  }
+
+  if (payload.type === 'mcp_server_health') {
+    const detail = compactWhitespace(payload.detail || payload.message || 'MCP runtime health updated.');
+    return `MCP runtime status: ${truncate(detail, 84)}.`;
+  }
+
   if (payload.type === 'install_started') {
     const target = payload.capabilityId ? ` ${payload.capabilityId}` : '';
     return `Installing missing capability${target} automatically.`;

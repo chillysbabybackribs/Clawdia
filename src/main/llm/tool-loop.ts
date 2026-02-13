@@ -16,6 +16,7 @@ import {
   ToolStepProgressEvent,
   ToolLoopEmitter,
   ToolTimingEvent,
+  TaskEvidenceSummaryEvent,
 } from '../../shared/types';
 import { IPC, IPC_EVENTS } from '../../shared/ipc-channels';
 import { buildSystemPrompt, getStaticPrompt, getDynamicPrompt, type PromptTier } from './system-prompt';
@@ -2623,6 +2624,82 @@ export class ToolLoop {
   private emitToolLoopComplete(totalTools: number, totalDuration: number, failures: number): void {
     if (this.emitter.isDestroyed()) return;
     this.emitter.send(IPC_EVENTS.TOOL_LOOP_COMPLETE, { totalTools, totalDuration, failures });
+    this.emitTaskEvidenceSummary(totalTools, totalDuration, failures);
+  }
+
+  private buildTaskEvidenceSummary(totalTools: number, totalDuration: number, failures: number): TaskEvidenceSummaryEvent {
+    const toolClasses: TaskEvidenceSummaryEvent['toolClasses'] = {
+      browser: 0,
+      local: 0,
+      task: 0,
+      archive: 0,
+      vault: 0,
+      other: 0,
+    };
+    const toolCounts = new Map<string, number>();
+
+    for (const entry of this.activityLog) {
+      const toolName = entry.name;
+      toolCounts.set(toolName, (toolCounts.get(toolName) || 0) + 1);
+
+      if (toolName.startsWith('browser_') || toolName === 'cache_read') {
+        toolClasses.browser += 1;
+      } else if (toolName.startsWith('task_')) {
+        toolClasses.task += 1;
+      } else if (toolName.startsWith('archive_')) {
+        toolClasses.archive += 1;
+      } else if (toolName.startsWith('vault_')) {
+        toolClasses.vault += 1;
+      } else if (LOCAL_TOOL_NAMES.has(toolName) || toolName === 'sequential_thinking') {
+        toolClasses.local += 1;
+      } else {
+        toolClasses.other += 1;
+      }
+    }
+
+    const topTools = Array.from(toolCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name, count]) => ({ name, count }));
+
+    return {
+      totalTools,
+      totalDuration,
+      failures,
+      toolClasses,
+      topTools,
+    };
+  }
+
+  private emitTaskEvidenceSummary(totalTools: number, totalDuration: number, failures: number): void {
+    if (this.emitter.isDestroyed()) return;
+    const capabilityFlags = getCapabilityPlatformFlags();
+    const summary = this.buildTaskEvidenceSummary(totalTools, totalDuration, failures);
+    const message = `Task evidence summary: ${totalTools} tools, ${failures} failures, ${(totalDuration / 1000).toFixed(1)}s total.`;
+    const payload = {
+      toolId: 'tool-loop',
+      toolName: 'tool_loop',
+      type: 'task_evidence_summary' as const,
+      eventName: 'TASK_EVIDENCE_SUMMARY' as const,
+      status: failures > 0 ? 'warning' as const : 'success' as const,
+      message,
+      detail: JSON.stringify(summary),
+      metadata: summary as unknown as Record<string, unknown>,
+      timestamp: Date.now(),
+    };
+    this.emitter.send(IPC_EVENTS.CAPABILITY_EVENT, payload);
+    if (capabilityFlags.lifecycleEvents) {
+      this.emitter.send(IPC_EVENTS.TASK_EVIDENCE_SUMMARY, payload);
+    }
+
+    appendAuditEvent({
+      ts: Date.now(),
+      kind: 'capability_event',
+      conversationId: this.runContext?.conversationId,
+      toolName: 'tool_loop',
+      outcome: failures > 0 ? 'pending' : 'info',
+      detail: message,
+    });
   }
 
   private emitToolTiming(timing: ToolTimingEvent): void {

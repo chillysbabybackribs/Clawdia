@@ -59,6 +59,7 @@ export interface EvidenceLedgerService {
 export interface McpRuntimeManagerService {
   registerServer(config: MCPServerConfig): MCPServerRuntimeState;
   updateHealth(serverName: string, status: MCPServerHealthStatus, detail?: string): MCPServerRuntimeState | null;
+  recordRestart(serverName: string, reason?: string): MCPServerRuntimeState | null;
   list(): MCPServerRuntimeState[];
 }
 
@@ -167,6 +168,23 @@ class DefaultMcpRuntimeManagerService implements McpRuntimeManagerService {
     };
     this.states.set(serverName, next);
     log.debug(`[MCP Runtime] ${serverName} -> ${status}${detail ? ` (${detail})` : ''}`);
+    return next;
+  }
+
+  recordRestart(serverName: string, reason?: string): MCPServerRuntimeState | null {
+    const current = this.states.get(serverName);
+    if (!current) return null;
+    const now = Date.now();
+    const next: MCPServerRuntimeState = {
+      ...current,
+      status: 'starting',
+      restartCount: current.restartCount + 1,
+      lastStartedAt: now,
+      lastHealthCheckAt: now,
+      lastError: reason || current.lastError,
+    };
+    this.states.set(serverName, next);
+    log.info(`[MCP Runtime] restart ${serverName} (#${next.restartCount})${reason ? `: ${reason}` : ''}`);
     return next;
   }
 

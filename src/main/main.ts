@@ -7,11 +7,17 @@ import { homedir } from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import { IPC, IPC_EVENTS } from '../shared/ipc-channels';
-import { ToolLoopEmitter } from '../shared/types';
+import {
+  ToolLoopEmitter,
+  type CapabilityRuntimeEvent,
+  type MCPServerConfig,
+  type MCPServerHealthEvent,
+  type MCPServerHealthStatus,
+} from '../shared/types';
 import { extractDocument } from './documents/extractor';
 import { createDocument } from './documents/creator';
 import { setupBrowserIpc, setMainWindow, closeBrowser, initPlaywright, setCdpPort, stopSessionReaper, killOrphanedCDPProcesses } from './browser/manager';
-import { registerPlaywrightSearchFallback } from './browser/tools';
+import { BROWSER_TOOL_DEFINITIONS, registerPlaywrightSearchFallback } from './browser/tools';
 import { AnthropicClient } from './llm/client';
 import { ConversationManager } from './llm/conversation';
 import { ToolLoop, clearPrefetchCache } from './llm/tool-loop';
@@ -24,6 +30,7 @@ import { getTask, listTasks, deleteTask, pauseTask, resumeTask, getRunsForTask, 
 import { detectFastPathTools } from './llm/tool-bootstrap';
 import { initializeCapabilityRegistry } from './capabilities/registry';
 import { getCapabilityPlatformFlags } from './capabilities/feature-flags';
+import { createCapabilityPlatformServices } from './capabilities/services';
 import { setAmbientSummary } from './llm/system-prompt';
 import { strategyCache } from './llm/strategy-cache';
 import { store, runMigrations, resetStore, DEFAULT_AMBIENT_SETTINGS, type AmbientSettings, type ChatTabState, type ClawdiaStoreSchema } from './store';
@@ -127,6 +134,14 @@ let dashboardExecutor: DashboardExecutor | null = null;
 let taskScheduler: TaskScheduler | null = null;
 let lastMessageTimestamp: number | null = null;
 let taskUnreadCount = 0;
+const capabilityPlatform = createCapabilityPlatformServices();
+const PLAYWRIGHT_MCP_SERVER_NAME = 'playwright-cdp';
+const MCP_HEALTH_POLL_INTERVAL_MS = 7_500;
+const MCP_HEALTH_RESTART_COOLDOWN_MS = 30_000;
+const MCP_HEALTH_FAILURE_THRESHOLD = 3;
+let mcpHealthMonitorTimer: ReturnType<typeof setInterval> | null = null;
+let lastMcpHealthKey = '';
+let lastMcpRestartAttemptAt = 0;
 
 // Cache the AnthropicClient to reuse HTTP connection pooling.
 let cachedClient: AnthropicClient | null = null;
@@ -268,6 +283,180 @@ export { broadcastTaskState };
 
 export function getMainWindow(): BrowserWindow | null {
   return mainWindow;
+}
+
+function emitCapabilityRuntimeEvent(payload: CapabilityRuntimeEvent): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send(IPC_EVENTS.CAPABILITY_EVENT, payload);
+  if (!getCapabilityPlatformFlags().lifecycleEvents) return;
+
+  if (payload.eventName === 'MCP_SERVER_HEALTH') {
+    mainWindow.webContents.send(IPC_EVENTS.MCP_SERVER_HEALTH, payload);
+  } else if (payload.eventName === 'TASK_EVIDENCE_SUMMARY') {
+    mainWindow.webContents.send(IPC_EVENTS.TASK_EVIDENCE_SUMMARY, payload);
+  }
+}
+
+function mapBrowserStatusToMcpHealth(
+  status: ReturnType<typeof getBrowserStatus>['status'],
+  consecutiveFailures: number,
+): MCPServerHealthStatus {
+  if (status === 'disabled') return 'stopped';
+  if (status === 'error') {
+    return consecutiveFailures >= MCP_HEALTH_FAILURE_THRESHOLD ? 'unhealthy' : 'degraded';
+  }
+  if (status === 'busy') return 'starting';
+  return 'healthy';
+}
+
+function getMcpEventStatus(status: MCPServerHealthStatus): 'success' | 'error' | 'warning' | 'pending' {
+  if (status === 'healthy') return 'success';
+  if (status === 'starting') return 'pending';
+  if (status === 'degraded' || status === 'stopped') return 'warning';
+  return 'error';
+}
+
+function emitMcpHealthState(state: {
+  name: string;
+  status: MCPServerHealthStatus;
+  restartCount: number;
+  consecutiveFailures: number;
+  lastError?: string;
+}, detail: string): void {
+  const metadata: MCPServerHealthEvent = {
+    serverName: state.name,
+    status: state.status,
+    detail,
+    restartCount: state.restartCount,
+    consecutiveFailures: state.consecutiveFailures,
+    timestamp: Date.now(),
+  };
+  const payload: CapabilityRuntimeEvent = {
+    toolId: 'mcp-runtime',
+    toolName: 'mcp_runtime_manager',
+    type: 'mcp_server_health',
+    eventName: 'MCP_SERVER_HEALTH',
+    status: getMcpEventStatus(state.status),
+    message: `MCP server ${state.name} is ${state.status}.`,
+    detail,
+    metadata: metadata as unknown as Record<string, unknown>,
+  };
+  emitCapabilityRuntimeEvent(payload);
+
+  appendAuditEvent({
+    ts: Date.now(),
+    kind: 'capability_event',
+    toolName: 'mcp_runtime_manager',
+    outcome: state.status === 'healthy' ? 'info' : state.status === 'unhealthy' ? 'blocked' : 'pending',
+    detail: `${state.name} ${state.status} | ${detail}`.slice(0, 300),
+    errorPreview: state.status === 'healthy' ? undefined : (state.lastError || detail).slice(0, 200),
+  });
+}
+
+async function refreshMcpRuntimeHealth(reason: string): Promise<void> {
+  const flags = getCapabilityPlatformFlags();
+  if (!flags.enabled || !flags.mcpRuntimeManager) return;
+
+  const browser = getBrowserStatus();
+  const baselineStatus = mapBrowserStatusToMcpHealth(browser.status, 0);
+  const initial = capabilityPlatform.mcpRuntime.updateHealth(
+    PLAYWRIGHT_MCP_SERVER_NAME,
+    baselineStatus,
+    `${reason}: browser=${browser.status}`,
+  );
+  if (!initial) return;
+
+  let current = initial;
+  if (browser.status === 'error' && current.consecutiveFailures >= MCP_HEALTH_FAILURE_THRESHOLD) {
+    const unhealthy = capabilityPlatform.mcpRuntime.updateHealth(
+      PLAYWRIGHT_MCP_SERVER_NAME,
+      'unhealthy',
+      `${reason}: repeated browser CDP failures`,
+    );
+    if (unhealthy) current = unhealthy;
+
+    const now = Date.now();
+    if (now - lastMcpRestartAttemptAt >= MCP_HEALTH_RESTART_COOLDOWN_MS) {
+      lastMcpRestartAttemptAt = now;
+      const restarted = capabilityPlatform.mcpRuntime.recordRestart(
+        PLAYWRIGHT_MCP_SERVER_NAME,
+        'Automatic restart after health threshold breach',
+      );
+      if (restarted) {
+        emitMcpHealthState(
+          restarted,
+          `${reason}: attempting runtime restart (#${restarted.restartCount})`,
+        );
+      }
+      try {
+        await initPlaywright();
+        registerPlaywrightSearchFallback();
+      } catch (err: any) {
+        log.warn(`[CapabilityPlatform] MCP runtime restart attempt failed: ${err?.message || err}`);
+      }
+      const postRestartBrowser = getBrowserStatus();
+      const postRestartState = capabilityPlatform.mcpRuntime.updateHealth(
+        PLAYWRIGHT_MCP_SERVER_NAME,
+        mapBrowserStatusToMcpHealth(postRestartBrowser.status, current.consecutiveFailures),
+        `${reason}: post-restart browser=${postRestartBrowser.status}`,
+      );
+      if (postRestartState) current = postRestartState;
+    }
+  }
+
+  const detail = [
+    `reason=${reason}`,
+    `browser=${browser.status}`,
+    current.lastError ? `error=${current.lastError}` : '',
+    `failures=${current.consecutiveFailures}`,
+    `restarts=${current.restartCount}`,
+  ].filter(Boolean).join(' | ');
+
+  const key = `${current.status}|${detail}`;
+  if (key === lastMcpHealthKey) return;
+  lastMcpHealthKey = key;
+  emitMcpHealthState(current, detail);
+}
+
+function startMcpRuntimeManager(): void {
+  const flags = getCapabilityPlatformFlags();
+  if (!flags.enabled || !flags.mcpRuntimeManager) return;
+
+  if (!capabilityPlatform.mcpRuntime.list().some((s) => s.name === PLAYWRIGHT_MCP_SERVER_NAME)) {
+    const config: MCPServerConfig = {
+      name: PLAYWRIGHT_MCP_SERVER_NAME,
+      command: 'electron-cdp',
+      args: [`--port=${REMOTE_DEBUGGING_PORT}`],
+      tools: BROWSER_TOOL_DEFINITIONS.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.input_schema,
+      })),
+    };
+    const state = capabilityPlatform.mcpRuntime.registerServer(config);
+    emitMcpHealthState(state, `registered on port ${REMOTE_DEBUGGING_PORT}`);
+  }
+
+  void refreshMcpRuntimeHealth('startup');
+  if (mcpHealthMonitorTimer) clearInterval(mcpHealthMonitorTimer);
+  mcpHealthMonitorTimer = setInterval(() => {
+    void refreshMcpRuntimeHealth('poll');
+  }, MCP_HEALTH_POLL_INTERVAL_MS);
+}
+
+function stopMcpRuntimeManager(): void {
+  if (mcpHealthMonitorTimer) {
+    clearInterval(mcpHealthMonitorTimer);
+    mcpHealthMonitorTimer = null;
+  }
+  const state = capabilityPlatform.mcpRuntime.updateHealth(
+    PLAYWRIGHT_MCP_SERVER_NAME,
+    'stopped',
+    'application shutdown',
+  );
+  if (state) {
+    emitMcpHealthState(state, 'application shutdown');
+  }
 }
 
 async function warmConnections(): Promise<void> {
@@ -596,7 +785,10 @@ function createWindow(): void {
     killOrphanedCDPProcesses();
     // CDP server is reliably up once the window is ready to show.
     // Kick off Playwright connection here so it doesn't race.
-    void initPlaywright().then(() => registerPlaywrightSearchFallback());
+    void initPlaywright().then(() => {
+      registerPlaywrightSearchFallback();
+      void refreshMcpRuntimeHealth('playwright-init');
+    });
 
     // Log diagnostic summary of available session cookies (fire-and-forget).
     void logCookieDiagnostic();
@@ -608,6 +800,7 @@ function createWindow(): void {
     // Initialize capability registry + detect fast-path CLI tools in background.
     void initializeCapabilityRegistry();
     void detectFastPathTools();
+    startMcpRuntimeManager();
 
     // Dashboard executor — starts immediately (static layer works without rules).
     // Haiku rules generation is async and loaded when ready.
@@ -1511,6 +1704,7 @@ app.on('window-all-closed', () => {
   }
   dashboardExecutor?.stop();
   taskScheduler?.stop();
+  stopMcpRuntimeManager();
   stopSessionReaper();
   closeSearchCache();
   closeArchive();
@@ -1521,6 +1715,7 @@ app.on('window-all-closed', () => {
 // Ensure isQuitting is set for any quit path (Cmd+Q on macOS, SIGTERM, tray Quit, etc.)
 app.on('before-quit', () => {
   (app as any).isQuitting = true;
+  stopMcpRuntimeManager();
 });
 
 app.on('certificate-error', (event, _webContents, _url, _error, _certificate, callback) => {

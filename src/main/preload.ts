@@ -13,6 +13,8 @@ import {
   ToolStepProgressEvent,
   ToolLoopCompleteEvent,
   CapabilityRuntimeEvent,
+  TaskEvidenceSummaryEvent,
+  MCPServerHealthEvent,
 } from '../shared/types';
 import {
   ApprovalRequest,
@@ -186,6 +188,28 @@ const api = {
     const handler = (_event: Electron.IpcRendererEvent, payload: CapabilityRuntimeEvent) => callback(payload);
     ipcRenderer.on(IPC_EVENTS.CAPABILITY_EVENT, handler);
     return () => ipcRenderer.removeListener(IPC_EVENTS.CAPABILITY_EVENT, handler);
+  },
+
+  onTaskEvidenceSummary: (
+    callback: (payload: CapabilityRuntimeEvent & { metadata?: TaskEvidenceSummaryEvent }) => void,
+  ) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      payload: CapabilityRuntimeEvent & { metadata?: TaskEvidenceSummaryEvent },
+    ) => callback(payload);
+    ipcRenderer.on(IPC_EVENTS.TASK_EVIDENCE_SUMMARY, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.TASK_EVIDENCE_SUMMARY, handler);
+  },
+
+  onMcpServerHealth: (
+    callback: (payload: CapabilityRuntimeEvent & { metadata?: MCPServerHealthEvent }) => void,
+  ) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      payload: CapabilityRuntimeEvent & { metadata?: MCPServerHealthEvent },
+    ) => callback(payload);
+    ipcRenderer.on(IPC_EVENTS.MCP_SERVER_HEALTH, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.MCP_SERVER_HEALTH, handler);
   },
 
   onToolTiming: (callback: (payload: import('../shared/types').ToolTimingEvent) => void) => {
