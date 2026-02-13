@@ -19,6 +19,7 @@ const CAPABILITY_FLAG_INPUTS: Array<{ id: string; key: keyof CapabilityPlatformF
   { id: 'cap-flag-checkpoint-rollback', key: 'checkpointRollback' },
   { id: 'cap-flag-mcp-runtime', key: 'mcpRuntimeManager' },
   { id: 'cap-flag-container-execution', key: 'containerExecution' },
+  { id: 'cap-flag-containerize-mcp', key: 'containerizeMcpServers' },
 ];
 
 export function initSettings(): void {

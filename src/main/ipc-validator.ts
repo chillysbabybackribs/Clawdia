@@ -700,6 +700,7 @@ const capabilityPlatformFlagsSchema = isObject<Partial<CapabilityPlatformFlags>>
   checkpointRollback: isOptional(isBoolean('checkpointRollback')),
   mcpRuntimeManager: isOptional(isBoolean('mcpRuntimeManager')),
   containerExecution: isOptional(isBoolean('containerExecution')),
+  containerizeMcpServers: isOptional(isBoolean('containerizeMcpServers')),
 });
 
 export const capabilityPlatformFlagsSetSchema = isObject<CapabilityPlatformFlagsSetPayload>({

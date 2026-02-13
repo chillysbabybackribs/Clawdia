@@ -9,6 +9,7 @@ const DEFAULT_CAPABILITY_PLATFORM_FLAGS: CapabilityPlatformFlags = {
   checkpointRollback: false,
   mcpRuntimeManager: false,
   containerExecution: false,
+  containerizeMcpServers: false,
 };
 
 export function getCapabilityPlatformFlags(): CapabilityPlatformFlags {

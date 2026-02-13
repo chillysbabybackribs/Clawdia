@@ -33,7 +33,12 @@ import { initializeCapabilityRegistry } from './capabilities/registry';
 import { getCapabilityPlatformFlags, setCapabilityPlatformFlags } from './capabilities/feature-flags';
 import { loadConfiguredMcpServersSync, type DiscoveredMcpServer } from './capabilities/mcp-discovery';
 import { createCapabilityPlatformServices } from './capabilities/services';
-import { detectContainerRuntime, getContainerNetworkMode } from './capabilities/container-executor';
+import {
+  buildContainerRunPlan,
+  detectContainerRuntime,
+  getContainerImage,
+  getContainerNetworkMode,
+} from './capabilities/container-executor';
 import { setAmbientSummary } from './llm/system-prompt';
 import { strategyCache } from './llm/strategy-cache';
 import { store, runMigrations, resetStore, DEFAULT_AMBIENT_SETTINGS, type AmbientSettings, type ChatTabState, type ClawdiaStoreSchema } from './store';
@@ -395,16 +400,53 @@ function safeTerminateProcess(proc: ChildProcess, name: string): void {
   }, 1500);
 }
 
-function startExternalMcpProcess(config: DiscoveredMcpServer, reason: string): void {
+function shellQuote(input: string): string {
+  return `'${input.replace(/'/g, `'\\''`)}'`;
+}
+
+function buildMcpCommand(config: DiscoveredMcpServer): string {
+  const parts = [config.command, ...(config.args || [])].map((part) => shellQuote(part));
+  return parts.join(' ');
+}
+
+async function startExternalMcpProcess(config: DiscoveredMcpServer, reason: string): Promise<void> {
   if (externalMcpProcesses.has(config.name)) return;
 
   let child: ChildProcess;
   try {
-    child = spawn(config.command, config.args, {
-      cwd: homedir(),
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    const flags = getCapabilityPlatformFlags();
+    const shouldContainerize = flags.containerExecution && flags.containerizeMcpServers;
+    if (shouldContainerize) {
+      const runtime = await detectContainerRuntime();
+      if (runtime.available && runtime.runtime) {
+        const image = getContainerImage();
+        const plan = buildContainerRunPlan(runtime.runtime, image, homedir(), {
+          networkMode: getContainerNetworkMode(),
+          allowedRoots: [homedir()],
+          cwd: homedir(),
+        });
+        const command = buildMcpCommand(config);
+        const args = [...plan.args, command];
+        child = spawn(runtime.runtime, args, {
+          cwd: plan.hostWorkspacePath,
+          env: process.env,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } else {
+        log.warn(`[MCP Runtime] Container runtime unavailable for ${config.name}; falling back to host.`);
+        child = spawn(config.command, config.args, {
+          cwd: homedir(),
+          env: process.env,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      }
+    } else {
+      child = spawn(config.command, config.args, {
+        cwd: homedir(),
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    }
   } catch (err: any) {
     const state = capabilityPlatform.mcpRuntime.updateHealth(
       config.name,
@@ -562,11 +604,11 @@ async function refreshMcpRuntimeHealth(reason: string): Promise<void> {
         `${reason}: restarting ${serverName} (#${restartState.restartCount})`,
       );
     }
-    startExternalMcpProcess(config, `${reason}: health-restart`);
+    void startExternalMcpProcess(config, `${reason}: health-restart`);
   }
 }
 
-function startMcpRuntimeManager(): void {
+async function startMcpRuntimeManager(): Promise<void> {
   const flags = getCapabilityPlatformFlags();
   if (!flags.enabled || !flags.mcpRuntimeManager) return;
 
@@ -596,7 +638,7 @@ function startMcpRuntimeManager(): void {
       const state = capabilityPlatform.mcpRuntime.registerServer(server);
       emitMcpHealthState(state, `registered from ${server.source}`);
     }
-    startExternalMcpProcess(server, 'startup');
+    void startExternalMcpProcess(server, 'startup');
   }
 
   void refreshMcpRuntimeHealth('startup');
@@ -1022,7 +1064,7 @@ function createWindow(): void {
     // Initialize capability registry + detect fast-path CLI tools in background.
     void initializeCapabilityRegistry();
     void detectFastPathTools();
-    startMcpRuntimeManager();
+    void startMcpRuntimeManager();
 
     // Dashboard executor — starts immediately (static layer works without rules).
     // Haiku rules generation is async and loaded when ready.
@@ -1396,7 +1438,7 @@ function setupIpcHandlers(): void {
     );
 
     if (!previous.mcpRuntimeManager && next.mcpRuntimeManager) {
-      startMcpRuntimeManager();
+      void startMcpRuntimeManager();
     } else if (previous.mcpRuntimeManager && !next.mcpRuntimeManager) {
       stopMcpRuntimeManager();
     }

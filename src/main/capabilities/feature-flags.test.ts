@@ -23,6 +23,7 @@ describe('capability platform feature flags', () => {
     expect(flags.cohort).toBe('internal');
     expect(flags.installOrchestrator).toBe(false);
     expect(flags.containerExecution).toBe(false);
+    expect(flags.containerizeMcpServers).toBe(false);
   });
 
   it('merges persisted flags with defaults', async () => {

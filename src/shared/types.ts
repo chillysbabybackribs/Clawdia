@@ -392,6 +392,7 @@ export interface CapabilityPlatformFlags {
   checkpointRollback: boolean;
   mcpRuntimeManager: boolean;
   containerExecution: boolean;
+  containerizeMcpServers: boolean;
 }
 
 export interface MCPServerProcessState {

@@ -162,6 +162,7 @@ export const migrations: Migration[] = [
           checkpointRollback: false,
           mcpRuntimeManager: false,
           containerExecution: false,
+          containerizeMcpServers: false,
         });
       }
     },
