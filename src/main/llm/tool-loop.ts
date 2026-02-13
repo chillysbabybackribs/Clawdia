@@ -1988,6 +1988,37 @@ export class ToolLoop {
               ...event,
             });
           }
+
+          const type = String(event?.type || 'capability_event');
+          const message = String(event?.message || type);
+          const extraDetail = String(event?.detail || '').trim();
+          const capabilityId = event?.capabilityId ? String(event.capabilityId) : '';
+          const recipeId = event?.recipeId ? String(event.recipeId) : '';
+          const detailParts = [message];
+          if (capabilityId) detailParts.push(`capability=${capabilityId}`);
+          if (recipeId) detailParts.push(`recipe=${recipeId}`);
+          if (extraDetail) detailParts.push(extraDetail);
+
+          const auditOutcome =
+            type === 'policy_blocked' || type === 'install_failed' || type === 'rollback_failed'
+              ? 'blocked'
+              : type === 'capability_missing' || type === 'install_started'
+                ? 'pending'
+                : type === 'install_succeeded' || type === 'rollback_applied' || type === 'policy_rewrite'
+                  ? 'executed'
+                  : 'info';
+
+          appendAuditEvent({
+            ts: Date.now(),
+            kind: 'capability_event',
+            conversationId,
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            outcome: auditOutcome,
+            detail: detailParts.join(' | ').slice(0, 300),
+            commandPreview: event?.command ? redactCommand(String(event.command)) : undefined,
+            errorPreview: status === 'error' ? message.slice(0, 200) : undefined,
+          });
         },
         signal: toolAbortController.signal,
       };

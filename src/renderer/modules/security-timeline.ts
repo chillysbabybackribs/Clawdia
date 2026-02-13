@@ -275,6 +275,7 @@ function addDetailRow(parent: HTMLElement, label: string, value: string, mono = 
 }
 
 function buildDetailsDOM(e: AuditEvent, container: HTMLElement): void {
+  if (e.detail) addDetailRow(container, 'Detail', e.detail);
   if (e.risk) addDetailRow(container, 'Risk', e.risk);
   if (e.toolName) addDetailRow(container, 'Tool', e.toolName);
   if (e.commandPreview) addDetailRow(container, 'Command', e.commandPreview, true);
@@ -296,6 +297,7 @@ function buildDetailsCopyText(e: AuditEvent): string {
     `Summary: ${eventSummary(e)}`,
   ];
   if (e.risk) lines.push(`Risk: ${e.risk}`);
+  if (e.detail) lines.push(`Detail: ${e.detail}`);
   if (e.toolName) lines.push(`Tool: ${e.toolName}`);
   if (e.commandPreview) lines.push(`Command: ${e.commandPreview}`);
   if (e.urlPreview) lines.push(`URL: ${e.urlPreview}`);

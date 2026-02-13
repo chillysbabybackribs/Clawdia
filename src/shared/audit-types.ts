@@ -12,6 +12,7 @@ export type AuditEventKind =
   | 'tool_executed'
   | 'tool_denied'
   | 'tool_expired'
+  | 'capability_event'
   | 'mode_changed'
   | 'override_added'
   | 'override_removed';
@@ -134,6 +135,8 @@ export function eventSummary(e: AuditEvent): string {
       return `Blocked: ${e.riskReason || friendlyTool(e.toolName)}`;
     case 'tool_expired':
       return 'Approval expired (no response)';
+    case 'capability_event':
+      return e.detail || `Capability event: ${friendlyTool(e.toolName)}`;
     case 'risk_classified':
       return `Risk assessed: ${e.risk || 'SAFE'}`;
     case 'mode_changed':
