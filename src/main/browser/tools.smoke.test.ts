@@ -29,6 +29,7 @@ vi.mock('./manager', () => ({
   getActiveTabId: () => 'tab-1',
   listTabs: () => [],
   executeInBrowserView: vi.fn(),
+  captureBrowserViewScreenshot: vi.fn(async () => Buffer.from('jpeg-bytes')),
   navigate: vi.fn(async () => ({ success: true })),
   waitForLoad: vi.fn(async () => undefined),
 }));
@@ -178,5 +179,29 @@ describe('browser tools smoke', () => {
     expect(parsed.escalation_triggered).toBe(true);
     expect(parsed.method).toBe('vision_full_page');
     expect(parsed.full_page).toBe(true);
+  });
+
+  it('falls back browser_batch to BrowserView when Playwright is unavailable', async () => {
+    const manager = await import('./manager');
+    const executeInBrowserViewMock = manager.executeInBrowserView as unknown as ReturnType<typeof vi.fn>;
+    executeInBrowserViewMock.mockResolvedValue({
+      title: 'Example',
+      url: 'https://example.com',
+      content: 'Example content '.repeat(200),
+      headings: ['Heading'],
+      links: [],
+    });
+
+    const { executeTool } = await import('./tools');
+    const raw = await executeTool('browser_batch', {
+      operations: [{ url: 'https://example.com', actions: ['extract', 'screenshot'] }],
+    });
+    const parsed = JSON.parse(raw);
+
+    expect(parsed.mode).toBe('browserview_fallback');
+    expect(parsed.succeeded).toBe(1);
+    expect(parsed.failed).toBe(0);
+    expect(parsed.results[0].status).toBe('success');
+    expect(typeof parsed.results[0].screenshot_base64).toBe('string');
   });
 });

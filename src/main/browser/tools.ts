@@ -1161,6 +1161,115 @@ async function toolTypeInBrowserView(text: string, ref: unknown, pressEnter: boo
   return `Typed "${text}"${pressEnter ? ' +Enter' : ''} into ${String(result.label || 'focused element')}.`;
 }
 
+async function runBrowserViewBatchOperation(op: PageOperation): Promise<PageResult> {
+  const startedAt = Date.now();
+  const unsupportedActions = op.actions.filter((action) => action === 'pdf' || action === 'intercept_network');
+  const supportedActions = op.actions.filter((action) => action !== 'pdf' && action !== 'intercept_network');
+
+  if (supportedActions.length === 0) {
+    return {
+      url: op.url,
+      status: 'error',
+      error: `BrowserView fallback does not support: ${unsupportedActions.join(', ')}`,
+      time_ms: Date.now() - startedAt,
+    };
+  }
+
+  try {
+    await managerNavigate(withProtocol(op.url));
+    await waitForLoad(12_000).catch(() => undefined);
+
+    const pageData = await executeInBrowserView<Record<string, unknown>>(domExtractJs(16_000));
+    if (!pageData) {
+      return {
+        url: op.url,
+        status: 'error',
+        error: 'Failed to read page via BrowserView.',
+        time_ms: Date.now() - startedAt,
+      };
+    }
+
+    const url = typeof pageData.url === 'string' && pageData.url ? pageData.url : withProtocol(op.url);
+    const title = typeof pageData.title === 'string' ? pageData.title : '';
+    const rawContent = typeof pageData.content === 'string' ? pageData.content : '';
+    const content = compressPageContent(rawContent, { maxChars: 6_000 }).text;
+
+    const result: PageResult = {
+      url,
+      status: 'success',
+      title,
+      time_ms: 0,
+    };
+
+    if (supportedActions.includes('extract')) {
+      result.content = content;
+      if (op.extract_schema && Object.keys(op.extract_schema).length > 0) {
+        const extracted = await llmExtract(
+          {
+            ...pageData,
+            content: compressPageContent(rawContent, { maxChars: 4_000 }).text,
+          },
+          op.extract_schema,
+        );
+        result.extracted = extracted;
+      }
+    }
+
+    if (supportedActions.includes('screenshot')) {
+      const screenshot = await captureBrowserViewScreenshot(60);
+      if (screenshot) {
+        result.screenshot_base64 = screenshot.toString('base64');
+      }
+    }
+
+    if (op.evaluate) {
+      result.evaluated = await executeInBrowserView(op.evaluate);
+    }
+
+    if (unsupportedActions.length > 0) {
+      result.evaluated = {
+        ...(result.evaluated && typeof result.evaluated === 'object' ? result.evaluated as Record<string, unknown> : {}),
+        warning: `Skipped unsupported actions in BrowserView fallback: ${unsupportedActions.join(', ')}`,
+      };
+    }
+
+    result.time_ms = Date.now() - startedAt;
+    return result;
+  } catch (error: any) {
+    return {
+      url: withProtocol(op.url),
+      status: 'error',
+      error: `BrowserView fallback failed: ${error?.message || 'unknown error'}`,
+      time_ms: Date.now() - startedAt,
+    };
+  }
+}
+
+async function runBrowserViewBatchFallback(operations: PageOperation[]): Promise<PageResult[]> {
+  const results: PageResult[] = [];
+  for (const op of operations) {
+    results.push(await runBrowserViewBatchOperation(op));
+  }
+  return results;
+}
+
+function formatBrowserViewBatchFallback(results: PageResult[]): string {
+  const succeeded = results.filter((r) => r.status === 'success').length;
+  const failed = results.filter((r) => r.status === 'error').length;
+  return JSON.stringify(
+    {
+      status: failed === 0 ? 'success' : succeeded > 0 ? 'partial' : 'error',
+      mode: 'browserview_fallback',
+      note: 'Playwright unavailable; executed batch operations sequentially in BrowserView.',
+      succeeded,
+      failed,
+      results,
+    },
+    null,
+    2,
+  );
+}
+
 async function toolActionMap(maxItemsInput: unknown): Promise<string> {
   const page = getActiveOrCreatePage();
   if (!page) {
@@ -2404,6 +2513,11 @@ async function toolBatch(input: any): Promise<string> {
 
   if (operations.some((op) => !op.url || op.url === 'about:blank')) {
     return 'Each operation must include a valid url.';
+  }
+
+  if (!_overridePage && !getActiveOrCreatePage()) {
+    const fallbackResults = await runBrowserViewBatchFallback(operations);
+    return formatBrowserViewBatchFallback(fallbackResults);
   }
 
   // Visual sync — skip entirely for isolated contexts (headless tasks).
