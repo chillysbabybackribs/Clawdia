@@ -316,8 +316,9 @@ function renderCapabilityPlatformStatus(status: CapabilityPlatformStatus): void 
     `Container policy: network=${status.containerPolicy.networkMode} roots=${status.containerPolicy.allowedRoots.join(', ')}`;
 
   const mcpHealthy = status.mcpRuntime.filter((server) => server.status === 'healthy').length;
+  const mcpContainerized = status.mcpProcesses.filter((proc) => proc.containerized).length;
   mcpRuntimeEl.textContent =
-    `MCP runtime: ${status.mcpRuntime.length} server(s), ${mcpHealthy} healthy`;
+    `MCP runtime: ${status.mcpRuntime.length} server(s), ${mcpHealthy} healthy, ${mcpContainerized} containerized`;
 
   const processLines = status.mcpProcesses.map((proc) => {
     const pid = proc.pid ? ` pid=${proc.pid}` : '';
