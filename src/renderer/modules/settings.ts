@@ -298,9 +298,10 @@ function getCapabilityFlagInput(id: string): HTMLInputElement | null {
 function renderCapabilityPlatformStatus(status: CapabilityPlatformStatus): void {
   const summaryEl = document.getElementById('capability-platform-summary');
   const containerRuntimeEl = document.getElementById('capability-platform-container-runtime');
+  const containerPolicyEl = document.getElementById('capability-platform-container-policy');
   const mcpRuntimeEl = document.getElementById('capability-platform-mcp-runtime');
   const mcpProcessesEl = document.getElementById('capability-platform-mcp-processes');
-  if (!summaryEl || !containerRuntimeEl || !mcpRuntimeEl || !mcpProcessesEl) return;
+  if (!summaryEl || !containerRuntimeEl || !containerPolicyEl || !mcpRuntimeEl || !mcpProcessesEl) return;
 
   summaryEl.textContent =
     `Cohort: ${status.flags.cohort} | Sandbox runtime: ${status.sandboxRuntime} | ` +
@@ -308,6 +309,8 @@ function renderCapabilityPlatformStatus(status: CapabilityPlatformStatus): void 
   containerRuntimeEl.textContent =
     `Container runtime: ${status.containerRuntime.available ? `${status.containerRuntime.runtime || 'detected'} ready` : 'unavailable'} ` +
     `(${status.containerRuntime.detail})`;
+  containerPolicyEl.textContent =
+    `Container policy: network=${status.containerPolicy.networkMode} roots=${status.containerPolicy.allowedRoots.join(', ')}`;
 
   const mcpHealthy = status.mcpRuntime.filter((server) => server.status === 'healthy').length;
   mcpRuntimeEl.textContent =

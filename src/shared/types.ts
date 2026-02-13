@@ -412,6 +412,10 @@ export interface CapabilityPlatformStatus {
     detail: string;
     checkedAt: number;
   };
+  containerPolicy: {
+    networkMode: 'allow' | 'restricted' | 'none' | 'host';
+    allowedRoots: string[];
+  };
   mcpRuntime: MCPServerRuntimeState[];
   mcpProcesses: MCPServerProcessState[];
 }

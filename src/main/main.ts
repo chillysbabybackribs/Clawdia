@@ -33,7 +33,7 @@ import { initializeCapabilityRegistry } from './capabilities/registry';
 import { getCapabilityPlatformFlags, setCapabilityPlatformFlags } from './capabilities/feature-flags';
 import { loadConfiguredMcpServersSync, type DiscoveredMcpServer } from './capabilities/mcp-discovery';
 import { createCapabilityPlatformServices } from './capabilities/services';
-import { detectContainerRuntime } from './capabilities/container-executor';
+import { detectContainerRuntime, getContainerNetworkMode } from './capabilities/container-executor';
 import { setAmbientSummary } from './llm/system-prompt';
 import { strategyCache } from './llm/strategy-cache';
 import { store, runMigrations, resetStore, DEFAULT_AMBIENT_SETTINGS, type AmbientSettings, type ChatTabState, type ClawdiaStoreSchema } from './store';
@@ -635,6 +635,7 @@ async function buildCapabilityPlatformStatus(): Promise<CapabilityPlatformStatus
   const flags = getCapabilityPlatformFlags();
   const containerRuntime = await detectContainerRuntime();
   const mcpRuntime = capabilityPlatform.mcpRuntime.list();
+  const allowedRoots = [homedir(), '/tmp'];
 
   const mcpProcesses = [
     {
@@ -665,6 +666,10 @@ async function buildCapabilityPlatformStatus(): Promise<CapabilityPlatformStatus
       runtime: containerRuntime.runtime,
       detail: containerRuntime.detail,
       checkedAt: containerRuntime.checkedAt,
+    },
+    containerPolicy: {
+      networkMode: getContainerNetworkMode(),
+      allowedRoots,
     },
     mcpRuntime,
     mcpProcesses,
