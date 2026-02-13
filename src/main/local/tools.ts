@@ -23,7 +23,7 @@ import { ensureCommandCapabilities } from '../capabilities/install-orchestrator'
 import { getCapabilityPlatformFlags } from '../capabilities/feature-flags';
 import { evaluateCommandPolicy } from '../capabilities/policy-engine';
 import { initializeCapabilityRegistry, resolveCommandCapabilities } from '../capabilities/registry';
-import { detectContainerRuntime, executeCommandInContainer } from '../capabilities/container-executor';
+import { detectContainerRuntime, executeCommandInContainer, type ContainerNetworkMode } from '../capabilities/container-executor';
 
 const execAsync = promisify(exec);
 const log = createLogger('local-tools');
@@ -571,6 +571,21 @@ function sanitizeShellCommand(command: string): string {
   return command;
 }
 
+function resolveContainerNetworkMode(mode?: AutonomyMode): ContainerNetworkMode {
+  if (mode === 'safe') return 'none';
+  if (mode === 'guided') return 'restricted';
+  if (mode === 'unrestricted') return 'allow';
+  return 'restricted';
+}
+
+function isPathWithinRoots(targetPath: string, roots: string[]): boolean {
+  const resolved = path.resolve(targetPath);
+  return roots.some((root) => {
+    const normalized = path.resolve(root);
+    return resolved === normalized || resolved.startsWith(normalized + path.sep);
+  });
+}
+
 /** Map common exit codes + stderr patterns to actionable hints for the LLM. */
 function diagnoseExitCode(code: number, output: string, command: string): string | null {
   const lower = output.toLowerCase();
@@ -656,9 +671,10 @@ export async function toolShellExec(input: {
     return `[Blocked] ${browserBlock}`;
   }
 
+  const allowedRoots = [homedir(), '/tmp'];
   const policyDecision = evaluateCommandPolicy(rawCommand, {
     cwd,
-    allowedRoots: [homedir(), '/tmp'],
+    allowedRoots,
   });
 
   if (policyDecision.action === 'deny') {
@@ -735,6 +751,16 @@ export async function toolShellExec(input: {
   }
 
   if (capabilityFlags.containerExecution) {
+    const networkMode = resolveContainerNetworkMode(context?.autonomyMode);
+    const cwdWithinRoots = isPathWithinRoots(cwd, allowedRoots);
+    if (!cwdWithinRoots) {
+      emitCapability({
+        type: 'policy_rewrite',
+        message: 'Container execution constrained to allowed roots; cwd is outside scope.',
+        detail: `cwd=${cwd} roots=${allowedRoots.join(', ')}`,
+        command,
+      });
+    }
     const runtimeStatus = await detectContainerRuntime();
     if (runtimeStatus.available) {
       emitCapability({
@@ -750,12 +776,17 @@ export async function toolShellExec(input: {
           timeoutMs,
           onOutput: context?.onOutput,
           signal: context?.signal,
+          networkMode,
+          allowedRoots,
         });
         let output = '';
         if (containerResult.stdout) output += containerResult.stdout;
         if (containerResult.stderr) output += (output ? '\n\n[stderr]\n' : '[stderr]\n') + containerResult.stderr;
         if (!output.trim()) output = '[Command completed with no output]';
         runtimeNote = `[Execution runtime] container:${containerResult.runtime} image=${containerResult.image} mount=${containerResult.hostWorkspacePath}`;
+        if (!cwdWithinRoots) {
+          runtimeNote += ` workdir=/workspace (cwd remapped)`;
+        }
         if (runtimeNote) output += `\n\n${runtimeNote}`;
         if (preflightNote) output += `\n\n${preflightNote}`;
         return output;

@@ -27,6 +27,7 @@ export interface ContainerCommandOptions {
   signal?: AbortSignal;
   networkMode?: ContainerNetworkMode;
   extraMounts?: ContainerMount[];
+  allowedRoots?: string[];
 }
 
 export interface ContainerCommandResult {
@@ -45,6 +46,7 @@ export interface ContainerRunPlan {
   hostWorkspacePath: string;
   containerWorkspacePath: string;
   networkMode: ContainerNetworkMode;
+  workdir: string;
 }
 
 const RUNTIME_CACHE_TTL_MS = 20_000;
@@ -154,20 +156,86 @@ function appendMount(args: string[], mount: ContainerMount): void {
   args.push('-v', `${mount.hostPath}:${containerPath}${suffix}`);
 }
 
+function normalizeRoot(root: string): string {
+  return path.resolve(root);
+}
+
+function findRootForPath(target: string, roots: string[]): string | null {
+  const resolved = path.resolve(target);
+  for (const root of roots) {
+    const normalized = normalizeRoot(root);
+    if (resolved === normalized || resolved.startsWith(normalized + path.sep)) {
+      return normalized;
+    }
+  }
+  return null;
+}
+
+function buildMountPlan(
+  cwd: string,
+  allowedRoots: string[],
+  extraMounts?: ContainerMount[],
+): { primaryRoot: string; mounts: ContainerMount[]; workdir: string } {
+  const normalizedRoots = Array.from(
+    new Set(allowedRoots.filter(Boolean).map((root) => normalizeRoot(root)))
+  );
+  const fallbackRoot = normalizeRoot(homedir());
+  const primaryRoot = findRootForPath(cwd, normalizedRoots) || normalizedRoots[0] || fallbackRoot;
+
+  const mounts: ContainerMount[] = [
+    { hostPath: primaryRoot, containerPath: '/workspace', readOnly: false },
+  ];
+
+  let sharedIndex = 1;
+  for (const root of normalizedRoots) {
+    if (root === primaryRoot) continue;
+    mounts.push({
+      hostPath: root,
+      containerPath: `/mnt/shared-${sharedIndex}`,
+      readOnly: true,
+    });
+    sharedIndex += 1;
+  }
+
+  for (const mount of extraMounts || []) {
+    if (!mount.hostPath) continue;
+    if (mount.hostPath === primaryRoot) continue;
+    mounts.push(mount);
+  }
+
+  const resolvedCwd = path.resolve(cwd || primaryRoot);
+  const relative = resolvedCwd === primaryRoot
+    ? ''
+    : resolvedCwd.startsWith(primaryRoot + path.sep)
+      ? resolvedCwd.slice(primaryRoot.length + 1)
+      : '';
+  const workdir = relative ? path.posix.join('/workspace', relative.split(path.sep).join('/')) : '/workspace';
+
+  return { primaryRoot, mounts, workdir };
+}
+
 export function buildContainerRunPlan(
   runtime: ContainerRuntime,
   image: string,
   hostWorkspacePath: string,
-  options?: { networkMode?: ContainerNetworkMode; extraMounts?: ContainerMount[] },
+  options?: {
+    networkMode?: ContainerNetworkMode;
+    extraMounts?: ContainerMount[];
+    allowedRoots?: string[];
+    cwd?: string;
+  },
 ): ContainerRunPlan {
   const containerWorkspacePath = '/workspace';
+  const allowedRoots = options?.allowedRoots?.length ? options.allowedRoots : [hostWorkspacePath];
+  const cwd = options?.cwd || hostWorkspacePath;
+  const mountPlan = buildMountPlan(cwd, allowedRoots, options?.extraMounts);
   const args: string[] = [
     'run',
     '--rm',
     '--init',
     '-i',
     '-w',
-    containerWorkspacePath,
+    mountPlan.workdir,
     '-e',
     'HOME=/tmp/clawdia',
   ];
@@ -179,9 +247,7 @@ export function buildContainerRunPlan(
     args.push('--network=host');
   }
 
-  appendMount(args, { hostPath: hostWorkspacePath, containerPath: containerWorkspacePath, readOnly: false });
-  for (const mount of options?.extraMounts || []) {
-    if (!mount.hostPath || mount.hostPath === hostWorkspacePath) continue;
+  for (const mount of mountPlan.mounts) {
     appendMount(args, mount);
   }
 
@@ -194,9 +260,10 @@ export function buildContainerRunPlan(
     runtime,
     image,
     args,
-    hostWorkspacePath,
+    hostWorkspacePath: mountPlan.primaryRoot,
     containerWorkspacePath,
     networkMode,
+    workdir: mountPlan.workdir,
   };
 }
 
@@ -212,6 +279,8 @@ export async function executeCommandInContainer(options: ContainerCommandOptions
   const plan = buildContainerRunPlan(runtime, image, hostWorkspacePath, {
     networkMode: options.networkMode || getContainerNetworkMode(),
     extraMounts: options.extraMounts,
+    allowedRoots: options.allowedRoots,
+    cwd: options.cwd,
   });
   const args = [...plan.args, options.command];
 

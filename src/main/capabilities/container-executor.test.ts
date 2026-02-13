@@ -9,6 +9,7 @@ describe('container executor', () => {
     expect(plan.hostWorkspacePath).toBe('/tmp/project');
     expect(plan.containerWorkspacePath).toBe('/workspace');
     expect(plan.networkMode).toBe('allow');
+    expect(plan.workdir).toBe('/workspace');
     expect(plan.args[0]).toBe('run');
     expect(plan.args).toContain('-v');
     expect(plan.args).toContain('/tmp/project:/workspace');
@@ -24,6 +25,15 @@ describe('container executor', () => {
     });
     expect(plan.args).toContain('--network=none');
     expect(plan.args).toContain('/tmp/shared:/shared:ro');
+  });
+
+  it('maps cwd inside allowed roots to a container workdir', () => {
+    const plan = buildContainerRunPlan('docker', 'node:20-bookworm-slim', '/tmp/project', {
+      allowedRoots: ['/tmp/project', '/opt/shared'],
+      cwd: '/tmp/project/subdir',
+    });
+    expect(plan.workdir).toBe('/workspace/subdir');
+    expect(plan.args).toContain('/opt/shared:/mnt/shared-1:ro');
   });
 
   it('uses default container image when env is not set', () => {
