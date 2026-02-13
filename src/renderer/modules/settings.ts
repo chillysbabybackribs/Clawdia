@@ -11,6 +11,7 @@ import type { CapabilityPlatformFlags, CapabilityPlatformStatus } from '../../sh
 let settingsContentMoved = false;
 let capabilityControlsBound = false;
 let applyingCapabilityStatus = false;
+let capabilityFlagUpdateSeq = 0;
 
 const CAPABILITY_FLAG_INPUTS: Array<{ id: string; key: keyof CapabilityPlatformFlags }> = [
   { id: 'cap-flag-install-orchestrator', key: 'installOrchestrator' },
@@ -334,8 +335,21 @@ function renderCapabilityPlatformStatus(status: CapabilityPlatformStatus): void 
   applyingCapabilityStatus = false;
 }
 
-async function setCapabilityPlatformFlag(key: keyof CapabilityPlatformFlags, value: boolean): Promise<void> {
-  await window.api.setCapabilityPlatformFlags({ [key]: value });
+async function setCapabilityPlatformFlagsFromInputs(): Promise<void> {
+  const payload: Partial<CapabilityPlatformFlags> = {};
+  for (const { id, key } of CAPABILITY_FLAG_INPUTS) {
+    const input = getCapabilityFlagInput(id);
+    if (!input) continue;
+    payload[key] = input.checked;
+  }
+
+  const seq = ++capabilityFlagUpdateSeq;
+  const response = await window.api.setCapabilityPlatformFlags(payload);
+  if (seq !== capabilityFlagUpdateSeq) return;
+  if (response && response.status) {
+    renderCapabilityPlatformStatus(response.status);
+    return;
+  }
   await loadCapabilityPlatformStatus();
 }
 
@@ -353,7 +367,7 @@ function bindCapabilityPlatformControls(): void {
     if (!input) continue;
     input.addEventListener('change', () => {
       if (applyingCapabilityStatus) return;
-      void setCapabilityPlatformFlag(key, input.checked);
+      void setCapabilityPlatformFlagsFromInputs();
     });
   }
 }
