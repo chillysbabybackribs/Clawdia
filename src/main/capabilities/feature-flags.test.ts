@@ -21,7 +21,7 @@ describe('capability platform feature flags', () => {
     const flags = getCapabilityPlatformFlags();
     expect(flags.enabled).toBe(true);
     expect(flags.cohort).toBe('internal');
-    expect(flags.installOrchestrator).toBe(true);
+    expect(flags.installOrchestrator).toBe(false);
     expect(flags.containerExecution).toBe(false);
   });
 
@@ -34,7 +34,7 @@ describe('capability platform feature flags', () => {
     const flags = getCapabilityPlatformFlags();
     expect(flags.cohort).toBe('beta');
     expect(flags.containerExecution).toBe(true);
-    expect(flags.lifecycleEvents).toBe(true);
+    expect(flags.lifecycleEvents).toBe(false);
   });
 
   it('persists updates through setter', async () => {

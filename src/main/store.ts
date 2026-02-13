@@ -157,9 +157,9 @@ export const migrations: Migration[] = [
         s.set('capabilityPlatformFlags' as any, {
           enabled: true,
           cohort: 'internal',
-          lifecycleEvents: true,
-          installOrchestrator: true,
-          checkpointRollback: true,
+          lifecycleEvents: false,
+          installOrchestrator: false,
+          checkpointRollback: false,
           mcpRuntimeManager: false,
           containerExecution: false,
         });

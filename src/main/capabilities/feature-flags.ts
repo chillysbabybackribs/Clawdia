@@ -4,9 +4,9 @@ import { store } from '../store';
 const DEFAULT_CAPABILITY_PLATFORM_FLAGS: CapabilityPlatformFlags = {
   enabled: true,
   cohort: 'internal',
-  lifecycleEvents: true,
-  installOrchestrator: true,
-  checkpointRollback: true,
+  lifecycleEvents: false,
+  installOrchestrator: false,
+  checkpointRollback: false,
   mcpRuntimeManager: false,
   containerExecution: false,
 };
