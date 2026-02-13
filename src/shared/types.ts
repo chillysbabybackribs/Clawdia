@@ -354,6 +354,18 @@ export interface MCPServerRuntimeState {
   tools: MCPToolRuntimeState[];
 }
 
+export type CapabilityRolloutCohort = 'internal' | 'beta' | 'default';
+
+export interface CapabilityPlatformFlags {
+  enabled: boolean;
+  cohort: CapabilityRolloutCohort;
+  lifecycleEvents: boolean;
+  installOrchestrator: boolean;
+  checkpointRollback: boolean;
+  mcpRuntimeManager: boolean;
+  containerExecution: boolean;
+}
+
 // ============================================================================
 // TASK INTAKE TYPES
 // ============================================================================

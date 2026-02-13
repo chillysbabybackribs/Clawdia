@@ -63,6 +63,7 @@ import {
   tryCapabilityLifecycleEventName,
   type CapabilityLifecycleEventName,
 } from '../capabilities/contracts';
+import { getCapabilityPlatformFlags } from '../capabilities/feature-flags';
 
 const log = createLogger('tool-loop');
 
@@ -2007,6 +2008,7 @@ export class ToolLoop {
             duration: Number(event?.durationMs || 0),
           });
           if (!this.emitter.isDestroyed()) {
+            const capabilityFlags = getCapabilityPlatformFlags();
             const payload = {
               toolId: toolCall.id,
               toolName: toolCall.name,
@@ -2014,7 +2016,7 @@ export class ToolLoop {
               ...event,
             };
             this.emitter.send(IPC_EVENTS.CAPABILITY_EVENT, payload);
-            if (eventName && CAPABILITY_CHANNEL_BY_EVENT_NAME[eventName]) {
+            if (capabilityFlags.lifecycleEvents && eventName && CAPABILITY_CHANNEL_BY_EVENT_NAME[eventName]) {
               this.emitter.send(CAPABILITY_CHANNEL_BY_EVENT_NAME[eventName] as string, payload);
             }
           }

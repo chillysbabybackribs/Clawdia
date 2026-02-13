@@ -23,6 +23,7 @@ import { getTaskDashboardItems } from './tasks/task-dashboard';
 import { getTask, listTasks, deleteTask, pauseTask, resumeTask, getRunsForTask, getRun, updateRun, cleanupZombieRuns, getExecutorForTask } from './tasks/task-store';
 import { detectFastPathTools } from './llm/tool-bootstrap';
 import { initializeCapabilityRegistry } from './capabilities/registry';
+import { getCapabilityPlatformFlags } from './capabilities/feature-flags';
 import { setAmbientSummary } from './llm/system-prompt';
 import { strategyCache } from './llm/strategy-cache';
 import { store, runMigrations, resetStore, DEFAULT_AMBIENT_SETTINGS, type AmbientSettings, type ChatTabState, type ClawdiaStoreSchema } from './store';
@@ -307,6 +308,12 @@ async function warmAnthropicMessagesConnection(apiKey: string): Promise<void> {
 
 runMigrations(store);
 log.info(`[STARTUP] storedModel=${(store.get('selectedModel') as string) || '(none)'} | effectiveModel=${getSelectedModel()}`);
+const capabilityFlags = getCapabilityPlatformFlags();
+log.info(
+  `[CapabilityPlatform] enabled=${capabilityFlags.enabled} cohort=${capabilityFlags.cohort} ` +
+  `install=${capabilityFlags.installOrchestrator} lifecycle=${capabilityFlags.lifecycleEvents} ` +
+  `checkpoint=${capabilityFlags.checkpointRollback} container=${capabilityFlags.containerExecution}`,
+);
 
 async function validateAnthropicApiKey(key: string, model?: string): Promise<{ valid: boolean; error?: string }> {
   const normalized = key.trim();

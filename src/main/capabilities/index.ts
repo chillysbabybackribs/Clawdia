@@ -5,3 +5,4 @@ export * from './policy-engine';
 export * from './install-orchestrator';
 export * from './checkpoint-manager';
 export * from './services';
+export * from './feature-flags';

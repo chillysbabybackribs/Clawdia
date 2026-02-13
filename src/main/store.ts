@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import { DEFAULT_MODEL } from '../shared/models';
 import type { UserAccount } from '../shared/accounts';
 import type { AutonomyMode } from '../shared/autonomy';
+import type { CapabilityPlatformFlags } from '../shared/types';
 import { createLogger } from './logger';
 
 const log = createLogger('store');
@@ -75,6 +76,7 @@ export interface ClawdiaStoreSchema {
   autonomyMode?: AutonomyMode;
   unrestrictedConfirmed?: boolean;
   autonomyOverrides?: Record<string, boolean>;
+  capabilityPlatformFlags?: CapabilityPlatformFlags;
 
   // Legacy key used by older builds before BYOK migration.
   anthropic_api_key?: string;
@@ -85,7 +87,7 @@ export interface ClawdiaStoreSchema {
 // ============================================================================
 
 /** Increment this every time the store schema changes. */
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 6;
 
 export interface Migration {
   version: number;
@@ -143,6 +145,23 @@ export const migrations: Migration[] = [
     migrate: (s) => {
       if (!s.get('autonomyOverrides' as any)) {
         s.set('autonomyOverrides' as any, {});
+      }
+    },
+  },
+  {
+    version: 6,
+    description: 'Initialize capabilityPlatformFlags',
+    migrate: (s) => {
+      if (!s.get('capabilityPlatformFlags' as any)) {
+        s.set('capabilityPlatformFlags' as any, {
+          enabled: true,
+          cohort: 'internal',
+          lifecycleEvents: true,
+          installOrchestrator: true,
+          checkpointRollback: true,
+          mcpRuntimeManager: false,
+          containerExecution: false,
+        });
       }
     },
   },

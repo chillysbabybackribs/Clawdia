@@ -20,6 +20,7 @@ import {
   type FileCheckpoint,
 } from '../capabilities/checkpoint-manager';
 import { ensureCommandCapabilities } from '../capabilities/install-orchestrator';
+import { getCapabilityPlatformFlags } from '../capabilities/feature-flags';
 import { evaluateCommandPolicy } from '../capabilities/policy-engine';
 import { initializeCapabilityRegistry, resolveCommandCapabilities } from '../capabilities/registry';
 
@@ -695,6 +696,7 @@ export async function toolShellExec(input: {
 
   const resolution = await resolveCommandCapabilities(command);
   if (resolution.missingCapabilities.length > 0) {
+    const capabilityFlags = getCapabilityPlatformFlags();
     const trustPolicy = resolveCapabilityTrustPolicy(context);
 
     emitCapability({
@@ -703,6 +705,15 @@ export async function toolShellExec(input: {
       command,
     });
 
+    if (!capabilityFlags.installOrchestrator) {
+      emitCapability({
+        type: 'policy_blocked',
+        message: 'Install orchestrator disabled by rollout policy.',
+        detail: `cohort=${capabilityFlags.cohort}`,
+        command,
+      });
+      preflightNote = '[Capability install skipped] install orchestrator is disabled by feature flags.';
+    } else {
     emitCapability({
       type: 'policy_rewrite',
       message: `Capability install policy: ${trustPolicy}`,
@@ -717,6 +728,7 @@ export async function toolShellExec(input: {
     if (!installResult.ok) {
       const failed = installResult.failed.map((f) => f.capabilityId).join(', ');
       preflightNote = `[Capability install warning] Could not auto-install: ${failed || 'unknown'}`;
+    }
     }
   }
 
@@ -854,6 +866,8 @@ async function createCheckpointForWrite(
   filePath: string,
   context: LocalToolExecutionContext | undefined,
 ): Promise<FileCheckpoint | null> {
+  const capabilityFlags = getCapabilityPlatformFlags();
+  if (!capabilityFlags.checkpointRollback) return null;
   if (!shouldCreateCheckpointForPath(filePath)) return null;
 
   const checkpoint = await createFileCheckpoint(filePath);
