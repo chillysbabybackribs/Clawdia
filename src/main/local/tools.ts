@@ -7,7 +7,8 @@ import { promisify } from 'util';
 import { createLogger } from '../logger';
 import { createDocument, type LlmGenerationMetrics } from '../documents/creator';
 import type { DocProgressEvent } from '../../shared/types';
-import type { CapabilityEvent } from '../capabilities/contracts';
+import type { CapabilityEvent, TrustPolicy } from '../capabilities/contracts';
+import type { AutonomyMode } from '../../shared/autonomy';
 import {
   createFileCheckpoint,
   disposeFileCheckpoint,
@@ -343,10 +344,20 @@ export interface LocalToolExecutionContext {
   conversationId?: string;
   messageId?: string;
   llmMetrics?: LlmGenerationMetrics;
+  autonomyMode?: AutonomyMode;
+  capabilityTrustPolicy?: TrustPolicy;
   onDocProgress?: (event: DocProgressEvent) => void;
   onOutput?: (chunk: string) => void;
   onCapabilityEvent?: (event: CapabilityEvent) => void;
   signal?: AbortSignal;
+}
+
+export function resolveCapabilityTrustPolicy(context?: LocalToolExecutionContext): TrustPolicy {
+  if (context?.capabilityTrustPolicy) return context.capabilityTrustPolicy;
+  const mode = context?.autonomyMode || 'guided';
+  if (mode === 'unrestricted') return 'best_effort';
+  if (mode === 'safe') return 'strict_verified';
+  return 'verified_fallback';
 }
 
 export const LOCAL_TOOL_DEFINITIONS: LocalToolDefinition[] = [
@@ -677,14 +688,22 @@ export async function toolShellExec(input: {
 
   const resolution = await resolveCommandCapabilities(command);
   if (resolution.missingCapabilities.length > 0) {
+    const trustPolicy = resolveCapabilityTrustPolicy(context);
+
     emitCapability({
       type: 'capability_missing',
       message: `Missing capabilities detected: ${resolution.missingCapabilities.map((c) => c.id).join(', ')}`,
       command,
     });
 
+    emitCapability({
+      type: 'policy_rewrite',
+      message: `Capability install policy: ${trustPolicy}`,
+      detail: 'Autonomy-aware capability trust policy applied.',
+    });
+
     const installResult = await ensureCommandCapabilities(command, {
-      trustPolicy: 'verified_fallback',
+      trustPolicy,
       onEvent: emitCapability,
     });
 

@@ -10,6 +10,7 @@ import {
   getActiveTabId,
   listTabs,
   executeInBrowserView,
+  captureBrowserViewScreenshot,
   navigate as managerNavigate,
   waitForLoad,
 } from './manager';
@@ -978,9 +979,244 @@ function domExtractJs(maxLen = 8_000): string {
   })()`;
 }
 
+async function getBrowserViewSnapshot(maxLen = 30_000): Promise<string | null> {
+  const pageData = await executeInBrowserView<Record<string, unknown>>(domExtractJs(maxLen));
+  if (!pageData) return null;
+
+  const title = typeof pageData.title === 'string' ? pageData.title : '';
+  const url = typeof pageData.url === 'string' && pageData.url ? pageData.url : 'about:blank';
+  const rawContent = typeof pageData.content === 'string' ? pageData.content : '';
+  const content = compressPageContent(rawContent, { maxChars: 6_000 }).text;
+
+  if (!title && !content) return null;
+
+  if (url && url !== 'about:blank') {
+    try {
+      storePage(url, title, content, {
+        contentType: 'article',
+        compressedLength: content.length,
+      });
+    } catch {
+      // Cache storage is best-effort.
+    }
+  }
+
+  return `${title} (${url})\n\n${content}`;
+}
+
+async function getBrowserViewMeta(): Promise<{ title: string; url: string; width: number; height: number } | null> {
+  const meta = await executeInBrowserView<Record<string, unknown>>(`(() => ({
+    title: document.title || '',
+    url: location.href || 'about:blank',
+    width: window.innerWidth || 0,
+    height: window.innerHeight || 0
+  }))()`);
+  if (!meta) return null;
+  return {
+    title: typeof meta.title === 'string' ? meta.title : '',
+    url: typeof meta.url === 'string' ? meta.url : 'about:blank',
+    width: Number(meta.width) || 0,
+    height: Number(meta.height) || 0,
+  };
+}
+
+async function toolClickInBrowserView(ref: string, x?: unknown, y?: unknown, selector?: unknown): Promise<string> {
+  const payload = {
+    ref: typeof ref === 'string' ? ref.trim() : '',
+    selector: typeof selector === 'string' ? selector.trim() : '',
+    x: typeof x === 'number' ? x : null,
+    y: typeof y === 'number' ? y : null,
+  };
+
+  const result = await executeInBrowserView<Record<string, unknown>>(`(() => {
+    const p = ${JSON.stringify(payload)};
+    const clickEl = (el) => {
+      if (!el) return false;
+      try { el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }); } catch {}
+      try { el.click(); } catch {}
+      try { el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } catch {}
+      return true;
+    };
+    const textOf = (el) => {
+      const own = (el.innerText || el.textContent || '').trim();
+      const aria = (el.getAttribute?.('aria-label') || '').trim();
+      const value = (el.value || '').trim();
+      return (own || aria || value || '').toLowerCase();
+    };
+    const targetUrl = location.href || 'about:blank';
+    const targetTitle = document.title || '';
+
+    if (Number.isFinite(p.x) && Number.isFinite(p.y)) {
+      const el = document.elementFromPoint(p.x, p.y);
+      if (!el) return { ok: false, message: 'No element found at the provided coordinates.' };
+      clickEl(el);
+      return { ok: true, label: 'coordinates (' + p.x + ', ' + p.y + ')', url: targetUrl, title: targetTitle };
+    }
+
+    if (p.selector) {
+      const el = document.querySelector(p.selector);
+      if (!el) return { ok: false, message: 'No element matched selector "' + p.selector + '".' };
+      clickEl(el);
+      return { ok: true, label: 'selector "' + p.selector + '"', url: targetUrl, title: targetTitle };
+    }
+
+    if (p.ref) {
+      const needle = String(p.ref).toLowerCase();
+      const candidates = Array.from(document.querySelectorAll('button, a, [role="button"], [role="link"], input[type="button"], input[type="submit"], summary'));
+      const match = candidates.find((el) => textOf(el).includes(needle));
+      if (!match) return { ok: false, message: 'Could not find element matching "' + p.ref + '".' };
+      clickEl(match);
+      return { ok: true, label: '"' + p.ref + '"', url: targetUrl, title: targetTitle };
+    }
+
+    return { ok: false, message: 'No click target specified. Provide ref, selector, or x+y coordinates.' };
+  })()`);
+
+  if (!result) return 'No active page.';
+  if (result.ok) {
+    return `Clicked ${String(result.label || 'target')}. → ${String(result.title || '')} (${String(result.url || 'about:blank')})`;
+  }
+  return String(result.message || 'Failed to click target.');
+}
+
+async function toolTypeInBrowserView(text: string, ref: unknown, pressEnter: boolean): Promise<string> {
+  const payload = {
+    text,
+    ref: typeof ref === 'string' ? ref.trim() : '',
+    pressEnter: Boolean(pressEnter),
+  };
+
+  const result = await executeInBrowserView<Record<string, unknown>>(`(() => {
+    const p = ${JSON.stringify(payload)};
+    const needle = (p.ref || '').toLowerCase();
+
+    const isEditable = (el) => {
+      if (!el) return false;
+      const tag = (el.tagName || '').toLowerCase();
+      return tag === 'input' || tag === 'textarea' || el.isContentEditable === true;
+    };
+
+    const findByLabel = () => {
+      if (!needle) return null;
+      const labels = Array.from(document.querySelectorAll('label'));
+      for (const label of labels) {
+        const text = (label.textContent || '').trim().toLowerCase();
+        if (!text.includes(needle)) continue;
+        const forId = label.getAttribute('for');
+        if (forId) {
+          const byId = document.getElementById(forId);
+          if (isEditable(byId)) return byId;
+        }
+        const nested = label.querySelector('input, textarea');
+        if (isEditable(nested)) return nested;
+      }
+      return null;
+    };
+
+    const findByAttrs = () => {
+      if (!needle) return null;
+      const candidates = Array.from(document.querySelectorAll('input, textarea'));
+      return candidates.find((el) => {
+        const attrs = [
+          el.getAttribute('name') || '',
+          el.getAttribute('aria-label') || '',
+          el.getAttribute('placeholder') || '',
+          el.id || '',
+        ].join(' ').toLowerCase();
+        return attrs.includes(needle);
+      }) || null;
+    };
+
+    let target = findByLabel() || findByAttrs();
+    if (!target) target = document.activeElement;
+    if (!isEditable(target)) {
+      return { ok: false, message: p.ref ? 'Could not find input "' + p.ref + '".' : 'No focused editable input found.' };
+    }
+
+    target.focus?.();
+
+    if (target.isContentEditable) {
+      target.textContent = p.text;
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+    } else {
+      target.value = p.text;
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+      target.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    if (p.pressEnter) {
+      target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+      target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }));
+      if (target.form && typeof target.form.requestSubmit === 'function') {
+        target.form.requestSubmit();
+      }
+    }
+
+    const label = p.ref || target.getAttribute?.('name') || target.getAttribute?.('aria-label') || target.id || 'focused element';
+    return { ok: true, label };
+  })()`);
+
+  if (!result) return 'No active page.';
+  if (!result.ok) return String(result.message || 'Failed to type into target input.');
+  return `Typed "${text}"${pressEnter ? ' +Enter' : ''} into ${String(result.label || 'focused element')}.`;
+}
+
 async function toolActionMap(maxItemsInput: unknown): Promise<string> {
   const page = getActiveOrCreatePage();
-  if (!page) return 'No active page.';
+  if (!page) {
+    const maxItems = clampNumber(Number(maxItemsInput) || 80, 10, 200);
+    const elements = await executeInBrowserView<Array<Record<string, unknown>>>(`(() => {
+      const roleFromTag = (el) => {
+        const explicitRole = (el.getAttribute('role') || '').trim();
+        if (explicitRole) return explicitRole;
+        const tag = el.tagName.toLowerCase();
+        if (tag === 'a') return 'link';
+        if (tag === 'button') return 'button';
+        if (tag === 'textarea') return 'textbox';
+        if (tag === 'select') return 'combobox';
+        if (tag === 'input') return 'textbox';
+        return tag;
+      };
+      const textFor = (el) => {
+        const aria = (el.getAttribute('aria-label') || '').trim();
+        const title = (el.getAttribute('title') || '').trim();
+        const value = ('value' in el ? String(el.value || '').trim() : '');
+        const text = (el.textContent || '').trim().replace(/\\s+/g, ' ');
+        return aria || title || value || text;
+      };
+      const all = Array.from(document.querySelectorAll('a,button,input,textarea,select,[role=\"button\"],[role=\"link\"],[role=\"textbox\"],summary'));
+      const out = [];
+      for (let i = 0; i < all.length; i++) {
+        const el = all[i];
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 1 || rect.height <= 1) continue;
+        const name = textFor(el);
+        out.push({
+          stable_id: 'bv-' + i,
+          role: roleFromTag(el),
+          name: name,
+          selector: '',
+          text: name,
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+          in_viewport: rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth,
+          disabled: Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true'),
+        });
+      }
+      return out.slice(0, ${maxItems});
+    })()`);
+    const meta = await getBrowserViewMeta();
+    if (!elements) return 'No active page.';
+    return JSON.stringify({
+      status: 'success',
+      url: meta?.url || null,
+      count: elements.length,
+      elements,
+      note: 'BrowserView fallback map (Playwright unavailable).',
+    }, null, 2);
+  }
 
   const maxItems = clampNumber(Number(maxItemsInput) || 80, 10, 200);
   const elements = await page.evaluate((limit) => {
@@ -1380,8 +1616,10 @@ async function toolNavigate(url: string): Promise<string> {
     return getPageSnapshot(page);
   }
 
-  // Fallback: just report we navigated.
-  return `Navigated to ${targetUrl}. (Page reading unavailable — Playwright not connected.)`;
+  // BrowserView fallback when Playwright is unavailable.
+  const browserViewSnapshot = await getBrowserViewSnapshot(30_000);
+  if (browserViewSnapshot) return browserViewSnapshot;
+  return `Navigated to ${targetUrl}. (Page reading unavailable.)`;
 }
 
 async function toolReadPage(url?: unknown): Promise<string> {
@@ -1410,7 +1648,10 @@ async function toolReadPage(url?: unknown): Promise<string> {
   }
 
   const page = getActiveOrCreatePage();
-  if (!page) return 'No active page.';
+  if (!page) {
+    const browserViewSnapshot = await getBrowserViewSnapshot(30_000);
+    return browserViewSnapshot || 'No active page.';
+  }
   return getPageSnapshot(page);
 }
 
@@ -1502,7 +1743,7 @@ async function focusTwitterComposer(page: Page): Promise<boolean> {
 
 async function toolClick(ref: string, x?: unknown, y?: unknown, selector?: unknown): Promise<string> {
   const page = getActiveOrCreatePage();
-  if (!page) return 'No active page.';
+  if (!page) return toolClickInBrowserView(ref, x, y, selector);
 
   let clicked = false;
   let clickLabel = '';
@@ -1654,7 +1895,7 @@ async function toolClick(ref: string, x?: unknown, y?: unknown, selector?: unkno
 async function toolType(text: string, ref: unknown, pressEnter: boolean): Promise<string> {
   if (!text) return 'Missing text.';
   const page = getActiveOrCreatePage();
-  if (!page) return 'No active page.';
+  if (!page) return toolTypeInBrowserView(text, ref, pressEnter);
 
   let hostname = '';
   try {
@@ -1758,7 +1999,18 @@ async function toolType(text: string, ref: unknown, pressEnter: boolean): Promis
 
 async function toolScroll(directionInput: unknown, amountInput: unknown): Promise<string> {
   const page = getActiveOrCreatePage();
-  if (!page) return 'No active page.';
+  if (!page) {
+    const direction = String(directionInput || 'down').toLowerCase() === 'up' ? 'up' : 'down';
+    const parsedAmount = Number(amountInput);
+    const amount = Number.isFinite(parsedAmount) && parsedAmount > 0 ? Math.floor(parsedAmount) : 600;
+    const deltaY = direction === 'up' ? -amount : amount;
+    const result = await executeInBrowserView<Record<string, unknown>>(`(() => {
+      window.scrollBy(0, ${deltaY});
+      return { y: window.scrollY || 0 };
+    })()`);
+    if (!result) return 'No active page.';
+    return `Scrolled ${direction} ${amount}px.`;
+  }
 
   const direction = String(directionInput || 'down').toLowerCase() === 'up' ? 'up' : 'down';
   const parsedAmount = Number(amountInput);
@@ -1810,18 +2062,37 @@ async function toolTab(action: string, tabId?: string, url?: string): Promise<st
 
 async function toolScreenshot(): Promise<string> {
   const page = getActiveOrCreatePage();
-  if (!page) return 'No active page.';
-  const buffer = await page.screenshot({ fullPage: false, type: 'jpeg', quality: 60 });
+  if (page) {
+    const buffer = await page.screenshot({ fullPage: false, type: 'jpeg', quality: 60 });
+    const base64 = buffer.toString('base64');
+    const url = page.url() || 'about:blank';
+    const title = await page.title().catch(() => '');
+    // Return structured image result — tool-loop detects the prefix and builds
+    // a multi-part tool_result with an image content block so the LLM can see the page.
+    return JSON.stringify({
+      __clawdia_image_result__: true,
+      image_base64: base64,
+      media_type: 'image/jpeg',
+      text: `Screenshot of "${title}" — ${url}\nViewport size: ${page.viewportSize()?.width ?? '?'}x${page.viewportSize()?.height ?? '?'}px. Use coordinates (x, y) from this image with browser_click to click elements.`,
+    });
+  }
+
+  const [buffer, meta] = await Promise.all([
+    captureBrowserViewScreenshot(60),
+    getBrowserViewMeta(),
+  ]);
+  if (!buffer) return 'No active page.';
+
   const base64 = buffer.toString('base64');
-  const url = page.url() || 'about:blank';
-  const title = await page.title().catch(() => '');
-  // Return structured image result — tool-loop detects the prefix and builds
-  // a multi-part tool_result with an image content block so the LLM can see the page.
+  const url = meta?.url || 'about:blank';
+  const title = meta?.title || '';
+  const width = meta?.width || '?';
+  const height = meta?.height || '?';
   return JSON.stringify({
     __clawdia_image_result__: true,
     image_base64: base64,
     media_type: 'image/jpeg',
-    text: `Screenshot of "${title}" — ${url}\nViewport size: ${page.viewportSize()?.width ?? '?'}x${page.viewportSize()?.height ?? '?'}px. Use coordinates (x, y) from this image with browser_click to click elements.`,
+    text: `Screenshot of "${title}" — ${url}\nViewport size: ${width}x${height}px. Use coordinates (x, y) from this image with browser_click to click elements.`,
   });
 }
 
@@ -3086,7 +3357,6 @@ async function toolInteract(
   }
 
   const page = getActiveOrCreatePage();
-  if (!page) return 'No active page.';
 
   const results: string[] = [];
   for (let i = 0; i < steps.length; i++) {
@@ -3105,7 +3375,8 @@ async function toolInteract(
           break;
         case 'wait': {
           const ms = Math.min(Number(step.ms) || 500, 3000);
-          await page.waitForTimeout(ms);
+          if (page) await page.waitForTimeout(ms);
+          else await new Promise((resolve) => setTimeout(resolve, ms));
           result = `wait:${ms}ms`;
           break;
         }
@@ -3113,7 +3384,7 @@ async function toolInteract(
           result = await toolScreenshot();
           break;
         case 'read':
-          result = await getPageSnapshot(page);
+          result = page ? await getPageSnapshot(page) : ((await getBrowserViewSnapshot(30_000)) || 'No active page.');
           break;
         default:
           result = `Unknown action: ${step.action}`;
@@ -3131,8 +3402,14 @@ async function toolInteract(
     }
   }
 
-  const title = await page.title().catch(() => '');
-  const finalUrl = page.url();
+  const meta = page
+    ? {
+      title: await page.title().catch(() => ''),
+      url: page.url(),
+    }
+    : await getBrowserViewMeta();
+  const title = meta?.title || '';
+  const finalUrl = meta?.url || 'about:blank';
   results.push(`→ ${title} (${finalUrl})`);
 
   return results.join('\n');

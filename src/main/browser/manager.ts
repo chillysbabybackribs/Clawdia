@@ -1443,6 +1443,16 @@ export async function executeInBrowserView<T = unknown>(script: string): Promise
   }
 }
 
+export async function captureBrowserViewScreenshot(quality = 60): Promise<Buffer | null> {
+  if (!browserView) return null;
+  try {
+    const image = await browserView.webContents.capturePage();
+    return image.toJPEG(Math.max(20, Math.min(100, quality)));
+  } catch {
+    return null;
+  }
+}
+
 export function getAllPages(): Map<string, Page> {
   ensurePlaywrightPageBinding();
   // For tool compat — return the single page if we have it.

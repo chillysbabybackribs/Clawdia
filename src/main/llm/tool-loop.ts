@@ -1960,6 +1960,7 @@ export class ToolLoop {
     const executeOnce = async () => {
       const localCtx = {
         ...task.localContext,
+        autonomyMode: autonomyMode as any,
         onOutput: (chunk: string) => {
           if (!firstOutputCaptured) {
             t5_firstOutput = performance.now();
