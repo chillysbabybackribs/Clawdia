@@ -7,3 +7,4 @@ export * from './checkpoint-manager';
 export * from './services';
 export * from './feature-flags';
 export * from './mcp-discovery';
+export * from './container-executor';

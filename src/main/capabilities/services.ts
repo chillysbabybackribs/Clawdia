@@ -5,6 +5,7 @@ import type {
 } from '../../shared/types';
 import { appendAuditEvent } from '../audit/audit-store';
 import { createLogger } from '../logger';
+import { getCapabilityPlatformFlags } from './feature-flags';
 import type {
   CapabilityDescriptor,
   CapabilityEvent,
@@ -99,9 +100,7 @@ class DefaultInstallOrchestratorService implements InstallOrchestratorService {
 class DefaultExecutionSandboxService implements ExecutionSandboxService {
   isContainerFirst = true;
   activeRuntime(): 'container' | 'host' {
-    // Runtime currently defaults to host execution while the container executor
-    // is being integrated incrementally.
-    return 'host';
+    return getCapabilityPlatformFlags().containerExecution ? 'container' : 'host';
   }
 }
 

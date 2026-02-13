@@ -23,6 +23,7 @@ import { ensureCommandCapabilities } from '../capabilities/install-orchestrator'
 import { getCapabilityPlatformFlags } from '../capabilities/feature-flags';
 import { evaluateCommandPolicy } from '../capabilities/policy-engine';
 import { initializeCapabilityRegistry, resolveCommandCapabilities } from '../capabilities/registry';
+import { detectContainerRuntime, executeCommandInContainer } from '../capabilities/container-executor';
 
 const execAsync = promisify(exec);
 const log = createLogger('local-tools');
@@ -671,6 +672,7 @@ export async function toolShellExec(input: {
   }
 
   let command = rawCommand;
+  const capabilityFlags = getCapabilityPlatformFlags();
   if (policyDecision.action === 'rewrite' && policyDecision.command) {
     command = policyDecision.command;
     emitCapability({
@@ -693,10 +695,10 @@ export async function toolShellExec(input: {
   command = sanitizedCommand;
 
   let preflightNote = '';
+  let runtimeNote = '';
 
   const resolution = await resolveCommandCapabilities(command);
   if (resolution.missingCapabilities.length > 0) {
-    const capabilityFlags = getCapabilityPlatformFlags();
     const trustPolicy = resolveCapabilityTrustPolicy(context);
 
     emitCapability({
@@ -732,6 +734,54 @@ export async function toolShellExec(input: {
     }
   }
 
+  if (capabilityFlags.containerExecution) {
+    const runtimeStatus = await detectContainerRuntime();
+    if (runtimeStatus.available) {
+      emitCapability({
+        type: 'policy_rewrite',
+        message: `Container execution enabled (${runtimeStatus.detail}).`,
+        detail: 'Routing shell_exec through container runtime.',
+        command,
+      });
+      try {
+        const containerResult = await executeCommandInContainer({
+          command,
+          cwd,
+          timeoutMs,
+          onOutput: context?.onOutput,
+          signal: context?.signal,
+        });
+        let output = '';
+        if (containerResult.stdout) output += containerResult.stdout;
+        if (containerResult.stderr) output += (output ? '\n\n[stderr]\n' : '[stderr]\n') + containerResult.stderr;
+        if (!output.trim()) output = '[Command completed with no output]';
+        runtimeNote = `[Execution runtime] container:${containerResult.runtime} image=${containerResult.image} mount=${containerResult.hostWorkspacePath}`;
+        if (runtimeNote) output += `\n\n${runtimeNote}`;
+        if (preflightNote) output += `\n\n${preflightNote}`;
+        return output;
+      } catch (err: any) {
+        const reason = err?.message || 'container execution failed';
+        emitCapability({
+          type: 'policy_rewrite',
+          message: `Container execution failed, falling back to host runtime.`,
+          detail: reason,
+          command,
+        });
+        runtimeNote = `[Execution runtime] host fallback (container failed: ${short(String(reason), 120)})`;
+      }
+    } else {
+      emitCapability({
+        type: 'policy_rewrite',
+        message: 'Container execution requested but no runtime is available; using host runtime.',
+        detail: runtimeStatus.detail,
+        command,
+      });
+      runtimeNote = `[Execution runtime] host (container unavailable: ${runtimeStatus.detail})`;
+    }
+  } else {
+    runtimeNote = '';
+  }
+
   try {
     const { stdout, stderr } = await runInPersistentShell(
       command,
@@ -757,6 +807,9 @@ export async function toolShellExec(input: {
     if (preflightNote) {
       output += `\n\n${preflightNote}`;
     }
+    if (runtimeNote) {
+      output += `\n\n${runtimeNote}`;
+    }
 
     return output;
   } catch (err: any) {
@@ -777,6 +830,9 @@ export async function toolShellExec(input: {
 
     if (preflightNote) {
       output += `\n${preflightNote}`;
+    }
+    if (runtimeNote) {
+      output += `\n${runtimeNote}`;
     }
 
     return output || `[Error: ${err?.message || 'unknown error'}]`;

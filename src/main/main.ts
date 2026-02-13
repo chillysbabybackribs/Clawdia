@@ -32,6 +32,7 @@ import { initializeCapabilityRegistry } from './capabilities/registry';
 import { getCapabilityPlatformFlags } from './capabilities/feature-flags';
 import { loadConfiguredMcpServersSync, type DiscoveredMcpServer } from './capabilities/mcp-discovery';
 import { createCapabilityPlatformServices } from './capabilities/services';
+import { detectContainerRuntime } from './capabilities/container-executor';
 import { setAmbientSummary } from './llm/system-prompt';
 import { strategyCache } from './llm/strategy-cache';
 import { store, runMigrations, resetStore, DEFAULT_AMBIENT_SETTINGS, type AmbientSettings, type ChatTabState, type ClawdiaStoreSchema } from './store';
@@ -673,6 +674,11 @@ log.info(
   `install=${capabilityFlags.installOrchestrator} lifecycle=${capabilityFlags.lifecycleEvents} ` +
   `checkpoint=${capabilityFlags.checkpointRollback} container=${capabilityFlags.containerExecution}`,
 );
+if (capabilityFlags.containerExecution) {
+  void detectContainerRuntime().then((status) => {
+    log.info(`[CapabilityPlatform] container runtime: ${status.detail}`);
+  });
+}
 
 async function validateAnthropicApiKey(key: string, model?: string): Promise<{ valid: boolean; error?: string }> {
   const normalized = key.trim();
