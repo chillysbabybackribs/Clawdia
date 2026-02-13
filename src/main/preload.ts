@@ -12,6 +12,7 @@ import {
   ToolExecCompleteEvent,
   ToolStepProgressEvent,
   ToolLoopCompleteEvent,
+  CapabilityRuntimeEvent,
 } from '../shared/types';
 import {
   ApprovalRequest,
@@ -179,6 +180,12 @@ const api = {
     const handler = (_event: Electron.IpcRendererEvent, payload: ToolLoopCompleteEvent) => callback(payload);
     ipcRenderer.on(IPC_EVENTS.TOOL_LOOP_COMPLETE, handler);
     return () => ipcRenderer.removeListener(IPC_EVENTS.TOOL_LOOP_COMPLETE, handler);
+  },
+
+  onCapabilityEvent: (callback: (payload: CapabilityRuntimeEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: CapabilityRuntimeEvent) => callback(payload);
+    ipcRenderer.on(IPC_EVENTS.CAPABILITY_EVENT, handler);
+    return () => ipcRenderer.removeListener(IPC_EVENTS.CAPABILITY_EVENT, handler);
   },
 
   onToolTiming: (callback: (payload: import('../shared/types').ToolTimingEvent) => void) => {

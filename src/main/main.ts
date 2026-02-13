@@ -22,6 +22,7 @@ import { TaskScheduler, setSchedulerInstance } from './tasks/scheduler';
 import { getTaskDashboardItems } from './tasks/task-dashboard';
 import { getTask, listTasks, deleteTask, pauseTask, resumeTask, getRunsForTask, getRun, updateRun, cleanupZombieRuns, getExecutorForTask } from './tasks/task-store';
 import { detectFastPathTools } from './llm/tool-bootstrap';
+import { initializeCapabilityRegistry } from './capabilities/registry';
 import { setAmbientSummary } from './llm/system-prompt';
 import { strategyCache } from './llm/strategy-cache';
 import { store, runMigrations, resetStore, DEFAULT_AMBIENT_SETTINGS, type AmbientSettings, type ChatTabState, type ClawdiaStoreSchema } from './store';
@@ -83,7 +84,19 @@ function pickFreePort(candidates: number[]): number {
   return candidates[0];
 }
 
-const CDP_CANDIDATES = [9222, 9223, 9224, 9225, 9226, 9227];
+function buildCdpCandidates(): number[] {
+  // Prefer a process-scoped high port first to avoid collisions with
+  // system Chrome instances that often occupy 9222/9223.
+  const processScoped = 12000 + (process.pid % 1000);
+  const legacy = [9222, 9223, 9224, 9225, 9226, 9227];
+  const expanded: number[] = [];
+  for (let port = 9228; port <= 9260; port += 1) {
+    expanded.push(port);
+  }
+  return Array.from(new Set([processScoped, ...legacy, ...expanded]));
+}
+
+const CDP_CANDIDATES = buildCdpCandidates();
 const envPort = process.env.CLAWDIA_CDP_PORT ? Number(process.env.CLAWDIA_CDP_PORT) : null;
 const portList = envPort ? [envPort, ...CDP_CANDIDATES.filter((p) => p !== envPort)] : CDP_CANDIDATES;
 const REMOTE_DEBUGGING_PORT = pickFreePort(portList);
@@ -446,10 +459,14 @@ function createWindow(): void {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: true,
+      // Keep renderer isolated, but disable Chromium sandbox for preload module
+      // resolution. Sandboxed preload cannot reliably resolve cross-directory
+      // relative imports like ../shared/ipc-channels in this build layout.
+      sandbox: false,
       preload: preloadPath,
     },
   });
+  log.info('[MainWindow] webPreferences: contextIsolation=true, nodeIntegration=false, sandbox=false');
 
   // Prevent the native WM system menu on right-click of the title bar drag region.
   // On Linux this menu's Move/Resize actions enter a modal pointer grab that
@@ -581,7 +598,8 @@ function createWindow(): void {
     // Eliminates cold-start latency on first search/LLM call.
     void warmConnections();
 
-    // Detect fast-path CLI tools (yt-dlp, wget, etc.) in background.
+    // Initialize capability registry + detect fast-path CLI tools in background.
+    void initializeCapabilityRegistry();
     void detectFastPathTools();
 
     // Dashboard executor — starts immediately (static layer works without rules).

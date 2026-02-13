@@ -5,12 +5,23 @@ import { homedir } from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
 import { createLogger } from '../logger';
-import { delegateResearch } from '../llm/agents/research-agent';
 import { createDocument, type LlmGenerationMetrics } from '../documents/creator';
 import type { DocProgressEvent } from '../../shared/types';
+import type { CapabilityEvent } from '../capabilities/contracts';
+import {
+  createFileCheckpoint,
+  disposeFileCheckpoint,
+  restoreFileCheckpoint,
+  type FileCheckpoint,
+} from '../capabilities/checkpoint-manager';
+import { ensureCommandCapabilities } from '../capabilities/install-orchestrator';
+import { evaluateCommandPolicy } from '../capabilities/policy-engine';
+import { initializeCapabilityRegistry, resolveCommandCapabilities } from '../capabilities/registry';
 
 const execAsync = promisify(exec);
 const log = createLogger('local-tools');
+
+initializeCapabilityRegistry();
 
 // ---------------------------------------------------------------------------
 // Directory tree cache — avoids repeated fs.readdir+stat walks for the same path.
@@ -334,6 +345,7 @@ export interface LocalToolExecutionContext {
   llmMetrics?: LlmGenerationMetrics;
   onDocProgress?: (event: DocProgressEvent) => void;
   onOutput?: (chunk: string) => void;
+  onCapabilityEvent?: (event: CapabilityEvent) => void;
   signal?: AbortSignal;
 }
 
@@ -506,9 +518,9 @@ export async function executeLocalTool(
     case 'file_read':
       return toolFileRead(input);
     case 'file_write':
-      return toolFileWrite(input);
+      return toolFileWrite(input, context);
     case 'file_edit':
-      return toolFileEdit(input);
+      return toolFileEdit(input, context);
     case 'directory_tree':
       return toolDirectoryTree(input);
     case 'process_manager':
@@ -516,7 +528,7 @@ export async function executeLocalTool(
     case 'create_document':
       return toolCreateDocument(input, context);
     case 'delegate_research':
-      return delegateResearch(String(input?.topic || ''), String(input?.angle || ''));
+      return toolDelegateResearch(input);
     default:
       return `Unknown tool: ${toolName}`;
   }
@@ -602,18 +614,85 @@ export async function toolShellExec(input: {
   timeout?: number;
 }, context?: LocalToolExecutionContext): Promise<string> {
   const rawCommand = String(input?.command || '');
+  const cwd = input?.working_directory || homedir();
+  const timeoutMs = input?.timeout === 0 ? 0 : (input?.timeout || 30) * 1000;
+
+  const emitCapability = (event: CapabilityEvent): void => {
+    try {
+      context?.onCapabilityEvent?.(event);
+    } catch {
+      // Ignore capability event callback errors.
+    }
+  };
 
   // Block commands that would open a URL in an external browser
   const browserBlock = isExternalBrowserCommand(rawCommand);
   if (browserBlock) {
+    emitCapability({
+      type: 'policy_blocked',
+      message: browserBlock,
+      command: rawCommand,
+    });
     return `[Blocked] ${browserBlock}`;
   }
 
-  // Sanitize commands that spawn browsers for OAuth (add BROWSER=none)
-  const command = sanitizeShellCommand(rawCommand);
+  const policyDecision = evaluateCommandPolicy(rawCommand, {
+    cwd,
+    allowedRoots: [homedir(), '/tmp'],
+  });
 
-  const cwd = input?.working_directory || homedir();
-  const timeoutMs = input?.timeout === 0 ? 0 : (input?.timeout || 30) * 1000;
+  if (policyDecision.action === 'deny') {
+    emitCapability({
+      type: 'policy_blocked',
+      message: policyDecision.reason,
+      detail: policyDecision.detail,
+      command: rawCommand,
+    });
+    return `[Blocked by policy] ${policyDecision.reason}`;
+  }
+
+  let command = rawCommand;
+  if (policyDecision.action === 'rewrite' && policyDecision.command) {
+    command = policyDecision.command;
+    emitCapability({
+      type: 'policy_rewrite',
+      message: policyDecision.reason,
+      detail: policyDecision.detail,
+      command,
+    });
+  }
+
+  // Sanitize commands that spawn browsers for OAuth (add BROWSER=none)
+  const sanitizedCommand = sanitizeShellCommand(command);
+  if (sanitizedCommand !== command) {
+    emitCapability({
+      type: 'policy_rewrite',
+      message: 'Applied browser-safe rewrite (BROWSER=none).',
+      command: sanitizedCommand,
+    });
+  }
+  command = sanitizedCommand;
+
+  let preflightNote = '';
+
+  const resolution = await resolveCommandCapabilities(command);
+  if (resolution.missingCapabilities.length > 0) {
+    emitCapability({
+      type: 'capability_missing',
+      message: `Missing capabilities detected: ${resolution.missingCapabilities.map((c) => c.id).join(', ')}`,
+      command,
+    });
+
+    const installResult = await ensureCommandCapabilities(command, {
+      trustPolicy: 'verified_fallback',
+      onEvent: emitCapability,
+    });
+
+    if (!installResult.ok) {
+      const failed = installResult.failed.map((f) => f.capabilityId).join(', ');
+      preflightNote = `[Capability install warning] Could not auto-install: ${failed || 'unknown'}`;
+    }
+  }
 
   try {
     const { stdout, stderr } = await runInPersistentShell(
@@ -637,6 +716,10 @@ export async function toolShellExec(input: {
       output = `${head}\n\n[... ${output.length - 4000} chars / ~${lineCount} lines truncated ...]\n\n${tail}\n\n[Output truncated — ${output.length} total chars. Redirect to a file for full results.]`;
     }
 
+    if (preflightNote) {
+      output += `\n\n${preflightNote}`;
+    }
+
     return output;
   } catch (err: any) {
     let output = '';
@@ -652,6 +735,10 @@ export async function toolShellExec(input: {
       if (hint) output += `\n[Hint: ${hint}]`;
     } else {
       output += `\n\n[Error: ${err?.message || 'unknown error'}]`;
+    }
+
+    if (preflightNote) {
+      output += `\n${preflightNote}`;
     }
 
     return output || `[Error: ${err?.message || 'unknown error'}]`;
@@ -718,28 +805,92 @@ async function toolFileRead(input: {
   }
 }
 
+function shouldCreateCheckpointForPath(filePath: string): boolean {
+  // Temporary scratch paths are explicitly exempt from checkpointing.
+  return !filePath.startsWith('/tmp/');
+}
+
+function emitCapabilityEvent(
+  context: LocalToolExecutionContext | undefined,
+  event: CapabilityEvent,
+): void {
+  try {
+    context?.onCapabilityEvent?.(event);
+  } catch {
+    // Ignore callback failures.
+  }
+}
+
+async function createCheckpointForWrite(
+  filePath: string,
+  context: LocalToolExecutionContext | undefined,
+): Promise<FileCheckpoint | null> {
+  if (!shouldCreateCheckpointForPath(filePath)) return null;
+
+  const checkpoint = await createFileCheckpoint(filePath);
+  emitCapabilityEvent(context, {
+    type: 'checkpoint_created',
+    capabilityId: 'file-checkpoint',
+    message: `Checkpoint created for ${filePath}`,
+    detail: `checkpoint:${checkpoint.id}`,
+  });
+  return checkpoint;
+}
+
+async function rollbackCheckpoint(
+  checkpoint: FileCheckpoint | null,
+  filePath: string,
+  context: LocalToolExecutionContext | undefined,
+): Promise<string> {
+  if (!checkpoint) return '';
+  const restored = await restoreFileCheckpoint(checkpoint);
+  await disposeFileCheckpoint(checkpoint);
+  if (restored.ok) {
+    emitCapabilityEvent(context, {
+      type: 'rollback_applied',
+      capabilityId: 'file-checkpoint',
+      message: `Rollback applied for ${filePath}`,
+      detail: restored.detail,
+    });
+    return ` Rollback applied.`;
+  }
+
+  emitCapabilityEvent(context, {
+    type: 'rollback_failed',
+    capabilityId: 'file-checkpoint',
+    message: `Rollback failed for ${filePath}`,
+    detail: restored.detail,
+  });
+  return ` Rollback failed: ${restored.detail}.`;
+}
+
 async function toolFileWrite(input: {
   path: string;
   content: string;
   mode?: 'overwrite' | 'append';
-}): Promise<string> {
+}, context?: LocalToolExecutionContext): Promise<string> {
   const filePath = resolvePath(String(input?.path || ''));
   if (!filePath) return '[Error: path is required]';
   const content = String(input?.content ?? '');
   const mode = input?.mode || 'overwrite';
+  let checkpoint: FileCheckpoint | null = null;
 
   try {
+    checkpoint = await createCheckpointForWrite(filePath, context);
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     if (mode === 'append') {
       await fs.appendFile(filePath, content);
       invalidateDirTreeCache(filePath);
+      if (checkpoint) await disposeFileCheckpoint(checkpoint);
       return `[Appended ${content.length} characters to ${filePath}]`;
     }
     await fs.writeFile(filePath, content);
     invalidateDirTreeCache(filePath);
+    if (checkpoint) await disposeFileCheckpoint(checkpoint);
     return `[Wrote ${content.length} characters to ${filePath}]`;
   } catch (err: any) {
-    return `[Error writing ${filePath}: ${err?.message || 'unknown error'}]`;
+    const rollbackNote = await rollbackCheckpoint(checkpoint, filePath, context);
+    return `[Error writing ${filePath}: ${err?.message || 'unknown error'}]${rollbackNote}`;
   }
 }
 
@@ -747,30 +898,39 @@ async function toolFileEdit(input: {
   path: string;
   old_string: string;
   new_string: string;
-}): Promise<string> {
+}, context?: LocalToolExecutionContext): Promise<string> {
   const filePath = resolvePath(String(input?.path || ''));
   if (!filePath) return '[Error: path is required]';
+  let checkpoint: FileCheckpoint | null = null;
 
   try {
+    checkpoint = await createCheckpointForWrite(filePath, context);
     const content = await fs.readFile(filePath, 'utf-8');
     const oldString = String(input?.old_string ?? '');
     const newString = String(input?.new_string ?? '');
     const occurrences = content.split(oldString).length - 1;
 
     if (occurrences === 0) {
+      if (checkpoint) await disposeFileCheckpoint(checkpoint);
       return `[Error: "${short(oldString, 80)}" not found in ${filePath}]`;
     }
     if (occurrences > 1) {
+      if (checkpoint) await disposeFileCheckpoint(checkpoint);
       return `[Error: "${short(oldString, 80)}" found ${occurrences} times in ${filePath}. Must be unique.]`;
     }
 
     const nextContent = content.replace(oldString, newString);
     await fs.writeFile(filePath, nextContent);
     invalidateDirTreeCache(filePath);
+    if (checkpoint) await disposeFileCheckpoint(checkpoint);
     return `[Replaced in ${filePath}. File is now ${nextContent.split('\n').length} lines.]`;
   } catch (err: any) {
-    if (err?.code === 'ENOENT') return `[File not found: ${filePath}]`;
-    return `[Error editing ${filePath}: ${err?.message || 'unknown error'}]`;
+    if (err?.code === 'ENOENT') {
+      if (checkpoint) await disposeFileCheckpoint(checkpoint);
+      return `[File not found: ${filePath}]`;
+    }
+    const rollbackNote = await rollbackCheckpoint(checkpoint, filePath, context);
+    return `[Error editing ${filePath}: ${err?.message || 'unknown error'}]${rollbackNote}`;
   }
 }
 
@@ -1004,4 +1164,12 @@ function short(text: string, maxLength: number): string {
 
 function shellSingleQuote(text: string): string {
   return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+async function toolDelegateResearch(input: {
+  topic?: string;
+  angle?: string;
+}): Promise<string> {
+  const { delegateResearch } = await import('../llm/agents/research-agent');
+  return delegateResearch(String(input?.topic || ''), String(input?.angle || ''));
 }

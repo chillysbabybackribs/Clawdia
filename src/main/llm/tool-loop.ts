@@ -55,6 +55,7 @@ import {
   clearSessionInvalidated,
   getActiveTabUrl,
   exportCookiesForUrl,
+  getBrowserStatus,
 } from '../browser/manager';
 import { createTaskContext } from '../tasks/task-browser';
 import { createLogger, perfLog, perfTimer } from '../logger';
@@ -121,6 +122,35 @@ const MEDIA_EXTRACT_ALLOWED_BROWSER_READ = new Set([
 ]);
 // FFmpeg, curl, wget are now ALLOWED for media processing (v1.0.6+). Only system package managers restricted.
 const MEDIA_EXTRACT_FORBIDDEN_SHELL_RE = /\b(xdotool|apt-get|brew|pip|pip3)\b/i;
+const BROWSER_TOOLS_ALLOWED_WITHOUT_PLAYWRIGHT = new Set([
+  'browser_search',
+  'browser_news',
+  'browser_shopping',
+  'browser_places',
+  'browser_images',
+  'browser_navigate',
+  'browser_tab',
+]);
+
+function filterToolsForBrowserHealth(tools: typeof ALL_TOOLS | []): typeof ALL_TOOLS | [] {
+  if (!Array.isArray(tools) || tools.length === 0) return tools;
+
+  const browserStatus = getBrowserStatus().status;
+  if (browserStatus !== 'error' && browserStatus !== 'busy') return tools;
+
+  // In degraded mode, always restore the full non-browser capability set so
+  // a browser-only intent classification never traps the model.
+  const filtered = ALL_TOOLS.filter((tool) => {
+    if (!tool.name.startsWith('browser_')) return true;
+    return BROWSER_TOOLS_ALLOWED_WITHOUT_PLAYWRIGHT.has(tool.name);
+  }) as typeof ALL_TOOLS;
+
+  log.warn(
+    `[BrowserHealth] status=${browserStatus}; forcing degraded toolset (${filtered.length}/${ALL_TOOLS.length} tools)`
+  );
+
+  return filtered;
+}
 
 function isBareHostUrl(url: string): boolean {
   try {
@@ -1062,6 +1092,7 @@ export class ToolLoop {
     let toolCallCount = 0;
     const finalResponseParts: string[] = [];
     let continuationCount = 0;
+    let browserDegradedHintInjected = false;
     const llmStatsByIteration: IterationLlmStats[] = [];
     /** Track all tool names used across iterations for strategy cache. */
     const allToolNamesUsed: string[] = [];
@@ -1163,6 +1194,17 @@ export class ToolLoop {
             log.info(`Archetype media-extract: restricted browser tools to non-visual read/extract (count=${tools.length})`);
           }
         }
+      }
+
+      tools = filterToolsForBrowserHealth(tools);
+
+      const browserHealthStatus = getBrowserStatus().status;
+      if (!browserDegradedHintInjected && (browserHealthStatus === 'error' || browserHealthStatus === 'busy')) {
+        browserDegradedHintInjected = true;
+        messages.push(makeMessage(
+          'user',
+          '[SYSTEM: Playwright browser automation is currently unavailable. Prefer local tools (file_read/file_edit/shell_exec/etc.) and API-backed browser_search/news/shopping/places/images. Do NOT rely on browser_read_page/browser_click/browser_type/browser_screenshot until browser health recovers.]'
+        ));
       }
 
       // Set up streaming with HTML interception
@@ -1925,6 +1967,28 @@ export class ToolLoop {
           }
           this.emitToolOutput(toolCall.id, chunk);
         },
+        onCapabilityEvent: (event: any) => {
+          const status = event?.type === 'install_failed' || event?.type === 'policy_blocked' || event?.type === 'rollback_failed'
+            ? 'error'
+            : event?.type === 'capability_missing'
+              ? 'skipped'
+              : 'success';
+          this.emitToolStepProgress({
+            toolId: toolCall.id,
+            stepIndex: Number(event?.stepIndex || 1),
+            totalSteps: Number(event?.totalSteps || 1),
+            action: String(event?.message || event?.type || 'capability event'),
+            status,
+            duration: Number(event?.durationMs || 0),
+          });
+          if (!this.emitter.isDestroyed()) {
+            this.emitter.send(IPC_EVENTS.CAPABILITY_EVENT, {
+              toolId: toolCall.id,
+              toolName: toolCall.name,
+              ...event,
+            });
+          }
+        },
         signal: toolAbortController.signal,
       };
 
@@ -2043,6 +2107,10 @@ export class ToolLoop {
       const isShellKilled = toolCall.name === 'shell_exec' && /\[Process killed/.test(result);
       const isShellError = toolCall.name === 'shell_exec' && /\[Error: /.test(result);
       const isShellNonZero = toolCall.name === 'shell_exec' && /\[Exit code: [1-9]\d*\]/.test(result);
+      const isBrowserDegraded = toolCall.name.startsWith('browser_') && (
+        /No active page\./i.test(result) ||
+        /Playwright not connected/i.test(result)
+      );
 
       // Distinguish true errors from non-zero-exit warnings:
       // - Killed processes and [Error:] markers are always hard errors.
@@ -2057,6 +2125,7 @@ export class ToolLoop {
 
       const effectiveStatus: 'success' | 'error' | 'warning' =
         isShellHardFail ? 'error' :
+        isBrowserDegraded ? 'warning' :
         isShellSoftFail ? 'warning' :
         'success';
 
@@ -2065,12 +2134,16 @@ export class ToolLoop {
       entry.durationMs = Math.round(toolMs);
       entry.resultPreview = result.slice(0, 200);
       let shellStderr: string[] | undefined;
-      if (isShellHardFail || isShellSoftFail) {
-        entry.error = result.match(/\[(Exit code: \d+|Process killed[^\]]*|Error: [^\]]*)\]/)?.[0] || 'Command failed';
-        // Extract stderr section from shell output if present
-        const stderrMatch = result.match(/\[stderr\]\n([\s\S]*?)(?:\n\n\[|$)/);
-        if (stderrMatch?.[1]) {
-          shellStderr = stderrMatch[1].split('\n').filter(Boolean);
+      if (isShellHardFail || isShellSoftFail || isBrowserDegraded) {
+        if (isShellHardFail || isShellSoftFail) {
+          entry.error = result.match(/\[(Exit code: \d+|Process killed[^\]]*|Error: [^\]]*)\]/)?.[0] || 'Command failed';
+          // Extract stderr section from shell output if present
+          const stderrMatch = result.match(/\[stderr\]\n([\s\S]*?)(?:\n\n\[|$)/);
+          if (stderrMatch?.[1]) {
+            shellStderr = stderrMatch[1].split('\n').filter(Boolean);
+          }
+        } else {
+          entry.error = 'Browser degraded: Playwright page unavailable';
         }
       }
       this.emitToolActivity(entry);

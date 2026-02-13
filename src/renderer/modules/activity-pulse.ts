@@ -6,7 +6,7 @@
 // The sentence updates in place with a smooth crossfade so users can always
 // see what the agent is doing (browser, headless browser, local tools, etc.).
 
-import type { ToolExecCompleteEvent, ToolExecStartEvent } from '../../shared/types';
+import type { CapabilityRuntimeEvent, ToolExecCompleteEvent, ToolExecStartEvent } from '../../shared/types';
 import { appState, elements } from './state';
 import { scrollToBottom } from './stream';
 
@@ -305,6 +305,43 @@ function describeToolComplete(payload: ToolExecCompleteEvent): string | null {
   return null;
 }
 
+function describeCapabilityEvent(payload: CapabilityRuntimeEvent): string | null {
+  if (payload.type === 'install_started') {
+    const target = payload.capabilityId ? ` ${payload.capabilityId}` : '';
+    return `Installing missing capability${target} automatically.`;
+  }
+
+  if (payload.type === 'install_succeeded') {
+    return 'Installed dependency successfully. Retrying the tool step.';
+  }
+
+  if (payload.type === 'install_failed') {
+    const detail = compactWhitespace(payload.detail || payload.message || 'Dependency install failed.');
+    return `Auto-install failed: ${truncate(detail, 96)}.`;
+  }
+
+  if (payload.type === 'policy_blocked') {
+    const detail = compactWhitespace(payload.message || 'Policy blocked this action.');
+    return `Blocked by policy: ${truncate(detail, 96)}.`;
+  }
+
+  if (payload.type === 'rollback_applied') {
+    return 'Rolled back file changes after a failed write.';
+  }
+
+  if (payload.type === 'rollback_failed') {
+    const detail = compactWhitespace(payload.detail || payload.message || 'Rollback failed.');
+    return `Rollback failed: ${truncate(detail, 96)}.`;
+  }
+
+  if (payload.type === 'capability_missing') {
+    const detail = compactWhitespace(payload.message || 'Missing capability detected.');
+    return truncate(detail, 96);
+  }
+
+  return null;
+}
+
 function clearIdleMessageTimer(): void {
   if (!state.idleMessageTimer) return;
   clearTimeout(state.idleMessageTimer);
@@ -469,6 +506,16 @@ export function initActivityPulse(): void {
   window.api.onToolLoopComplete(() => {
     cleanupPulseLines();
   });
+
+  if (window.api.onCapabilityEvent) {
+    window.api.onCapabilityEvent((payload) => {
+      if (!state.active) return;
+      const text = describeCapabilityEvent(payload);
+      if (!text) return;
+      clearIdleMessageTimer();
+      setStatusText(text);
+    });
+  }
 
   window.api.onStreamEnd(() => {
     cleanupPulseLines();

@@ -98,6 +98,29 @@ export interface ToolStepProgressEvent {
   duration: number;
 }
 
+export interface CapabilityRuntimeEvent {
+  toolId: string;
+  toolName: string;
+  type:
+    | 'capability_missing'
+    | 'install_started'
+    | 'install_succeeded'
+    | 'install_failed'
+    | 'policy_rewrite'
+    | 'policy_blocked'
+    | 'checkpoint_created'
+    | 'rollback_applied'
+    | 'rollback_failed';
+  message: string;
+  detail?: string;
+  command?: string;
+  capabilityId?: string;
+  recipeId?: string;
+  stepIndex?: number;
+  totalSteps?: number;
+  durationMs?: number;
+}
+
 export interface ToolLoopCompleteEvent {
   totalTools: number;
   totalDuration: number;

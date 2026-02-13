@@ -105,6 +105,9 @@ let currentBounds: { x: number; y: number; width: number; height: number } | nul
 let playwrightBrowser: Browser | null = null;
 let browserContext: BrowserContext | null = null;
 let playwrightPage: Page | null = null;   // Wraps the BrowserView CDP target
+let playwrightInitStarted = false;
+let playwrightInitCompleted = false;
+let playwrightInitFailed = false;
 
 // Simple tab bookkeeping driven by BrowserView (no Playwright newPage).
 let tabCounter = 0;
@@ -630,8 +633,9 @@ export function setMainWindow(window: BrowserWindow): void {
 // Playwright CDP connection (optional — wraps BrowserView for tool automation)
 // ---------------------------------------------------------------------------
 
-const CDP_MAX_RETRIES = 5;
-const CDP_RETRY_DELAY_MS = 1000;
+const CDP_MAX_RETRIES = 3;
+const CDP_RETRY_DELAY_MS = 500;
+const CDP_CONNECT_TIMEOUT_MS = 5000;
 
 async function probeCDP(port: number): Promise<string | null> {
   try {
@@ -643,6 +647,20 @@ async function probeCDP(port: number): Promise<string | null> {
     }
   } catch { /* not responding */ }
   return null;
+}
+
+function normalizeCdpEndpoint(endpoint: string, fallbackPort: number): string {
+  try {
+    const parsed = new URL(endpoint);
+    const host = (parsed.hostname || '').toLowerCase();
+    if (!host || host === '0.0.0.0' || host === '::' || host === '[::]' || host === 'localhost') {
+      parsed.hostname = '127.0.0.1';
+    }
+    if (!parsed.port) parsed.port = String(fallbackPort);
+    return parsed.toString();
+  } catch {
+    return `http://127.0.0.1:${fallbackPort}`;
+  }
 }
 
 
@@ -894,9 +912,27 @@ async function connectCDP(): Promise<boolean> {
     }
 
     try {
-      const httpEndpoint = `http://127.0.0.1:${port}`;
-      log.info(`Connecting Playwright via ${httpEndpoint} (attempt ${attempt})...`);
-      playwrightBrowser = await withTimeout(chromium.connectOverCDP(httpEndpoint), 10000, 'connectOverCDP');
+      const wsEndpoint = normalizeCdpEndpoint(wsUrl, port);
+      const httpEndpoint = normalizeCdpEndpoint(`http://127.0.0.1:${port}`, port);
+
+      log.info(`Connecting Playwright via ${wsEndpoint} (attempt ${attempt})...`);
+      try {
+        playwrightBrowser = await withTimeout(
+          chromium.connectOverCDP(wsEndpoint),
+          CDP_CONNECT_TIMEOUT_MS,
+          'connectOverCDP'
+        );
+      } catch (wsErr: any) {
+        // Some Chromium builds expose a ws URL that is probeable but not connectable.
+        // Retry against the canonical HTTP endpoint before failing this attempt.
+        log.warn(`CDP WS endpoint failed (${wsErr?.message || wsErr}); falling back to ${httpEndpoint}`);
+        playwrightBrowser = await withTimeout(
+          chromium.connectOverCDP(httpEndpoint),
+          CDP_CONNECT_TIMEOUT_MS,
+          'connectOverCDP'
+        );
+      }
+
       const contexts = playwrightBrowser.contexts();
       log.info(`Playwright connected with ${contexts.length} context(s)`);
       return true;
@@ -971,8 +1007,13 @@ function ensurePlaywrightPageBinding(): void {
 
 export async function initPlaywright(): Promise<void> {
   log.info('initPlaywright called');
+  playwrightInitStarted = true;
+  playwrightInitCompleted = false;
+  playwrightInitFailed = false;
+
   if (playwrightBrowser && browserContext) {
     log.debug('Already initialized, resolving immediately');
+    playwrightInitCompleted = true;
     playwrightReadyResolve();
     return;
   }
@@ -982,6 +1023,8 @@ export async function initPlaywright(): Promise<void> {
 
   if (!connected) {
     log.error('CDP connection failed. Playwright tools unavailable, BrowserView-only mode.');
+    playwrightInitFailed = true;
+    playwrightInitCompleted = true;
     playwrightReadyResolve();
     return;
   }
@@ -989,6 +1032,8 @@ export async function initPlaywright(): Promise<void> {
   browserContext = playwrightBrowser!.contexts()[0] ?? null;
   if (!browserContext) {
     log.error('No browser context found after CDP connect.');
+    playwrightInitFailed = true;
+    playwrightInitCompleted = true;
     playwrightReadyResolve();
     return;
   }
@@ -1008,6 +1053,7 @@ export async function initPlaywright(): Promise<void> {
   registerSession(browserContext, activeTabId);
   startSessionReaper();
 
+  playwrightInitCompleted = true;
   playwrightReadyResolve();
 }
 
@@ -1433,6 +1479,15 @@ export function getBrowserStatus(): { status: 'ready' | 'active' | 'busy' | 'err
   if (browserContext) {
     return { status: 'ready', currentUrl: null };
   }
+
+  if (playwrightInitStarted && !playwrightInitCompleted) {
+    return { status: 'busy', currentUrl: null };
+  }
+
+  if (playwrightInitCompleted && playwrightInitFailed) {
+    return { status: 'error', currentUrl: null };
+  }
+
   return { status: 'ready', currentUrl: null };
 }
 
