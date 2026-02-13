@@ -1,7 +1,12 @@
 import { IpcMainInvokeEvent, ipcMain } from 'electron';
 import { IPC } from '../shared/ipc-channels';
 import { CLAUDE_MODELS } from '../shared/models';
-import { DocumentAttachment, ImageAttachment, type MCPServerConfig } from '../shared/types';
+import {
+  DocumentAttachment,
+  ImageAttachment,
+  type MCPServerConfig,
+  type CapabilityPlatformFlags,
+} from '../shared/types';
 import { createLogger } from './logger';
 
 const log = createLogger('ipc-validator');
@@ -683,6 +688,24 @@ export const ambientSettingsSetSchema = isObject<AmbientSettingsSetPayload>({
   },
 });
 
+export interface CapabilityPlatformFlagsSetPayload {
+  flags: Partial<CapabilityPlatformFlags>;
+}
+
+const capabilityPlatformFlagsSchema = isObject<Partial<CapabilityPlatformFlags>>({
+  enabled: isOptional(isBoolean('enabled')),
+  cohort: isOptional(isStringOneOf('cohort', ['internal', 'beta', 'default'] as const)),
+  lifecycleEvents: isOptional(isBoolean('lifecycleEvents')),
+  installOrchestrator: isOptional(isBoolean('installOrchestrator')),
+  checkpointRollback: isOptional(isBoolean('checkpointRollback')),
+  mcpRuntimeManager: isOptional(isBoolean('mcpRuntimeManager')),
+  containerExecution: isOptional(isBoolean('containerExecution')),
+});
+
+export const capabilityPlatformFlagsSetSchema = isObject<CapabilityPlatformFlagsSetPayload>({
+  flags: capabilityPlatformFlagsSchema as Validator<Partial<CapabilityPlatformFlags>>,
+});
+
 // Autonomy mode
 const AUTONOMY_MODES = ['safe', 'guided', 'unrestricted'] as const;
 
@@ -845,6 +868,8 @@ export const ipcSchemas = {
   [IPC.APPROVAL_RESPONSE]: approvalResponseSchema,
   [IPC.AUTONOMY_GET]: noPayload,
   [IPC.AUTONOMY_SET]: autonomySetSchema,
+  [IPC.CAPABILITY_PLATFORM_STATUS_GET]: noPayload,
+  [IPC.CAPABILITY_PLATFORM_FLAGS_SET]: capabilityPlatformFlagsSetSchema,
   [IPC.AUTONOMY_GET_ALWAYS_APPROVALS]: noPayload,
   [IPC.AUTONOMY_REMOVE_ALWAYS_APPROVAL]: autonomyRemoveAlwaysApprovalSchema,
 } as const;

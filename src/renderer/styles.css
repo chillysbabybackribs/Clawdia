@@ -3675,6 +3675,49 @@ input:focus-visible+.toggle-slider {
   font-style: italic;
 }
 
+/* Capability Platform Settings */
+.capability-platform-panel {
+  margin-top: 6px;
+}
+
+.capability-platform-status {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 4px;
+}
+
+.capability-platform-summary {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.capability-platform-runtime {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.capability-platform-processes {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  font-family: var(--font-mono, monospace);
+  white-space: pre-line;
+  max-height: 132px;
+  overflow: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+}
+
+#capability-platform-refresh {
+  justify-self: start;
+  margin-top: 4px;
+}
+
 /* Telegram Settings */
 
 .telegram-description {

@@ -13,6 +13,8 @@ import {
   ToolStepProgressEvent,
   ToolLoopCompleteEvent,
   CapabilityRuntimeEvent,
+  CapabilityPlatformStatus,
+  CapabilityPlatformFlags,
   TaskEvidenceSummaryEvent,
   MCPServerHealthEvent,
 } from '../shared/types';
@@ -344,6 +346,12 @@ const api = {
   getSettings: () => invokeChecked(IPC.SETTINGS_GET),
 
   setSetting: (key: string, value: string | boolean) => invokeChecked(IPC.SETTINGS_SET, { key, value }),
+
+  getCapabilityPlatformStatus: (): Promise<CapabilityPlatformStatus> =>
+    invokeChecked(IPC.CAPABILITY_PLATFORM_STATUS_GET),
+
+  setCapabilityPlatformFlags: (flags: Partial<CapabilityPlatformFlags>) =>
+    invokeChecked(IPC.CAPABILITY_PLATFORM_FLAGS_SET, { flags }),
 
   getSelectedModel: () => invokeChecked(IPC.MODEL_GET),
 

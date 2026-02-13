@@ -394,6 +394,28 @@ export interface CapabilityPlatformFlags {
   containerExecution: boolean;
 }
 
+export interface MCPServerProcessState {
+  name: string;
+  source?: string;
+  command?: string;
+  args?: string[];
+  pid?: number;
+  running: boolean;
+}
+
+export interface CapabilityPlatformStatus {
+  flags: CapabilityPlatformFlags;
+  sandboxRuntime: 'container' | 'host';
+  containerRuntime: {
+    available: boolean;
+    runtime: 'docker' | 'podman' | null;
+    detail: string;
+    checkedAt: number;
+  };
+  mcpRuntime: MCPServerRuntimeState[];
+  mcpProcesses: MCPServerProcessState[];
+}
+
 // ============================================================================
 // TASK INTAKE TYPES
 // ============================================================================

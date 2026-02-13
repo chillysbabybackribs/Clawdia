@@ -32,16 +32,18 @@ function getCachedOrCompute(key: string, compute: () => string): string {
 // =============================================================================
 // MINIMAL PROMPT - Chat only (~800 tokens)
 // =============================================================================
-const MINIMAL_PROMPT = `You are Clawdia - Search, a world-class research and business intelligence agent.
+const MINIMAL_PROMPT = `You are Clawdia, an AI assistant designed for research, analysis, and task automation.
 
-You find, validate, synthesize, and deliver high-quality research on any topic. You think like an analyst, write like a journalist, and cite like an academic.
+You help users find, validate, synthesize, and analyze information. You think critically, work methodically, and cite your sources.
 
 RESPONSE RULES:
 - Simple lookups: 1-2 sentences with source.
 - Research deliverables: Executive summary first, then deep analysis.
 - Always cite sources with URLs.
 - Never fabricate data. If you can't find it, say so.
-- Be direct, thorough, and actionable.`;
+- Be direct, thorough, and actionable.
+- If the user's message is only a greeting (e.g., "hi", "hello", "hey"), reply with ONE short sentence: "I'm Clawdia, a fully capable OS assistant. Tell me what you want done."
+- For greeting-only messages, do not include bullet lists, project summaries, or extra context.`;
 
 // =============================================================================
 // CORE TOOL RULES - Standard tier (~1.5K tokens)
@@ -165,7 +167,7 @@ RESPONSE RULES:
 - When you have the answer, STOP and respond.
 
 SOURCE CODE EDITING (Clawdia's own codebase):
-When editing files under ~/Desktop/clawdia-search/src/:
+When editing files under ~/Desktop/clawdia/src/:
 1. Before deleting or rewriting any function, check for imports/callers: shell_exec({ command: "grep -rn 'functionName' src/ --include='*.ts'" })
 2. After editing, ALWAYS verify the build before committing:
    - Renderer: shell_exec({ command: "npx vite build --logLevel error" })
@@ -421,7 +423,7 @@ const TOOL_INTEGRITY_RULES = `TOOL USE INTEGRITY:
 // SELF-KNOWLEDGE - Architecture reference for self-aware operations (~400 tokens)
 // =============================================================================
 const SELF_KNOWLEDGE = `CLAWDIA ARCHITECTURE (you are this app):
-You are running inside an Electron desktop app (Clawdia - Search). Your source code lives at ~/Desktop/clawdia-search/src/.
+You are running inside an Electron desktop app (Clawdia). Your source code lives at ~/Desktop/clawdia/src/.
 When asked about Clawdia internals, app modifications, or clearing data — read the actual source files. Do NOT guess based on general Electron knowledge.
 
 Storage:
@@ -515,7 +517,7 @@ export function getStaticPrompt(tier: PromptTier, autonomyMode?: string): string
   const parts: string[] = [];
   const unrestricted = autonomyMode === 'unrestricted';
 
-  parts.push('You are Clawdia - Search, a world-class research and business intelligence agent with full web browsing, local system access, and the ability to build custom tools on-the-fly.');
+  parts.push('You are Clawdia, an AI assistant designed for research, analysis, and task automation.');
 
   if (tier === 'minimal') {
     parts.push(MINIMAL_PROMPT);
@@ -599,11 +601,33 @@ function getLearningContext(currentUrl?: string, currentMessage?: string): strin
   return context.trim();
 }
 
+function isSimpleGreeting(message?: string): boolean {
+  if (!message) return false;
+  const normalized = message
+    .trim()
+    .toLowerCase()
+    .replace(/[!?.,;:]+/g, '')
+    .replace(/\s+/g, ' ');
+
+  return new Set([
+    'hi',
+    'hello',
+    'hey',
+    'yo',
+    'sup',
+    'good morning',
+    'good afternoon',
+    'good evening',
+  ]).has(normalized);
+}
+
 export function getDynamicPrompt(modelLabel?: string, currentUrl?: string, currentMessage?: string, autonomyMode?: string): string {
   const parts = [
     getDateContext(),
     getSystemContext(),
   ];
+  const greetingOnly = isSimpleGreeting(currentMessage);
+
   if (modelLabel) {
     parts.push(`Running as: ${modelLabel}`);
   }
@@ -612,37 +636,43 @@ export function getDynamicPrompt(modelLabel?: string, currentUrl?: string, curre
     if (autonomyMode === 'safe' || autonomyMode === 'guided') {
       parts.push(`Note: You are in ${autonomyMode.toUpperCase()} mode. Sensitive actions (sudo, network exfil, sensitive sites) may require explicit user approval. If an action is blocked, inform the user why it might be sensitive.`);
     } else if (autonomyMode === 'unrestricted') {
-      parts.push(`You have FULL autonomy. All actions are pre-approved. Act immediately without asking. Install packages, download files, modify the system, navigate any site — whatever is needed to complete the task. Never ask for permission.`);
+      parts.push(`You have FULL autonomy. All actions are pre-approved. Act immediately without asking. Install packages, download files, modify the system, navigate any site - whatever is needed to complete the task. Never ask for permission.`);
     }
   }
-  const accountsCtx = getAccountsContext();
-  if (accountsCtx) {
-    parts.push(accountsCtx);
+
+  if (greetingOnly) {
+    parts.push('GREETING MODE: The user sent a simple greeting. Reply in one concise sentence that you are fully capable at OS-level tasks and ask what they want done next. Do not include project lists, ambient summaries, or bullet lists.');
   }
 
-  try {
-    const tasksCtx = getCachedOrCompute('tasks', () => getTasksSummaryForPrompt());
-    if (tasksCtx) {
-      parts.push(tasksCtx);
+  if (!greetingOnly) {
+    const accountsCtx = getAccountsContext();
+    if (accountsCtx) {
+      parts.push(accountsCtx);
     }
-  } catch {
-    // Vault may not be initialized yet during startup
-  }
 
-  // Ambient environment summary (projects, git, shell, browser — set at startup)
-  if (ambientSummary) {
-    // Cap at 800 chars to stay within token budget (~200 tokens)
-    parts.push(ambientSummary.length > 800 ? ambientSummary.slice(0, 800) : ambientSummary);
-  }
+    try {
+      const tasksCtx = getCachedOrCompute('tasks', () => getTasksSummaryForPrompt());
+      if (tasksCtx) {
+        parts.push(tasksCtx);
+      }
+    } catch {
+      // Vault may not be initialized yet during startup
+    }
 
-  const learningCtx = getLearningContext(currentUrl, currentMessage);
-  if (learningCtx) {
-    parts.push(learningCtx);
+    // Ambient environment summary (projects, git, shell, browser - set at startup)
+    if (ambientSummary) {
+      // Cap at 800 chars to stay within token budget (~200 tokens)
+      parts.push(ambientSummary.length > 800 ? ambientSummary.slice(0, 800) : ambientSummary);
+    }
+
+    const learningCtx = getLearningContext(currentUrl, currentMessage);
+    if (learningCtx) {
+      parts.push(learningCtx);
+    }
   }
 
   return parts.join('\n');
 }
-
 /**
  * Build complete system prompt (for backwards compatibility)
  */

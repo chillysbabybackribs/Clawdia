@@ -6,7 +6,7 @@ Use these prompts to verify the new functionality.
 ## 1. File Ingestion
 **Goal:** Verify that the system can read a local file, extract its content, chunk it, and index it into the Vault.
 **Prompt:**
-> "Please digest the file at `/home/dp/Desktop/clawdia/CODEX_AUDIT.md` so I can ask questions about it later."
+> "Please digest the file at `/home/dp/Desktop/clawdia/docs/audits/CODEX_AUDIT.md` so I can ask questions about it later."
 
 **Expected Behavior:**
 1.  The agent should use the `vault_ingest` tool with the absolute path.
@@ -18,7 +18,7 @@ Use these prompts to verify the new functionality.
 
 ## 2. Vault Search (Knowledge Retrieval)
 **Goal:** Verify that the system can retrieve information from the Vault using semantic/keyword search.
-**Prerequisite:** You must have ingested `CODEX_AUDIT.md` (or another file) first.
+**Prerequisite:** You must have ingested `docs/audits/CODEX_AUDIT.md` (or another file) first.
 **Prompt:**
 > "What does the audit say about the current state of the architecture?"
 

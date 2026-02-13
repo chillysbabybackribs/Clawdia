@@ -122,6 +122,8 @@ export const IPC = {
   // Autonomy mode
   AUTONOMY_GET: 'autonomy:get',
   AUTONOMY_SET: 'autonomy:set',
+  CAPABILITY_PLATFORM_STATUS_GET: 'capability-platform:status:get',
+  CAPABILITY_PLATFORM_FLAGS_SET: 'capability-platform:flags:set',
 
   // Actions
   ACTION_CREATE_PLAN: 'action:create-plan',

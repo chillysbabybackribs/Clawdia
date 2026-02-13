@@ -6,8 +6,19 @@ import { setSetupMode } from './setup';
 import { initAccountsUI, loadAccountsList } from './accounts-ui';
 import { initAmbientSettingsUI, loadAmbientSettings, saveAmbientSettings } from './ambient-settings-ui';
 import { initTelegramSettingsUI, loadTelegramSettings } from './telegram-settings-ui';
+import type { CapabilityPlatformFlags, CapabilityPlatformStatus } from '../../shared/types';
 
 let settingsContentMoved = false;
+let capabilityControlsBound = false;
+let applyingCapabilityStatus = false;
+
+const CAPABILITY_FLAG_INPUTS: Array<{ id: string; key: keyof CapabilityPlatformFlags }> = [
+  { id: 'cap-flag-install-orchestrator', key: 'installOrchestrator' },
+  { id: 'cap-flag-lifecycle-events', key: 'lifecycleEvents' },
+  { id: 'cap-flag-checkpoint-rollback', key: 'checkpointRollback' },
+  { id: 'cap-flag-mcp-runtime', key: 'mcpRuntimeManager' },
+  { id: 'cap-flag-container-execution', key: 'containerExecution' },
+];
 
 export function initSettings(): void {
   initAccountsUI();
@@ -136,6 +147,7 @@ export function initSettings(): void {
     }
   });
 
+  bindCapabilityPlatformControls();
 }
 
 export function setVisibilityToggleState(button: HTMLButtonElement, visible: boolean): void {
@@ -258,6 +270,7 @@ export async function loadSettingsView(): Promise<void> {
     void loadAccountsList();
     void loadAmbientSettings();
     void loadTelegramSettings();
+    void loadCapabilityPlatformStatus();
   } catch {
     // Ignore settings load failures.
   }
@@ -276,4 +289,83 @@ export async function validateAndPersistAnthropicKey(key: string): Promise<{ val
 
   await window.api.setApiKey(normalized);
   return { valid: true };
+}
+
+function getCapabilityFlagInput(id: string): HTMLInputElement | null {
+  return document.getElementById(id) as HTMLInputElement | null;
+}
+
+function renderCapabilityPlatformStatus(status: CapabilityPlatformStatus): void {
+  const summaryEl = document.getElementById('capability-platform-summary');
+  const containerRuntimeEl = document.getElementById('capability-platform-container-runtime');
+  const mcpRuntimeEl = document.getElementById('capability-platform-mcp-runtime');
+  const mcpProcessesEl = document.getElementById('capability-platform-mcp-processes');
+  if (!summaryEl || !containerRuntimeEl || !mcpRuntimeEl || !mcpProcessesEl) return;
+
+  summaryEl.textContent =
+    `Cohort: ${status.flags.cohort} | Sandbox runtime: ${status.sandboxRuntime} | ` +
+    `Lifecycle events: ${status.flags.lifecycleEvents ? 'on' : 'off'}`;
+  containerRuntimeEl.textContent =
+    `Container runtime: ${status.containerRuntime.available ? `${status.containerRuntime.runtime || 'detected'} ready` : 'unavailable'} ` +
+    `(${status.containerRuntime.detail})`;
+
+  const mcpHealthy = status.mcpRuntime.filter((server) => server.status === 'healthy').length;
+  mcpRuntimeEl.textContent =
+    `MCP runtime: ${status.mcpRuntime.length} server(s), ${mcpHealthy} healthy`;
+
+  const processLines = status.mcpProcesses.map((proc) => {
+    const pid = proc.pid ? ` pid=${proc.pid}` : '';
+    const source = proc.source ? ` source=${proc.source}` : '';
+    return `${proc.running ? 'running' : 'stopped'} ${proc.name}${pid}${source}`;
+  });
+  mcpProcessesEl.textContent = processLines.length
+    ? processLines.join('\n')
+    : 'No MCP processes configured.';
+
+  applyingCapabilityStatus = true;
+  for (const { id, key } of CAPABILITY_FLAG_INPUTS) {
+    const input = getCapabilityFlagInput(id);
+    if (!input) continue;
+    input.checked = Boolean(status.flags[key]);
+  }
+  applyingCapabilityStatus = false;
+}
+
+async function setCapabilityPlatformFlag(key: keyof CapabilityPlatformFlags, value: boolean): Promise<void> {
+  await window.api.setCapabilityPlatformFlags({ [key]: value });
+  await loadCapabilityPlatformStatus();
+}
+
+function bindCapabilityPlatformControls(): void {
+  if (capabilityControlsBound) return;
+  capabilityControlsBound = true;
+
+  const refreshBtn = document.getElementById('capability-platform-refresh') as HTMLButtonElement | null;
+  refreshBtn?.addEventListener('click', () => {
+    void loadCapabilityPlatformStatus();
+  });
+
+  for (const { id, key } of CAPABILITY_FLAG_INPUTS) {
+    const input = getCapabilityFlagInput(id);
+    if (!input) continue;
+    input.addEventListener('change', () => {
+      if (applyingCapabilityStatus) return;
+      void setCapabilityPlatformFlag(key, input.checked);
+    });
+  }
+}
+
+async function loadCapabilityPlatformStatus(): Promise<void> {
+  const summaryEl = document.getElementById('capability-platform-summary');
+  if (summaryEl) {
+    summaryEl.textContent = 'Loading capability platform status...';
+  }
+  try {
+    const status = await window.api.getCapabilityPlatformStatus();
+    renderCapabilityPlatformStatus(status);
+  } catch {
+    if (summaryEl) {
+      summaryEl.textContent = 'Unable to load capability platform status.';
+    }
+  }
 }

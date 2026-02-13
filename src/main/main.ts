@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import { IPC, IPC_EVENTS } from '../shared/ipc-channels';
 import {
   ToolLoopEmitter,
+  type CapabilityPlatformStatus,
   type CapabilityRuntimeEvent,
   type MCPServerConfig,
   type MCPServerHealthEvent,
@@ -29,7 +30,7 @@ import { getTaskDashboardItems } from './tasks/task-dashboard';
 import { getTask, listTasks, deleteTask, pauseTask, resumeTask, getRunsForTask, getRun, updateRun, cleanupZombieRuns, getExecutorForTask } from './tasks/task-store';
 import { detectFastPathTools } from './llm/tool-bootstrap';
 import { initializeCapabilityRegistry } from './capabilities/registry';
-import { getCapabilityPlatformFlags } from './capabilities/feature-flags';
+import { getCapabilityPlatformFlags, setCapabilityPlatformFlags } from './capabilities/feature-flags';
 import { loadConfiguredMcpServersSync, type DiscoveredMcpServer } from './capabilities/mcp-discovery';
 import { createCapabilityPlatformServices } from './capabilities/services';
 import { detectContainerRuntime } from './capabilities/container-executor';
@@ -628,6 +629,46 @@ function stopMcpRuntimeManager(): void {
       emitMcpHealthState(next, 'application shutdown');
     }
   }
+}
+
+async function buildCapabilityPlatformStatus(): Promise<CapabilityPlatformStatus> {
+  const flags = getCapabilityPlatformFlags();
+  const containerRuntime = await detectContainerRuntime();
+  const mcpRuntime = capabilityPlatform.mcpRuntime.list();
+
+  const mcpProcesses = [
+    {
+      name: PLAYWRIGHT_MCP_SERVER_NAME,
+      source: 'internal',
+      command: 'electron-cdp',
+      args: [`--port=${REMOTE_DEBUGGING_PORT}`],
+      running: getBrowserStatus().status !== 'error',
+    },
+    ...Array.from(externalMcpConfigs.values()).map((config) => {
+      const proc = externalMcpProcesses.get(config.name);
+      return {
+        name: config.name,
+        source: config.source,
+        command: config.command,
+        args: config.args,
+        pid: proc?.pid,
+        running: Boolean(proc && proc.exitCode === null && !proc.killed),
+      };
+    }),
+  ];
+
+  return {
+    flags,
+    sandboxRuntime: capabilityPlatform.sandbox.activeRuntime(),
+    containerRuntime: {
+      available: containerRuntime.available,
+      runtime: containerRuntime.runtime,
+      detail: containerRuntime.detail,
+      checkedAt: containerRuntime.checkedAt,
+    },
+    mcpRuntime,
+    mcpProcesses,
+  };
 }
 
 async function warmConnections(): Promise<void> {
@@ -1336,6 +1377,34 @@ function setupIpcHandlers(): void {
       });
     }
     return { success: true, mode };
+  });
+
+  handleValidated(IPC.CAPABILITY_PLATFORM_STATUS_GET, (ipcSchemas as any)[IPC.CAPABILITY_PLATFORM_STATUS_GET], async () => {
+    return buildCapabilityPlatformStatus();
+  });
+
+  handleValidated(IPC.CAPABILITY_PLATFORM_FLAGS_SET, (ipcSchemas as any)[IPC.CAPABILITY_PLATFORM_FLAGS_SET], async (_event, payload: any) => {
+    const previous = getCapabilityPlatformFlags();
+    const next = setCapabilityPlatformFlags(payload.flags || {});
+    log.info(
+      `[CapabilityPlatform] flags updated: mcpRuntimeManager=${next.mcpRuntimeManager} containerExecution=${next.containerExecution}`
+    );
+
+    if (!previous.mcpRuntimeManager && next.mcpRuntimeManager) {
+      startMcpRuntimeManager();
+    } else if (previous.mcpRuntimeManager && !next.mcpRuntimeManager) {
+      stopMcpRuntimeManager();
+    }
+
+    if (!previous.containerExecution && next.containerExecution) {
+      const runtime = await detectContainerRuntime();
+      log.info(`[CapabilityPlatform] container runtime after enable: ${runtime.detail}`);
+    }
+
+    return {
+      success: true,
+      status: await buildCapabilityPlatformStatus(),
+    };
   });
 
   handleValidated(IPC.SETTINGS_GET, ipcSchemas[IPC.SETTINGS_GET], async () => ({

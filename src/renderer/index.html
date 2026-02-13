@@ -629,6 +629,68 @@
             <div class="settings-section-label">Telegram Bot</div>
             <p class="telegram-description">Connect Clawdia to Telegram for mobile access.</p>
 
+            <div class="settings-section-label">Capability Platform</div>
+            <div class="capability-platform-panel">
+              <div class="ambient-toggle-row">
+                <div class="ambient-toggle-info">
+                  <label class="ambient-toggle-label" for="cap-flag-install-orchestrator">Install orchestrator</label>
+                  <span class="ambient-toggle-desc">Auto-install missing binaries with trust policy controls</span>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="cap-flag-install-orchestrator">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="ambient-toggle-row">
+                <div class="ambient-toggle-info">
+                  <label class="ambient-toggle-label" for="cap-flag-lifecycle-events">Lifecycle events</label>
+                  <span class="ambient-toggle-desc">Emit dedicated capability event channels to renderer</span>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="cap-flag-lifecycle-events">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="ambient-toggle-row">
+                <div class="ambient-toggle-info">
+                  <label class="ambient-toggle-label" for="cap-flag-checkpoint-rollback">Checkpoint rollback</label>
+                  <span class="ambient-toggle-desc">Create pre-mutation file checkpoints for writes/edits</span>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="cap-flag-checkpoint-rollback">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="ambient-toggle-row">
+                <div class="ambient-toggle-info">
+                  <label class="ambient-toggle-label" for="cap-flag-mcp-runtime">MCP runtime manager</label>
+                  <span class="ambient-toggle-desc">Enable discovered MCP servers and runtime health manager</span>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="cap-flag-mcp-runtime">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="ambient-toggle-row">
+                <div class="ambient-toggle-info">
+                  <label class="ambient-toggle-label" for="cap-flag-container-execution">Container execution</label>
+                  <span class="ambient-toggle-desc">Route shell execution through Docker/Podman when available</span>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="cap-flag-container-execution">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+
+              <div class="capability-platform-status">
+                <div id="capability-platform-summary" class="capability-platform-summary">Loading capability platform status…</div>
+                <div id="capability-platform-container-runtime" class="capability-platform-runtime"></div>
+                <div id="capability-platform-mcp-runtime" class="capability-platform-runtime"></div>
+                <div id="capability-platform-mcp-processes" class="capability-platform-processes"></div>
+                <button id="capability-platform-refresh" class="secondary" type="button">Refresh Runtime Status</button>
+              </div>
+            </div>
+
             <div class="form-group">
               <label for="telegram-token-input">Bot Token</label>
               <div class="telegram-token-row">

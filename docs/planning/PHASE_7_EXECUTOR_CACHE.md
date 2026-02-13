@@ -6,7 +6,7 @@ Add this to the autonomous implementation plan after Phase 6.
 
 Build the executor cache system that records successful task runs as replayable scripts, dramatically reducing the cost of recurring tasks. After a task's first full LLM run, subsequent runs replay deterministic steps and only call the LLM (Haiku) where actual intelligence is needed. If an executor fails, it falls back to a full LLM run and generates a new executor from the successful trace.
 
-Reference: AUTONOMOUS_FOUNDATION_PLAN.md — this extends the headless runner from Phase 3.
+Reference: `docs/planning/AUTONOMOUS_FOUNDATION_PLAN.md` - this extends the headless runner from Phase 3.
 
 ## PART A: EXECUTION TRACE CAPTURE
 

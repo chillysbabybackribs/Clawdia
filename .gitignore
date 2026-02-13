@@ -18,3 +18,5 @@ config.json
 readme_env/
 release/
 .vercel
+
+/~/

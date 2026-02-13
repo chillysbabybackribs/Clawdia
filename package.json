@@ -1,7 +1,7 @@
 {
   "name": "clawdia",
   "version": "1.0.0",
-  "description": "Local-first AI workspace for browser automation, coding tasks, MCP orchestration, and autonomous execution.",
+  "description": "Local-first AI operator for browser, code, and task automation with policy gates, audit trails, and container-first execution.",
   "author": "Daniel Parker",
   "license": "MIT",
   "homepage": "https://github.com/chillysbabybackribs/Clawdia#readme",
