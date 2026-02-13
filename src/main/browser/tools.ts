@@ -2816,6 +2816,60 @@ async function toolReadTabs(tabIdsInput?: unknown): Promise<string> {
 
   const activeTabId = getActiveTabId();
   const resultsByTabId: Record<string, unknown> = {};
+  const playwrightPage = getActiveOrCreatePage();
+
+  if (!playwrightPage) {
+    const originalActiveTabId = activeTabId;
+    for (const tab of targets) {
+      try {
+        if (tab.id !== getActiveTabId()) {
+          await switchTab(tab.id);
+          await waitForLoad(8_000).catch(() => undefined);
+        }
+        const data = await executeInBrowserView<Record<string, unknown>>(domExtractJs(30_000));
+        if (data && typeof data['content'] === 'string') {
+          data['content'] = compressPageContent(data['content'], { maxChars: 8_000 }).text;
+        }
+        if (!data) {
+          resultsByTabId[tab.id] = {
+            tab_id: tab.id,
+            url: tab.url,
+            status: 'error',
+            error: 'Failed to read tab via BrowserView fallback.',
+          };
+          continue;
+        }
+        resultsByTabId[tab.id] = {
+          tab_id: tab.id,
+          status: 'success',
+          ...(data as Record<string, unknown>),
+        };
+      } catch (error: any) {
+        resultsByTabId[tab.id] = {
+          tab_id: tab.id,
+          url: tab.url,
+          status: 'error',
+          error: `BrowserView fallback read failed: ${error?.message || 'unknown error'}`,
+        };
+      }
+    }
+
+    if (originalActiveTabId && getActiveTabId() !== originalActiveTabId) {
+      await switchTab(originalActiveTabId).catch(() => undefined);
+    }
+
+    const values = Object.values(resultsByTabId) as Array<{ status?: string }>;
+    return JSON.stringify(
+      {
+        mode: 'browserview_fallback',
+        results: resultsByTabId,
+        succeeded: values.filter((v) => v.status === 'success').length,
+        failed: values.filter((v) => v.status === 'error').length,
+      },
+      null,
+      2,
+    );
+  }
 
   const activeTask = activeTabId && targets.some((tab) => tab.id === activeTabId)
     ? executeInBrowserView(domExtractJs(30_000)).then((data: any) => {

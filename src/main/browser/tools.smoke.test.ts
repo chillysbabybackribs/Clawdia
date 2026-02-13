@@ -1,6 +1,18 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 const storeData = new Map<string, unknown>();
+const managerMocks = {
+  createTab: vi.fn(),
+  switchTab: vi.fn(),
+  closeTab: vi.fn(),
+  getActivePage: vi.fn(() => null),
+  getActiveTabId: vi.fn(() => 'tab-1'),
+  listTabs: vi.fn(() => []),
+  executeInBrowserView: vi.fn(),
+  captureBrowserViewScreenshot: vi.fn(async () => Buffer.from('jpeg-bytes')),
+  navigate: vi.fn(async () => ({ success: true })),
+  waitForLoad: vi.fn(async () => undefined),
+};
 
 vi.mock('../logger', () => ({
   createLogger: () => ({
@@ -21,18 +33,7 @@ vi.mock('../store', () => ({
   },
 }));
 
-vi.mock('./manager', () => ({
-  createTab: vi.fn(),
-  switchTab: vi.fn(),
-  closeTab: vi.fn(),
-  getActivePage: () => null,
-  getActiveTabId: () => 'tab-1',
-  listTabs: () => [],
-  executeInBrowserView: vi.fn(),
-  captureBrowserViewScreenshot: vi.fn(async () => Buffer.from('jpeg-bytes')),
-  navigate: vi.fn(async () => ({ success: true })),
-  waitForLoad: vi.fn(async () => undefined),
-}));
+vi.mock('./manager', () => managerMocks);
 
 vi.mock('./popup-dismissal', () => ({
   dismissPopups: vi.fn(async () => undefined),
@@ -84,6 +85,22 @@ vi.mock('../tasks/service-urls', () => ({
 describe('browser tools smoke', () => {
   beforeEach(() => {
     storeData.clear();
+    managerMocks.createTab.mockReset();
+    managerMocks.switchTab.mockReset();
+    managerMocks.closeTab.mockReset();
+    managerMocks.getActivePage.mockReset();
+    managerMocks.getActivePage.mockReturnValue(null);
+    managerMocks.getActiveTabId.mockReset();
+    managerMocks.getActiveTabId.mockReturnValue('tab-1');
+    managerMocks.listTabs.mockReset();
+    managerMocks.listTabs.mockReturnValue([]);
+    managerMocks.executeInBrowserView.mockReset();
+    managerMocks.captureBrowserViewScreenshot.mockReset();
+    managerMocks.captureBrowserViewScreenshot.mockResolvedValue(Buffer.from('jpeg-bytes'));
+    managerMocks.navigate.mockReset();
+    managerMocks.navigate.mockResolvedValue({ success: true });
+    managerMocks.waitForLoad.mockReset();
+    managerMocks.waitForLoad.mockResolvedValue(undefined);
   });
 
   it('runs browser_action_map against isolated page', async () => {
@@ -226,5 +243,41 @@ describe('browser tools smoke', () => {
     expect(parsed.mode).toBe('browserview_fallback');
     expect(parsed.url).toBe('https://example.com/docs');
     expect(typeof parsed.extracted).toBe('object');
+  });
+
+  it('falls back browser_read_tabs to BrowserView sequencing when Playwright is unavailable', async () => {
+    const manager = await import('./manager');
+    const listTabsMock = manager.listTabs as unknown as ReturnType<typeof vi.fn>;
+    const getActiveTabIdMock = manager.getActiveTabId as unknown as ReturnType<typeof vi.fn>;
+    const switchTabMock = manager.switchTab as unknown as ReturnType<typeof vi.fn>;
+    const executeInBrowserViewMock = manager.executeInBrowserView as unknown as ReturnType<typeof vi.fn>;
+
+    let activeTabId = 'tab-1';
+    getActiveTabIdMock.mockImplementation(() => activeTabId);
+    listTabsMock.mockReturnValue([
+      { id: 'tab-1', url: 'https://example.com/home' },
+      { id: 'tab-2', url: 'https://example.com/docs' },
+    ]);
+    switchTabMock.mockImplementation(async (tabId: string) => {
+      activeTabId = tabId;
+      return true;
+    });
+    executeInBrowserViewMock.mockImplementation(async () => ({
+      title: activeTabId === 'tab-1' ? 'Home' : 'Docs',
+      url: activeTabId === 'tab-1' ? 'https://example.com/home' : 'https://example.com/docs',
+      content: `${activeTabId} content `.repeat(200),
+    }));
+
+    const { executeTool } = await import('./tools');
+    const raw = await executeTool('browser_read_tabs', { tab_ids: ['tab-1', 'tab-2'] });
+    const parsed = JSON.parse(raw);
+
+    expect(parsed.mode).toBe('browserview_fallback');
+    expect(parsed.succeeded).toBe(2);
+    expect(parsed.failed).toBe(0);
+    expect(parsed.results['tab-1'].status).toBe('success');
+    expect(parsed.results['tab-2'].status).toBe('success');
+    expect(switchTabMock).toHaveBeenCalledWith('tab-2');
+    expect(switchTabMock).toHaveBeenLastCalledWith('tab-1');
   });
 });
