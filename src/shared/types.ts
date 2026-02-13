@@ -98,12 +98,26 @@ export interface ToolStepProgressEvent {
   duration: number;
 }
 
+export type CapabilityRuntimeEventName =
+  | 'CAPABILITY_DISCOVERED'
+  | 'CAPABILITY_MISSING'
+  | 'INSTALL_STARTED'
+  | 'INSTALL_VERIFIED'
+  | 'INSTALL_FAILED'
+  | 'POLICY_REWRITE_APPLIED'
+  | 'POLICY_BLOCKED'
+  | 'CHECKPOINT_CREATED'
+  | 'ROLLBACK_APPLIED'
+  | 'MCP_SERVER_HEALTH'
+  | 'TASK_EVIDENCE_SUMMARY';
+
 export interface CapabilityRuntimeEvent {
   toolId: string;
   toolName: string;
   type:
     | 'capability_missing'
     | 'install_started'
+    | 'install_verified'
     | 'install_succeeded'
     | 'install_failed'
     | 'policy_rewrite'
@@ -111,6 +125,7 @@ export interface CapabilityRuntimeEvent {
     | 'checkpoint_created'
     | 'rollback_applied'
     | 'rollback_failed';
+  eventName?: CapabilityRuntimeEventName;
   message: string;
   detail?: string;
   command?: string;
@@ -313,6 +328,30 @@ export interface MCPServerConfig {
   args: string[];
   tools: MCPToolSchema[];
   idleTimeout?: number;
+}
+
+export type MCPServerHealthStatus = 'starting' | 'healthy' | 'degraded' | 'unhealthy' | 'stopped';
+
+export interface MCPToolRuntimeState {
+  namespace: string;
+  name: string;
+  version?: string;
+  schemaHash?: string;
+  enabled: boolean;
+  lastRegisteredAt?: number;
+}
+
+export interface MCPServerRuntimeState {
+  name: string;
+  namespace: string;
+  pid?: number;
+  status: MCPServerHealthStatus;
+  restartCount: number;
+  consecutiveFailures: number;
+  lastStartedAt?: number;
+  lastHealthCheckAt?: number;
+  lastError?: string;
+  tools: MCPToolRuntimeState[];
 }
 
 // ============================================================================

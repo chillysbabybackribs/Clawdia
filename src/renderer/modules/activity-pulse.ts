@@ -315,6 +315,10 @@ function describeCapabilityEvent(payload: CapabilityRuntimeEvent): string | null
     return 'Installed dependency successfully. Retrying the tool step.';
   }
 
+  if (payload.type === 'install_verified') {
+    return 'Dependency verification passed.';
+  }
+
   if (payload.type === 'install_failed') {
     const detail = compactWhitespace(payload.detail || payload.message || 'Dependency install failed.');
     return `Auto-install failed: ${truncate(detail, 96)}.`;

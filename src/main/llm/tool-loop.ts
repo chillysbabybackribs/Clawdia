@@ -59,6 +59,10 @@ import {
 } from '../browser/manager';
 import { createTaskContext } from '../tasks/task-browser';
 import { createLogger, perfLog, perfTimer } from '../logger';
+import {
+  tryCapabilityLifecycleEventName,
+  type CapabilityLifecycleEventName,
+} from '../capabilities/contracts';
 
 const log = createLogger('tool-loop');
 
@@ -88,6 +92,20 @@ const ALL_TOOLS = [...BROWSER_TOOL_DEFINITIONS, ...LOCAL_TOOL_DEFINITIONS, SEQUE
 const VAULT_TOOL_NAMES = new Set(VAULT_TOOL_DEFINITIONS.map(t => t.name));
 const TASK_TOOL_NAMES = new Set(TASK_TOOL_DEFINITIONS.map(t => t.name));
 const ARCHIVE_TOOL_NAMES = new Set(ARCHIVE_TOOL_DEFINITIONS.map(t => t.name));
+
+const CAPABILITY_CHANNEL_BY_EVENT_NAME: Partial<Record<CapabilityLifecycleEventName, string>> = {
+  CAPABILITY_DISCOVERED: IPC_EVENTS.CAPABILITY_DISCOVERED,
+  CAPABILITY_MISSING: IPC_EVENTS.CAPABILITY_MISSING,
+  INSTALL_STARTED: IPC_EVENTS.INSTALL_STARTED,
+  INSTALL_VERIFIED: IPC_EVENTS.INSTALL_VERIFIED,
+  INSTALL_FAILED: IPC_EVENTS.INSTALL_FAILED,
+  POLICY_REWRITE_APPLIED: IPC_EVENTS.POLICY_REWRITE_APPLIED,
+  POLICY_BLOCKED: IPC_EVENTS.POLICY_BLOCKED,
+  CHECKPOINT_CREATED: IPC_EVENTS.CHECKPOINT_CREATED,
+  ROLLBACK_APPLIED: IPC_EVENTS.ROLLBACK_APPLIED,
+  MCP_SERVER_HEALTH: IPC_EVENTS.MCP_SERVER_HEALTH,
+  TASK_EVIDENCE_SUMMARY: IPC_EVENTS.TASK_EVIDENCE_SUMMARY,
+};
 
 const LOCAL_WRITE_TOOL_NAMES = new Set(['file_write', 'file_edit']);
 
@@ -1974,6 +1992,12 @@ export class ToolLoop {
             : event?.type === 'capability_missing'
               ? 'skipped'
               : 'success';
+          const eventName: CapabilityLifecycleEventName | undefined = (() => {
+            if (typeof event?.eventName === 'string') {
+              return tryCapabilityLifecycleEventName(event.eventName);
+            }
+            return tryCapabilityLifecycleEventName(String(event?.type || ''));
+          })();
           this.emitToolStepProgress({
             toolId: toolCall.id,
             stepIndex: Number(event?.stepIndex || 1),
@@ -1983,11 +2007,16 @@ export class ToolLoop {
             duration: Number(event?.durationMs || 0),
           });
           if (!this.emitter.isDestroyed()) {
-            this.emitter.send(IPC_EVENTS.CAPABILITY_EVENT, {
+            const payload = {
               toolId: toolCall.id,
               toolName: toolCall.name,
+              eventName,
               ...event,
-            });
+            };
+            this.emitter.send(IPC_EVENTS.CAPABILITY_EVENT, payload);
+            if (eventName && CAPABILITY_CHANNEL_BY_EVENT_NAME[eventName]) {
+              this.emitter.send(CAPABILITY_CHANNEL_BY_EVENT_NAME[eventName] as string, payload);
+            }
           }
 
           const type = String(event?.type || 'capability_event');
@@ -2005,7 +2034,7 @@ export class ToolLoop {
               ? 'blocked'
               : type === 'capability_missing' || type === 'install_started'
                 ? 'pending'
-                : type === 'install_succeeded' || type === 'rollback_applied' || type === 'policy_rewrite'
+                : type === 'install_succeeded' || type === 'install_verified' || type === 'rollback_applied' || type === 'policy_rewrite'
                   ? 'executed'
                   : 'info';
 

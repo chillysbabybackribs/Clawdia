@@ -4,3 +4,4 @@ export * from './registry';
 export * from './policy-engine';
 export * from './install-orchestrator';
 export * from './checkpoint-manager';
+export * from './services';

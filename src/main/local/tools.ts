@@ -7,7 +7,11 @@ import { promisify } from 'util';
 import { createLogger } from '../logger';
 import { createDocument, type LlmGenerationMetrics } from '../documents/creator';
 import type { DocProgressEvent } from '../../shared/types';
-import type { CapabilityEvent, TrustPolicy } from '../capabilities/contracts';
+import {
+  type CapabilityEvent,
+  type TrustPolicy,
+  toCapabilityLifecycleEventName,
+} from '../capabilities/contracts';
 import type { AutonomyMode } from '../../shared/autonomy';
 import {
   createFileCheckpoint,
@@ -630,6 +634,9 @@ export async function toolShellExec(input: {
 
   const emitCapability = (event: CapabilityEvent): void => {
     try {
+      if (!event.eventName) {
+        event.eventName = toCapabilityLifecycleEventName(event.type);
+      }
       context?.onCapabilityEvent?.(event);
     } catch {
       // Ignore capability event callback errors.
@@ -834,6 +841,9 @@ function emitCapabilityEvent(
   event: CapabilityEvent,
 ): void {
   try {
+    if (!event.eventName) {
+      event.eventName = toCapabilityLifecycleEventName(event.type);
+    }
     context?.onCapabilityEvent?.(event);
   } catch {
     // Ignore callback failures.

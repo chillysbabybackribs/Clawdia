@@ -121,8 +121,19 @@ export async function ensureCapabilityInstalled(
     attempts.push({ capabilityId: capability.id, recipeId: recipe.id, ok: result.ok, durationMs: result.durationMs, output: result.output });
 
     const binaryAvailable = await isBinaryAvailable(binary);
-    if (result.ok && binaryAvailable) {
+    const verification = recipe.verifyCommand
+      ? await runInstallCommand(recipe.verifyCommand, Math.min(timeoutMs, 60_000))
+      : { ok: true, output: 'skipped', durationMs: 0 };
+    if (result.ok && binaryAvailable && verification.ok) {
       setBinaryState(binary, true, `installed:${recipe.id}`);
+      emit({
+        type: 'install_verified',
+        capabilityId: capability.id,
+        recipeId: recipe.id,
+        durationMs: verification.durationMs,
+        message: `${capability.id} verification passed (${recipe.id}).`,
+        detail: recipe.verifyCommand ? recipe.verifyCommand : 'binary presence check',
+      }, onEvent);
       emit({
         type: 'install_succeeded',
         capabilityId: capability.id,
