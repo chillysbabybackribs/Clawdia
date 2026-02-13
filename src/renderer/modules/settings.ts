@@ -100,6 +100,7 @@ export function initSettings(): void {
     }
     await window.api.setSetting('search_backend', elements.searchBackendSelect.value);
     await saveAmbientSettings();
+    document.dispatchEvent(new CustomEvent('clawdia:switch-view', { detail: 'chat' }));
   });
 
   // Handle get-key-btn clicks in both settings modal and settings view

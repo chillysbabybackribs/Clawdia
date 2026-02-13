@@ -4,6 +4,7 @@ interface TelegramConfig {
   enabled: boolean;
   hasToken: boolean;
   authorizedChatId?: number;
+  conversationId?: string | null;
   running: boolean;
 }
 
@@ -52,6 +53,7 @@ export async function loadTelegramSettings(): Promise<void> {
   try {
     const config: TelegramConfig = await window.api.telegramGetConfig();
     renderTelegramStatus(config);
+    document.dispatchEvent(new CustomEvent('clawdia:telegram-config-updated'));
   } catch {
     // Ignore load failures
   }

@@ -262,6 +262,7 @@ export const elements = {} as {
   navTasksBadge: HTMLSpanElement;
   navTimelineBtn: HTMLButtonElement;
   navReadmeBtn: HTMLButtonElement;
+  navTelegramBtn: HTMLButtonElement;
   navSettingsBtn: HTMLButtonElement;
   taskView: HTMLDivElement;
   tvContent: HTMLDivElement;
@@ -390,6 +391,7 @@ export function initElements(): void {
   elements.navTasksBadge = required<HTMLSpanElement>('nav-tasks-badge');
   elements.navTimelineBtn = required<HTMLButtonElement>('nav-timeline');
   elements.navReadmeBtn = required<HTMLButtonElement>('nav-readme');
+  elements.navTelegramBtn = required<HTMLButtonElement>('nav-telegram');
   elements.navSettingsBtn = required<HTMLButtonElement>('nav-settings');
   elements.taskView = required<HTMLDivElement>('task-view');
   elements.tvContent = required<HTMLDivElement>('tv-content');

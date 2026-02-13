@@ -153,25 +153,6 @@ export async function dismissPopups(page: Page): Promise<void> {
     await page.waitForTimeout(INITIAL_POPUP_RENDER_DELAY_MS);
     if (page.isClosed()) return;
 
-    // On interactive modal hosts (Neon, Vercel, Stripe, etc.), modals are functional
-    // workflows (project creation, settings forms) — not cookie banners. Skip ALL
-    // overlay removal and button clicking on these domains to avoid destroying forms.
-    let interactiveHost = false;
-    try {
-      interactiveHost = isInteractiveModalHost(page.url());
-      if (interactiveHost) {
-        log.debug(`[PopupDismiss] Interactive modal host detected, skipping overlay removal: ${page.url()}`);
-      }
-    } catch { /* page navigating */ }
-
-    if (interactiveHost) {
-      // Only unlock scroll — never remove overlays on interactive hosts
-      await page.evaluate(() => {
-        // Don't touch overlays/modals, just ensure body scroll isn't locked by cookie banners
-      });
-      return;
-    }
-
     await page.evaluate(() => {
       const dismissPatterns = [
         /^accept$/i, /^accept all$/i, /^agree$/i, /^allow$/i, /^allow all$/i,

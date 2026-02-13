@@ -45,6 +45,7 @@ export interface TelegramDeps {
   getMainWindow: () => BrowserWindow | null;
   getAuthorizedChatId: () => number | undefined;
   setAuthorizedChatId: (chatId: number) => void;
+  setTelegramConversationId: (conversationId: string | null) => void;
 }
 
 let bot: TelegramBot | null = null;
@@ -166,8 +167,17 @@ async function handleMessageInner(msg: TelegramBot.Message): Promise<void> {
       onError: (err) => {
         resolve(`Error: ${err.message}`);
       },
+      onConversationUpdated: (conversationId) => {
+        const d = deps;
+        if (!d) return;
+        const win = d.getMainWindow();
+        if (win && !win.isDestroyed()) {
+          win.webContents.send(IPC_EVENTS.CHAT_UPDATED, { conversationId });
+        }
+      },
     });
     activeConvId = result.conversationId;
+    deps.setTelegramConversationId(activeConvId);
     const final = await responseP;
     await send(chatId, final || result.response || '[No response]');
   } catch (err: any) {
@@ -176,7 +186,7 @@ async function handleMessageInner(msg: TelegramBot.Message): Promise<void> {
 }
 
 async function handleCmd(chatId: number, text: string): Promise<void> {
-  if (!bot) return;
+  if (!bot || !deps) return;
   const cmd = text.split(' ')[0];
   switch (cmd) {
     case '/tasks': {
@@ -201,6 +211,7 @@ async function handleCmd(chatId: number, text: string): Promise<void> {
     }
     case '/new':
       activeConvId = null;
+      deps.setTelegramConversationId(null);
       await bot.sendMessage(chatId, 'New conversation started.');
       return;
     case '/help':

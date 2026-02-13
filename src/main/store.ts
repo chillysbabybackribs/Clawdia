@@ -68,6 +68,8 @@ export interface ClawdiaStoreSchema {
   telegramBotToken?: string;
   telegramEnabled?: boolean;
   telegramAuthorizedChatId?: number;
+  /** Conversation ID used for Telegram mobile chat — updated when user messages from Telegram */
+  telegramConversationId?: string;
 
   // Autonomy mode
   autonomyMode?: AutonomyMode;

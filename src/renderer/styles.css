@@ -723,27 +723,63 @@ body {
   }
 }
 
-/* Activity pulse status lines — appear during long tool-loop runs */
+/* Activity pulse status line — single, always-readable sentence */
 .activity-pulse-line {
-  font-size: 13px;
-  line-height: 1.4;
+  width: 100%;
+  min-height: 24px;
   padding: 4px 0;
-  color: rgba(229, 192, 123, 0.4);
-  font-style: italic;
-  letter-spacing: 0.02em;
+  display: grid;
+  align-items: start;
   pointer-events: none;
   user-select: none;
-  animation: pulse-fade-in 0.3s ease-out;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.24s ease, transform 0.24s ease;
+}
+
+.activity-pulse-line.visible {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .activity-pulse-line.fading {
   opacity: 0;
-  transition: opacity 0.5s ease;
+  transform: translateY(3px);
 }
 
-@keyframes pulse-fade-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to   { opacity: 1; transform: translateY(0); }
+.activity-pulse-text {
+  grid-area: 1 / 1;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  opacity: 0;
+  transition: opacity 0.26s ease;
+  background: linear-gradient(90deg,
+      rgba(255, 255, 255, 0.58) 0%,
+      rgba(255, 255, 255, 0.58) 30%,
+      rgba(255, 255, 255, 0.98) 50%,
+      rgba(255, 255, 255, 0.58) 70%,
+      rgba(255, 255, 255, 0.58) 100%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: activity-pulse-shimmer 2.4s linear infinite;
+}
+
+.activity-pulse-text.is-visible {
+  opacity: 1;
+}
+
+@keyframes activity-pulse-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+
+  100% {
+    background-position: -100% 0;
+  }
 }
 
 /* ============================================================================
@@ -3792,6 +3828,40 @@ input:focus-visible+.toggle-slider {
   border-radius: 6px;
 }
 
+/* Telegram Chat empty state */
+.telegram-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  padding: 32px;
+  text-align: center;
+}
+.telegram-empty-icon {
+  font-size: 48px;
+  opacity: 0.5;
+  margin-bottom: 16px;
+}
+.telegram-empty-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 8px;
+}
+.telegram-empty-text {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin: 0;
+  max-width: 280px;
+  line-height: 1.5;
+}
+
+/* Telegram nav button - separate from main nav group */
+.sidebar-nav-telegram {
+  margin-top: 4px;
+}
+
 /* ============================================================================
    ACTIVITY FEED (chat inline)
    ============================================================================ */
@@ -3813,6 +3883,21 @@ input:focus-visible+.toggle-slider {
   font-family: var(--font-mono, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', 'Courier New', monospace);
   font-size: 12px;
   color: rgba(255, 255, 255, 0.45);
+  max-height: 45vh;
+  overflow-y: auto;
+}
+
+.enhanced-activity-feed::-webkit-scrollbar {
+  width: 5px;
+}
+
+.enhanced-activity-feed::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.enhanced-activity-feed::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
 }
 
 /* Pipeline Header */

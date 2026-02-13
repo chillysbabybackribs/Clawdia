@@ -379,6 +379,10 @@ function initTelegramIfEnabled(): void {
     getMainWindow: () => mainWindow,
     getAuthorizedChatId: () => store.get('telegramAuthorizedChatId') as number | undefined,
     setAuthorizedChatId: (chatId: number) => { store.set('telegramAuthorizedChatId', chatId); },
+    setTelegramConversationId: (conversationId: string | null) => {
+      if (conversationId) store.set('telegramConversationId', conversationId);
+      else store.delete('telegramConversationId');
+    },
   });
 }
 
@@ -1294,6 +1298,7 @@ function setupIpcHandlers(): void {
     enabled: Boolean(store.get('telegramEnabled')),
     hasToken: Boolean((store.get('telegramBotToken') as string | undefined)?.trim()),
     authorizedChatId: store.get('telegramAuthorizedChatId') as number | undefined,
+    conversationId: (store.get('telegramConversationId') as string | undefined) || null,
     running: isTelegramBotRunning(),
   }));
 
@@ -1316,6 +1321,7 @@ function setupIpcHandlers(): void {
 
   handleValidated(IPC.TELEGRAM_CLEAR_AUTH, ipcSchemas[IPC.TELEGRAM_CLEAR_AUTH], async () => {
     store.set('telegramAuthorizedChatId', undefined as any);
+    store.delete('telegramConversationId');
     return { success: true };
   });
 

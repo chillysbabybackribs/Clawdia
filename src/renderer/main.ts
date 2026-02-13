@@ -1,5 +1,5 @@
 import { ensureLandingTab, initBrowser, syncBrowserBounds } from './modules/browser';
-import { ensureChatShellInitialized, initChat, loadConversationsView } from './modules/chat';
+import { ensureChatShellInitialized, initChat, loadConversationsView, loadTelegramView } from './modules/chat';
 import { initAttachments } from './modules/attachments';
 import { initTaskNotifications } from './modules/dashboard';
 import { initDocuments } from './modules/documents';
@@ -37,7 +37,7 @@ function initClock(): void {
   setInterval(updateClock, 60000);
 }
 
-function switchView(view: 'chat' | 'tasks' | 'conversations' | 'readme' | 'settings' | 'timeline'): void {
+function switchView(view: 'chat' | 'tasks' | 'conversations' | 'readme' | 'settings' | 'timeline' | 'telegram'): void {
   if (appState.activeView === view) return;
   appState.activeView = view;
 
@@ -48,14 +48,15 @@ function switchView(view: 'chat' | 'tasks' | 'conversations' | 'readme' | 'setti
     { btn: elements.navTasksBtn, active: view === 'tasks' },
     { btn: elements.navTimelineBtn, active: view === 'timeline' },
     { btn: elements.navReadmeBtn, active: view === 'readme' },
+    { btn: elements.navTelegramBtn, active: view === 'telegram' },
     { btn: elements.navSettingsBtn, active: view === 'settings' },
   ];
   for (const { btn, active } of navBtns) {
     btn.classList.toggle('sidebar-nav-btn--active', active);
   }
 
-  // Toggle views — all hide/show via class
-  const showChat = view === 'chat';
+  // Toggle views — chat and telegram both show the chat shell
+  const showChat = view === 'chat' || view === 'telegram';
   elements.chatAppShell.classList.toggle('hidden', !showChat);
   elements.taskView.classList.toggle('hidden', view !== 'tasks');
   elements.timelineView.classList.toggle('hidden', view !== 'timeline');
@@ -80,6 +81,10 @@ function switchView(view: 'chat' | 'tasks' | 'conversations' | 'readme' | 'setti
   if (view === 'timeline') {
     void loadTimeline();
   }
+
+  if (view === 'telegram') {
+    void loadTelegramView();
+  }
 }
 
 function initSidebarNav(): void {
@@ -102,6 +107,7 @@ function initSidebarNav(): void {
   elements.navTasksBtn.addEventListener('click', () => switchView('tasks'));
   elements.navTimelineBtn.addEventListener('click', () => switchView('timeline'));
   elements.navReadmeBtn.addEventListener('click', () => switchView('readme'));
+  elements.navTelegramBtn.addEventListener('click', () => switchView('telegram'));
   elements.navSettingsBtn.addEventListener('click', () => switchView('settings'));
 
   // Listen for programmatic view switch events (from chat.ts conversation selection)
@@ -115,6 +121,21 @@ function initSidebarNav(): void {
     // Give DOM time to render, then highlight
     setTimeout(() => highlightTaskInView(taskId), 100);
   });
+
+  // Sync Telegram nav visibility when config changes
+  document.addEventListener('clawdia:telegram-config-updated', () => {
+    void syncTelegramNavVisibility();
+  });
+}
+
+async function syncTelegramNavVisibility(): Promise<void> {
+  try {
+    const config = await window.api.telegramGetConfig();
+    const show = Boolean(config.enabled && config.authorizedChatId);
+    elements.navTelegramBtn.classList.toggle('hidden', !show);
+  } catch {
+    elements.navTelegramBtn.classList.add('hidden');
+  }
 }
 
 async function init(): Promise<void> {
@@ -163,6 +184,7 @@ async function init(): Promise<void> {
 
   setSetupMode(false);
   await ensureChatShellInitialized();
+  await syncTelegramNavVisibility();
 }
 
 // CSP violation listener — logs violations during development so they're visible
