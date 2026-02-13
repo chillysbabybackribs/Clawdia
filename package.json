@@ -1,13 +1,16 @@
 {
-  "name": "clawdia-search",
+  "name": "clawdia",
   "version": "1.0.0",
-  "description": "Clawdia - Search: An AI research agent with live browser control for automated web research, content extraction, and synthesis.",
+  "description": "Local-first AI workspace for browser automation, coding tasks, MCP orchestration, and autonomous execution.",
   "author": "Daniel Parker",
   "license": "MIT",
-  "homepage": "https://github.com/chillysbabybackribs/Clawdia",
+  "homepage": "https://github.com/chillysbabybackribs/Clawdia#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/chillysbabybackribs/Clawdia"
+    "url": "git+https://github.com/chillysbabybackribs/Clawdia.git"
+  },
+  "bugs": {
+    "url": "https://github.com/chillysbabybackribs/Clawdia/issues"
   },
   "keywords": [
     "ai",
@@ -16,7 +19,10 @@
     "claude",
     "playwright",
     "desktop",
-    "llm"
+    "llm",
+    "mcp",
+    "agent",
+    "automation"
   ],
   "main": "dist/main/main.js",
   "type": "commonjs",
