@@ -4,6 +4,13 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 
 export type ContainerRuntime = 'docker' | 'podman';
+export type ContainerNetworkMode = 'allow' | 'restricted' | 'none' | 'host';
+
+export interface ContainerMount {
+  hostPath: string;
+  containerPath?: string;
+  readOnly?: boolean;
+}
 
 export interface ContainerRuntimeStatus {
   available: boolean;
@@ -18,6 +25,8 @@ export interface ContainerCommandOptions {
   timeoutMs: number;
   onOutput?: (chunk: string) => void;
   signal?: AbortSignal;
+  networkMode?: ContainerNetworkMode;
+  extraMounts?: ContainerMount[];
 }
 
 export interface ContainerCommandResult {
@@ -35,6 +44,7 @@ export interface ContainerRunPlan {
   args: string[];
   hostWorkspacePath: string;
   containerWorkspacePath: string;
+  networkMode: ContainerNetworkMode;
 }
 
 const RUNTIME_CACHE_TTL_MS = 20_000;
@@ -118,6 +128,15 @@ export function getContainerImage(): string {
   return configured || 'node:20-bookworm-slim';
 }
 
+export function getContainerNetworkMode(): ContainerNetworkMode {
+  const raw = String(process.env.CLAWDIA_CONTAINER_NETWORK || '').trim().toLowerCase();
+  if (!raw) return 'allow';
+  if (raw === 'none') return 'none';
+  if (raw === 'restricted') return 'restricted';
+  if (raw === 'host') return 'host';
+  return 'allow';
+}
+
 async function resolveWorkspacePath(cwd: string): Promise<string> {
   const candidate = path.resolve(cwd || homedir());
   try {
@@ -129,20 +148,42 @@ async function resolveWorkspacePath(cwd: string): Promise<string> {
   }
 }
 
-export function buildContainerRunPlan(runtime: ContainerRuntime, image: string, hostWorkspacePath: string): ContainerRunPlan {
+function appendMount(args: string[], mount: ContainerMount): void {
+  const containerPath = mount.containerPath || '/workspace';
+  const suffix = mount.readOnly ? ':ro' : '';
+  args.push('-v', `${mount.hostPath}:${containerPath}${suffix}`);
+}
+
+export function buildContainerRunPlan(
+  runtime: ContainerRuntime,
+  image: string,
+  hostWorkspacePath: string,
+  options?: { networkMode?: ContainerNetworkMode; extraMounts?: ContainerMount[] },
+): ContainerRunPlan {
   const containerWorkspacePath = '/workspace';
   const args: string[] = [
     'run',
     '--rm',
     '--init',
     '-i',
-    '-v',
-    `${hostWorkspacePath}:${containerWorkspacePath}`,
     '-w',
     containerWorkspacePath,
     '-e',
     'HOME=/tmp/clawdia',
   ];
+
+  const networkMode = options?.networkMode || 'allow';
+  if (networkMode === 'none' || networkMode === 'restricted') {
+    args.push('--network=none');
+  } else if (networkMode === 'host') {
+    args.push('--network=host');
+  }
+
+  appendMount(args, { hostPath: hostWorkspacePath, containerPath: containerWorkspacePath, readOnly: false });
+  for (const mount of options?.extraMounts || []) {
+    if (!mount.hostPath || mount.hostPath === hostWorkspacePath) continue;
+    appendMount(args, mount);
+  }
 
   if (process.platform !== 'win32' && typeof process.getuid === 'function' && typeof process.getgid === 'function') {
     args.push('--user', `${process.getuid()}:${process.getgid()}`);
@@ -155,6 +196,7 @@ export function buildContainerRunPlan(runtime: ContainerRuntime, image: string, 
     args,
     hostWorkspacePath,
     containerWorkspacePath,
+    networkMode,
   };
 }
 
@@ -167,7 +209,10 @@ export async function executeCommandInContainer(options: ContainerCommandOptions
   const runtime = status.runtime;
   const image = getContainerImage();
   const hostWorkspacePath = await resolveWorkspacePath(options.cwd);
-  const plan = buildContainerRunPlan(runtime, image, hostWorkspacePath);
+  const plan = buildContainerRunPlan(runtime, image, hostWorkspacePath, {
+    networkMode: options.networkMode || getContainerNetworkMode(),
+    extraMounts: options.extraMounts,
+  });
   const args = [...plan.args, options.command];
 
   return new Promise<ContainerCommandResult>((resolve, reject) => {

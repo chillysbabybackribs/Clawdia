@@ -8,10 +8,22 @@ describe('container executor', () => {
     expect(plan.image).toBe('node:20-bookworm-slim');
     expect(plan.hostWorkspacePath).toBe('/tmp/project');
     expect(plan.containerWorkspacePath).toBe('/workspace');
+    expect(plan.networkMode).toBe('allow');
     expect(plan.args[0]).toBe('run');
     expect(plan.args).toContain('-v');
     expect(plan.args).toContain('/tmp/project:/workspace');
     expect(plan.args).toContain('/bin/sh');
+  });
+
+  it('adds network and extra mounts when configured', () => {
+    const plan = buildContainerRunPlan('docker', 'node:20-bookworm-slim', '/tmp/project', {
+      networkMode: 'none',
+      extraMounts: [
+        { hostPath: '/tmp/shared', containerPath: '/shared', readOnly: true },
+      ],
+    });
+    expect(plan.args).toContain('--network=none');
+    expect(plan.args).toContain('/tmp/shared:/shared:ro');
   });
 
   it('uses default container image when env is not set', () => {
