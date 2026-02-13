@@ -2,7 +2,7 @@
 import './log-tap';
 
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, shell, Tray } from 'electron';
-import { execSync } from 'child_process';
+import { execSync, spawn, type ChildProcess } from 'child_process';
 import { homedir } from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -30,6 +30,7 @@ import { getTask, listTasks, deleteTask, pauseTask, resumeTask, getRunsForTask, 
 import { detectFastPathTools } from './llm/tool-bootstrap';
 import { initializeCapabilityRegistry } from './capabilities/registry';
 import { getCapabilityPlatformFlags } from './capabilities/feature-flags';
+import { loadConfiguredMcpServersSync, type DiscoveredMcpServer } from './capabilities/mcp-discovery';
 import { createCapabilityPlatformServices } from './capabilities/services';
 import { setAmbientSummary } from './llm/system-prompt';
 import { strategyCache } from './llm/strategy-cache';
@@ -140,8 +141,11 @@ const MCP_HEALTH_POLL_INTERVAL_MS = 7_500;
 const MCP_HEALTH_RESTART_COOLDOWN_MS = 30_000;
 const MCP_HEALTH_FAILURE_THRESHOLD = 3;
 let mcpHealthMonitorTimer: ReturnType<typeof setInterval> | null = null;
-let lastMcpHealthKey = '';
+const lastMcpHealthKeyByServer = new Map<string, string>();
 let lastMcpRestartAttemptAt = 0;
+const externalMcpConfigs = new Map<string, DiscoveredMcpServer>();
+const externalMcpProcesses = new Map<string, ChildProcess>();
+const externalMcpRestartAttempts = new Map<string, number>();
 
 // Cache the AnthropicClient to reuse HTTP connection pooling.
 let cachedClient: AnthropicClient | null = null;
@@ -323,6 +327,12 @@ function emitMcpHealthState(state: {
   consecutiveFailures: number;
   lastError?: string;
 }, detail: string): void {
+  const dedupeKey = `${state.status}|${detail}`;
+  if (lastMcpHealthKeyByServer.get(state.name) === dedupeKey) {
+    return;
+  }
+  lastMcpHealthKeyByServer.set(state.name, dedupeKey);
+
   const metadata: MCPServerHealthEvent = {
     serverName: state.name,
     status: state.status,
@@ -350,6 +360,102 @@ function emitMcpHealthState(state: {
     outcome: state.status === 'healthy' ? 'info' : state.status === 'unhealthy' ? 'blocked' : 'pending',
     detail: `${state.name} ${state.status} | ${detail}`.slice(0, 300),
     errorPreview: state.status === 'healthy' ? undefined : (state.lastError || detail).slice(0, 200),
+  });
+}
+
+function buildPlaywrightMcpConfig(): MCPServerConfig {
+  return {
+    name: PLAYWRIGHT_MCP_SERVER_NAME,
+    command: 'electron-cdp',
+    args: [`--port=${REMOTE_DEBUGGING_PORT}`],
+    tools: BROWSER_TOOL_DEFINITIONS.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.input_schema,
+    })),
+  };
+}
+
+function safeTerminateProcess(proc: ChildProcess, name: string): void {
+  if (proc.killed || proc.exitCode !== null) return;
+  try {
+    proc.kill('SIGTERM');
+  } catch (err: any) {
+    log.warn(`[MCP Runtime] Failed to SIGTERM ${name}: ${err?.message || err}`);
+  }
+  setTimeout(() => {
+    if (proc.exitCode !== null || proc.killed) return;
+    try {
+      proc.kill('SIGKILL');
+    } catch {
+      // ignore
+    }
+  }, 1500);
+}
+
+function startExternalMcpProcess(config: DiscoveredMcpServer, reason: string): void {
+  if (externalMcpProcesses.has(config.name)) return;
+
+  let child: ChildProcess;
+  try {
+    child = spawn(config.command, config.args, {
+      cwd: homedir(),
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (err: any) {
+    const state = capabilityPlatform.mcpRuntime.updateHealth(
+      config.name,
+      'unhealthy',
+      `${reason}: spawn failed (${err?.message || err})`,
+    );
+    if (state) emitMcpHealthState(state, `${reason}: spawn failed`);
+    return;
+  }
+
+  externalMcpProcesses.set(config.name, child);
+  const startedState = capabilityPlatform.mcpRuntime.updateHealth(
+    config.name,
+    'starting',
+    `${reason}: pid=${child.pid ?? 'unknown'}`,
+  );
+  if (startedState) {
+    emitMcpHealthState(startedState, `${reason}: pid=${child.pid ?? 'unknown'}`);
+  }
+
+  child.stdout?.on('data', (chunk: Buffer) => {
+    const line = chunk.toString().trim();
+    if (line) log.debug(`[MCP:${config.name}] ${line.slice(0, 220)}`);
+  });
+  child.stderr?.on('data', (chunk: Buffer) => {
+    const line = chunk.toString().trim();
+    if (line) log.warn(`[MCP:${config.name}] ${line.slice(0, 220)}`);
+  });
+
+  child.on('spawn', () => {
+    const state = capabilityPlatform.mcpRuntime.updateHealth(
+      config.name,
+      'healthy',
+      `spawned pid=${child.pid ?? 'unknown'}`,
+    );
+    if (state) emitMcpHealthState(state, `spawned pid=${child.pid ?? 'unknown'}`);
+  });
+
+  child.on('error', (err: Error) => {
+    externalMcpProcesses.delete(config.name);
+    const state = capabilityPlatform.mcpRuntime.updateHealth(
+      config.name,
+      'unhealthy',
+      `process error: ${err.message}`,
+    );
+    if (state) emitMcpHealthState(state, `process error: ${err.message}`);
+  });
+
+  child.on('exit', (code, signal) => {
+    externalMcpProcesses.delete(config.name);
+    const detail = `process exited code=${code ?? 'null'} signal=${signal ?? 'none'}`;
+    const state = capabilityPlatform.mcpRuntime.updateHealth(config.name, 'unhealthy', detail);
+    if (state) emitMcpHealthState(state, detail);
   });
 }
 
@@ -404,37 +510,91 @@ async function refreshMcpRuntimeHealth(reason: string): Promise<void> {
     }
   }
 
-  const detail = [
+  const playwrightDetail = [
     `reason=${reason}`,
     `browser=${browser.status}`,
     current.lastError ? `error=${current.lastError}` : '',
     `failures=${current.consecutiveFailures}`,
     `restarts=${current.restartCount}`,
   ].filter(Boolean).join(' | ');
+  emitMcpHealthState(current, playwrightDetail);
 
-  const key = `${current.status}|${detail}`;
-  if (key === lastMcpHealthKey) return;
-  lastMcpHealthKey = key;
-  emitMcpHealthState(current, detail);
+  for (const [serverName, config] of externalMcpConfigs.entries()) {
+    const proc = externalMcpProcesses.get(serverName);
+    if (proc && proc.exitCode === null && !proc.killed) {
+      const healthyState = capabilityPlatform.mcpRuntime.updateHealth(
+        serverName,
+        'healthy',
+        `${reason}: process running pid=${proc.pid ?? 'unknown'}`,
+      );
+      if (healthyState) {
+        emitMcpHealthState(healthyState, `${reason}: process running pid=${proc.pid ?? 'unknown'}`);
+      }
+      continue;
+    }
+
+    const unhealthyState = capabilityPlatform.mcpRuntime.updateHealth(
+      serverName,
+      'unhealthy',
+      `${reason}: process not running`,
+    );
+    if (unhealthyState) {
+      emitMcpHealthState(unhealthyState, `${reason}: process not running`);
+    }
+
+    const failures = unhealthyState?.consecutiveFailures || 0;
+    if (failures < MCP_HEALTH_FAILURE_THRESHOLD) continue;
+
+    const now = Date.now();
+    const lastRestartAt = externalMcpRestartAttempts.get(serverName) || 0;
+    if (now - lastRestartAt < MCP_HEALTH_RESTART_COOLDOWN_MS) continue;
+    externalMcpRestartAttempts.set(serverName, now);
+
+    const restartState = capabilityPlatform.mcpRuntime.recordRestart(
+      serverName,
+      `${reason}: automatic restart after ${failures} failures`,
+    );
+    if (restartState) {
+      emitMcpHealthState(
+        restartState,
+        `${reason}: restarting ${serverName} (#${restartState.restartCount})`,
+      );
+    }
+    startExternalMcpProcess(config, `${reason}: health-restart`);
+  }
 }
 
 function startMcpRuntimeManager(): void {
   const flags = getCapabilityPlatformFlags();
   if (!flags.enabled || !flags.mcpRuntimeManager) return;
 
+  const discovered = loadConfiguredMcpServersSync();
+  if (discovered.warnings.length > 0) {
+    for (const warning of discovered.warnings) {
+      log.warn(`[MCP Discovery] ${warning}`);
+    }
+  }
+  externalMcpConfigs.clear();
+  for (const server of discovered.servers) {
+    if (server.name === PLAYWRIGHT_MCP_SERVER_NAME) {
+      log.warn(`[MCP Discovery] Skipping ${server.name} from ${server.source}: reserved runtime name`);
+      continue;
+    }
+    externalMcpConfigs.set(server.name, server);
+  }
+
   if (!capabilityPlatform.mcpRuntime.list().some((s) => s.name === PLAYWRIGHT_MCP_SERVER_NAME)) {
-    const config: MCPServerConfig = {
-      name: PLAYWRIGHT_MCP_SERVER_NAME,
-      command: 'electron-cdp',
-      args: [`--port=${REMOTE_DEBUGGING_PORT}`],
-      tools: BROWSER_TOOL_DEFINITIONS.map((tool) => ({
-        name: tool.name,
-        description: tool.description,
-        inputSchema: tool.input_schema,
-      })),
-    };
+    const config: MCPServerConfig = buildPlaywrightMcpConfig();
     const state = capabilityPlatform.mcpRuntime.registerServer(config);
     emitMcpHealthState(state, `registered on port ${REMOTE_DEBUGGING_PORT}`);
+  }
+
+  for (const server of externalMcpConfigs.values()) {
+    if (!capabilityPlatform.mcpRuntime.list().some((s) => s.name === server.name)) {
+      const state = capabilityPlatform.mcpRuntime.registerServer(server);
+      emitMcpHealthState(state, `registered from ${server.source}`);
+    }
+    startExternalMcpProcess(server, 'startup');
   }
 
   void refreshMcpRuntimeHealth('startup');
@@ -449,13 +609,23 @@ function stopMcpRuntimeManager(): void {
     clearInterval(mcpHealthMonitorTimer);
     mcpHealthMonitorTimer = null;
   }
-  const state = capabilityPlatform.mcpRuntime.updateHealth(
-    PLAYWRIGHT_MCP_SERVER_NAME,
-    'stopped',
-    'application shutdown',
-  );
-  if (state) {
-    emitMcpHealthState(state, 'application shutdown');
+
+  for (const [serverName, proc] of externalMcpProcesses.entries()) {
+    safeTerminateProcess(proc, serverName);
+    externalMcpProcesses.delete(serverName);
+  }
+  externalMcpConfigs.clear();
+  externalMcpRestartAttempts.clear();
+
+  for (const state of capabilityPlatform.mcpRuntime.list()) {
+    const next = capabilityPlatform.mcpRuntime.updateHealth(
+      state.name,
+      'stopped',
+      'application shutdown',
+    );
+    if (next) {
+      emitMcpHealthState(next, 'application shutdown');
+    }
   }
 }
 
@@ -1171,6 +1341,7 @@ function setupIpcHandlers(): void {
     serpapi_api_key: store.get('serpapi_api_key') ? '••••••••' : '',
     bing_api_key: store.get('bing_api_key') ? '••••••••' : '',
     search_backend: store.get('search_backend') || 'serper',
+    mcp_servers_count: Array.isArray(store.get('mcpServers' as any)) ? (store.get('mcpServers' as any) as unknown[]).length : 0,
   }));
 
   handleValidated(IPC.SETTINGS_SET, ipcSchemas[IPC.SETTINGS_SET], async (_event, payload) => {

@@ -1,7 +1,7 @@
 import { IpcMainInvokeEvent, ipcMain } from 'electron';
 import { IPC } from '../shared/ipc-channels';
 import { CLAUDE_MODELS } from '../shared/models';
-import { DocumentAttachment, ImageAttachment } from '../shared/types';
+import { DocumentAttachment, ImageAttachment, type MCPServerConfig } from '../shared/types';
 import { createLogger } from './logger';
 
 const log = createLogger('ipc-validator');
@@ -42,7 +42,8 @@ export type SettingsKey =
   | 'chat_tab_state'
   | 'browserHistory'
   | 'userAccounts'
-  | 'conversations';
+  | 'conversations'
+  | 'mcpServers';
 export type SettingsValue =
   | string
   | boolean
@@ -50,7 +51,8 @@ export type SettingsValue =
   | SearchBackend
   | { tabIds: string[]; activeId: string | null }
   | Array<{ id: string; url: string; title: string; timestamp: number }>
-  | unknown[];
+  | unknown[]
+  | MCPServerConfig[];
 
 export interface ChatSendPayload {
   message: string;
@@ -446,6 +448,20 @@ const browserHistoryEntryValidator = isObject<{ id: string; url: string; title: 
   timestamp: isNumberAtLeast('timestamp', 0),
 });
 
+const mcpToolSchemaValidator = isObject<{ name: string; description: string; inputSchema: Record<string, unknown> }>({
+  name: isNonEmptyString('name'),
+  description: isString('description'),
+  inputSchema: passthroughValidator,
+});
+
+const mcpServerConfigValidator = isObject<MCPServerConfig>({
+  name: isNonEmptyString('name'),
+  command: isNonEmptyString('command'),
+  args: isArrayOf('args', isString('arg')),
+  tools: isArrayOf('tools', mcpToolSchemaValidator as Validator<{ name: string; description: string; inputSchema: Record<string, unknown> }>),
+  idleTimeout: isOptional(isNumberAtLeast('idleTimeout', 0)),
+});
+
 const settingsKeyValidator = isStringOneOf<SettingsKey>('key', [
   'anthropic_api_key',
   'anthropicApiKey',
@@ -460,6 +476,7 @@ const settingsKeyValidator = isStringOneOf<SettingsKey>('key', [
   'browserHistory',
   'userAccounts',
   'conversations',
+  'mcpServers',
 ] as const);
 
 const settingsValueValidatorByKey: Record<SettingsKey, Validator<unknown>> = {
@@ -476,6 +493,7 @@ const settingsValueValidatorByKey: Record<SettingsKey, Validator<unknown>> = {
   browserHistory: isArrayOf('value', browserHistoryEntryValidator as Validator<{ id: string; url: string; title: string; timestamp: number }>),
   userAccounts: isArrayOf('value', passthroughValidator),
   conversations: isArrayOf('value', passthroughValidator),
+  mcpServers: isArrayOf('value', mcpServerConfigValidator as Validator<MCPServerConfig>),
 };
 
 export const chatSendSchema = isObject<ChatSendPayload>({

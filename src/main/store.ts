@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import { DEFAULT_MODEL } from '../shared/models';
 import type { UserAccount } from '../shared/accounts';
 import type { AutonomyMode } from '../shared/autonomy';
-import type { CapabilityPlatformFlags } from '../shared/types';
+import type { CapabilityPlatformFlags, MCPServerConfig } from '../shared/types';
 import { createLogger } from './logger';
 
 const log = createLogger('store');
@@ -77,6 +77,7 @@ export interface ClawdiaStoreSchema {
   unrestrictedConfirmed?: boolean;
   autonomyOverrides?: Record<string, boolean>;
   capabilityPlatformFlags?: CapabilityPlatformFlags;
+  mcpServers?: MCPServerConfig[];
 
   // Legacy key used by older builds before BYOK migration.
   anthropic_api_key?: string;

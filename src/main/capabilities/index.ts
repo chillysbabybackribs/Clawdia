@@ -6,3 +6,4 @@ export * from './install-orchestrator';
 export * from './checkpoint-manager';
 export * from './services';
 export * from './feature-flags';
+export * from './mcp-discovery';
